@@ -1,0 +1,36 @@
+# Dataset Configuration for Whale Call Analysis
+# ================================================================
+
+# Dataset metadata
+dataset:
+  name: "ONC Fin Whale Call Dataset"
+  version: "1.0"
+  description: "Spectrogram data of fin whale calls from Ocean Networks Canada"
+
+# Spectrogram processing settings
+spectrogram:
+  target_size: [512, 512]  # [height, width]
+  channels: 1
+
+# Custom spectrogram generation settings
+custom_spectrograms:
+  window_duration: 1.0     # Window duration in seconds (1.0s for good freq resolution in 5-100Hz range)
+  overlap: 0.9           # Overlap ratio
+  frequency_limits:        # Frequency limits [Hz]
+    min: 5
+    max: 100
+  colormap: "viridis"
+  color_limits:            # Color axis limits [dB]
+    min: -60
+    max: 0
+  log_frequency: false
+  output_formats:
+    matlab: true
+    plots: true
+
+# Temporal context settings for ML training
+temporal_context:
+  context_duration: 40.0
+  padding_method: "centered"
+  multi_file_stitching: true
+  exact_duration_enforcement: true
