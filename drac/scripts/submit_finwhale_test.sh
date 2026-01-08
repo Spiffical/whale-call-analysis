@@ -69,8 +69,6 @@ while [[ $# -gt 0 ]]; do
     --seed) SEED="$2"; shift 2 ;;
     --augment-test) AUGMENT_TEST="true"; shift ;;
     --device) DEVICE="$2"; shift 2 ;;
-    --project-path) PROJECT_PATH="$2"; shift 2 ;;
-    --venv|--venv-path) VENV_PATH="$2"; shift 2 ;;
     --png-scale) PNG_SCALE="$2"; shift 2 ;;
     --png-cmap) PNG_CMAP="$2"; shift 2 ;;
     --png-pmin) PNG_PMIN="$2"; shift 2 ;;
