@@ -1,12 +1,22 @@
 #!/bin/bash
+# NOTE: Run with: sbatch drac/scripts/submit_finwhale_cnn.sh [args]
+# Logs will be created in drac/logs/ relative to where you run sbatch
+
 #SBATCH --account=def-kmoran                    # DRAC project account
 #SBATCH --job-name=finwhale_cnn                 # Job name
-#SBATCH --output=out/finwhale_cnn_%j.out        # Standard output log
-#SBATCH --error=err/finwhale_cnn_%j.err         # Standard error log
 #SBATCH --time=08:00:00                         # Max runtime (HH:MM:SS)
 #SBATCH --gres=gpu:h100:1                      # GPU type: adjust if needed (e.g., a100:1)
 #SBATCH --cpus-per-task=4                       # CPU cores
 #SBATCH --mem=32G                               # Memory per node
+
+# Detect script location (works when run from any directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Create log directories and set up logging
+LOG_DIR="$SCRATCH/whale-call-analysis/logs"
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$LOG_DIR/finwhale_cnn_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$LOG_DIR/finwhale_cnn_${SLURM_JOB_ID:-$$}.err" >&2)
 
 # Parameters (with defaults)
 POS_DIR=""
@@ -23,14 +33,14 @@ TRAIN_RATIO=0.8
 VAL_RATIO=0.1
 CROP_SIZE=""            # Empty = full freq range (square). Can be "96" or "96,96" for [freq,time]
 DEVICE="cuda"
-PROJECT_PATH="$HOME/whale-call-analysis"   # Path to this repo on DRAC login node
+PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"   # Path to this repo on DRAC login node
 EXP_DIR="/exp"                # Base experiment dir (shared scratch/project recommended)
 COPY_TO_TMP="false"           # Whether to copy pos/neg dirs into $SLURM_TMPDIR (beware of size!)
 GIT_BRANCH="main"        # Required branch in PROJECT_PATH
 AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJECT_PATH
 SEED=42
 TAR_PATH=""
-VENV_PATH="${VENV_PATH:-$HOME/whale-call-analysis/.venv}"
+VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 SPLIT_STRATEGY="internal"
 MIN_GAP_SECONDS=120
 MODEL="SmallCNN"
@@ -79,8 +89,6 @@ if [[ -z "$POS_DIR" || -z "$NEG_DIR" ]]; then
   fi
 fi
 
-# Prepare log dirs on submit dir
-mkdir -p out err
 
 echo "Submitting FinWhale CNN job"
 echo "  pos-dir: $POS_DIR"

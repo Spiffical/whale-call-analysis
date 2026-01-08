@@ -1,12 +1,22 @@
 #!/bin/bash
+# NOTE: Run with: sbatch drac/scripts/submit_finwhale_test.sh [args]
+# Logs will be created in $SCRATCH/whale-call-analysis/logs/
+
 #SBATCH --account=def-kmoran                    # DRAC project account
 #SBATCH --job-name=finwhale_test                # Job name
-#SBATCH --output=out/finwhale_test_%j.out       # Standard output log
-#SBATCH --error=err/finwhale_test_%j.err        # Standard error log
 #SBATCH --time=02:00:00                         # Max runtime (HH:MM:SS)
 #SBATCH --gres=gpu:h100:1                      # GPU (optional for speed)
 #SBATCH --cpus-per-task=4                       # CPU cores
 #SBATCH --mem=16G                               # Memory per node
+
+# Detect script location (works when run from any directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Create log directories and set up logging
+LOG_DIR="$SCRATCH/whale-call-analysis/logs"
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$LOG_DIR/finwhale_test_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$LOG_DIR/finwhale_test_${SLURM_JOB_ID:-$$}.err" >&2)
 
 # Parameters
 POS_DIR=""
@@ -26,8 +36,8 @@ VAL_RATIO=0.1
 SEED=42
 AUGMENT_TEST="false"
 DEVICE="cuda"
-PROJECT_PATH="$HOME/whale-call-analysis"
-VENV_PATH="${VENV_PATH:-$HOME/whale-call-analysis/.venv}"
+PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
+VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 PNG_SCALE=3
 PNG_CMAP="inferno"
 PNG_PMIN=2
@@ -88,7 +98,6 @@ if [[ ${#CHECKPOINTS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-mkdir -p out err
 
 module load python/3.10
 if [ ! -f "$VENV_PATH/bin/activate" ]; then
