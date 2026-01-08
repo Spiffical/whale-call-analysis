@@ -17,7 +17,7 @@ Tools for creating and training CNN classifiers on fin whale call spectrograms f
 
 ```bash
 # Clone and setup
-git clone <repo-url>
+git clone https://github.com/Spiffical/whale-call-analysis.git
 cd whale-call-analysis
 
 # Create virtual environment
