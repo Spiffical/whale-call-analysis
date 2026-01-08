@@ -98,6 +98,19 @@ if [ ! -f "$VENV_PATH/bin/activate" ]; then
 fi
 source "$VENV_PATH/bin/activate"
 
+# WandB API key setup (required for logging from compute nodes)
+# Can be set via: environment variable, ~/.wandb_api_key file, or --wandb-key arg
+if [[ -z "$WANDB_API_KEY" ]]; then
+  if [[ -f "$HOME/.wandb_api_key" ]]; then
+    export WANDB_API_KEY=$(cat "$HOME/.wandb_api_key")
+    echo "Loaded WANDB_API_KEY from ~/.wandb_api_key"
+  else
+    echo "Warning: WANDB_API_KEY not set. WandB logging may fail."
+    echo "  Set it via: export WANDB_API_KEY=your_key"
+    echo "  Or create: ~/.wandb_api_key with your API key"
+  fi
+fi
+
 # Load W&B API key from .env if present
 if [[ -f "$PROJECT_PATH/.env" ]]; then
   export $(grep -v '^#' "$PROJECT_PATH/.env" | xargs)

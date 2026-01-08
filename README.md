@@ -159,3 +159,13 @@ bash drac/scripts/submit_finwhale_test.sh \
     --use-wandb \                              # optional
     --wandb-project finwhale-cnn               # optional
 ```
+
+**WandB on DRAC**: Since compute nodes can't run interactive login, set your API key:
+```bash
+# Option 1: Create a file (recommended)
+echo "your_wandb_api_key" > ~/.wandb_api_key
+
+# Option 2: Export in your ~/.bashrc
+export WANDB_API_KEY=your_wandb_api_key
+```
+Get your API key from: https://wandb.ai/authorize
