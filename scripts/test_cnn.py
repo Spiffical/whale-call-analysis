@@ -25,7 +25,7 @@ from src.training.mat_dataset import FinWhaleMatDataset
 from src.models.fin_models import create_model
 from src.utils.wandb_utils import (
     init_wandb_test, 
-    log_test_metrics, 
+    log_test_example_images,
     log_test_comparison,
     finish_run,
 )
@@ -330,9 +330,21 @@ def main():
             'meta': np.array([m.get('dist_from_center_frac', np.nan) if isinstance(m, dict) else np.nan for m in all_meta], dtype=float)
         }
 
-        # Log to WandB
+        # Log example images to WandB
         if use_wandb:
-            log_test_metrics(label, metrics, probs_pos, y_true)
+            # Collect example images from saved PNGs
+            tp_images = []
+            fp_images = []
+            fn_images = []
+            for cls, img_list in [('tp', tp_images), ('fp', fp_images), ('fn', fn_images)]:
+                cls_dir = model_dir / 'pngs' / cls
+                if cls_dir.exists():
+                    for img_path in sorted(cls_dir.glob('*.png'))[:8]:
+                        try:
+                            img_list.append((str(img_path), img_path.stem))
+                        except Exception:
+                            pass
+            log_test_example_images(label, tp_images, fp_images, fn_images, max_images=8)
 
         # Also save individual PR/ROC per model
         fpr, tpr, _ = roc_curve(y_true, probs_pos)
