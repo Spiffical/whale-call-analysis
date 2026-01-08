@@ -355,7 +355,7 @@ def main():
                 'ft_recall': val_metrics['recall'],
                 'ft_f1': val_metrics['f1'],
                 'ft_val_auc': val_metrics['auc'],
-            }, task=args.task, epoch=epoch, prefix='', use_wandb=True)
+            }, task=args.task, epoch=epoch, use_wandb=True)
 
         current = float(val_metrics[args.main_metric])
         if current > best_metric:
