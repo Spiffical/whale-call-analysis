@@ -26,6 +26,7 @@ from src.models.fin_models import create_model
 from src.utils.wandb_utils import (
     init_wandb_test, 
     log_test_example_images,
+    log_test_metrics,
     log_test_comparison,
     finish_run,
 )
@@ -154,6 +155,7 @@ def main():
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"🚀 Starting test run. Results will be saved to: {out_dir}")
 
     # Initialize WandB if requested
     use_wandb = args.use_wandb
@@ -243,6 +245,10 @@ def main():
         # Per-model output directory
         label = labels[idx] if (len(labels) > idx) else derive_label(ckpt_path, model_name)
         model_dir = out_dir / label
+        print(f"\n--- Evaluating Model {idx+1}/{len(ckpts)}: {label} ---")
+        print(f"  Checkpoint: {ckpt_path}")
+        print(f"  Architecture: {model_name}")
+        
         (model_dir / 'pngs' / 'tp').mkdir(parents=True, exist_ok=True)
         (model_dir / 'pngs' / 'tn').mkdir(parents=True, exist_ok=True)
         (model_dir / 'pngs' / 'fp').mkdir(parents=True, exist_ok=True)
@@ -271,7 +277,11 @@ def main():
                 return [None] * batch_size
 
         with torch.no_grad():
-            for batch in test_loader:
+            total_batches = len(test_loader)
+            for batch_idx, batch in enumerate(test_loader):
+                if (batch_idx + 1) % 10 == 0 or batch_idx == 0 or batch_idx == total_batches - 1:
+                    print(f"  Batch {batch_idx+1}/{total_batches}...", end='\r')
+                
                 if len(batch) == 4:
                     x, y, paths, meta = batch
                     meta_list = normalize_meta(meta, x.size(0))
@@ -312,10 +322,19 @@ def main():
                         marker_x = None
                     save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
                              cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
+            print() # new line after batch progress
 
         logits_cat = torch.cat(all_logits, dim=0)
         labels_cat = torch.cat(all_labels, dim=0)
         metrics = compute_metrics(labels_cat, logits_cat)
+        
+        print(f"  Results for {label}:")
+        for k, v in metrics.items():
+            if k in ['acc', 'precision', 'recall', 'f1']:
+                print(f"    {k:10}: {v:.4f}")
+            else:
+                print(f"    {k:10}: {v}")
+
         # Save per-model report
         with open(model_dir / 'report.txt', 'w') as f:
             for k, v in metrics.items():
@@ -330,9 +349,12 @@ def main():
             'meta': np.array([m.get('dist_from_center_frac', np.nan) if isinstance(m, dict) else np.nan for m in all_meta], dtype=float)
         }
 
-        # Log example images to WandB
+        # Log to WandB
         if use_wandb:
-            # Collect example images from saved PNGs
+            # Scalar metrics and curves
+            log_test_metrics(label, metrics, probs_pos, y_true)
+            
+            # Example images from saved PNGs
             tp_images = []
             fp_images = []
             fn_images = []

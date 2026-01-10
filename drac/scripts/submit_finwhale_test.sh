@@ -4,10 +4,10 @@
 
 #SBATCH --account=def-kmoran                    # DRAC project account
 #SBATCH --job-name=finwhale_test                # Job name
-#SBATCH --time=02:00:00                         # Max runtime (HH:MM:SS)
+#SBATCH --time=04:00:00                         # Max runtime (HH:MM:SS) - increased for ResNet50
 #SBATCH --gres=gpu:h100:1                      # GPU (optional for speed)
 #SBATCH --cpus-per-task=4                       # CPU cores
-#SBATCH --mem=16G                               # Memory per node
+#SBATCH --mem=32G                               # Memory per node - increased for larger models
 
 # Detect repo root - use SLURM_SUBMIT_DIR if available (set by sbatch),
 # otherwise try to resolve from the original script path
@@ -40,6 +40,7 @@ exec > >(tee -a "$LOG_DIR/finwhale_test_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$
 POS_DIR=""
 NEG_DIR=""
 TAR_PATH=""
+COPY_DATA="true"           # Default to true as requested
 CHECKPOINT=""              # single checkpoint (backward compat)
 CHECKPOINTS=()              # array of checkpoints
 LABELS=()                   # array of labels for checkpoints
@@ -73,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --pos-dir) POS_DIR="$2"; shift 2 ;;
     --neg-dir) NEG_DIR="$2"; shift 2 ;;
     --tar-path) TAR_PATH="$2"; shift 2 ;;
+    --no-copy) COPY_DATA="false"; shift ;;
     --checkpoint) CHECKPOINT="$2"; shift 2 ;;
     --checkpoints) shift; while [[ $# -gt 0 && $1 != --* ]]; do CHECKPOINTS+=("$1"); shift; done ;;
     --labels) shift; while [[ $# -gt 0 && $1 != --* ]]; do LABELS+=("$1"); shift; done ;;
@@ -140,6 +142,7 @@ rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/whale_project
 # Handle data sources: either TAR extraction or raw dirs
 if [[ -n "$TAR_PATH" ]]; then
   mkdir -p "$SLURM_TMPDIR/finwhale_data"
+  echo "Extracting $TAR_PATH to $SLURM_TMPDIR/finwhale_data..."
   if [[ "$TAR_PATH" == *.tar.gz || "$TAR_PATH" == *.tgz ]]; then
     tar -xzf "$TAR_PATH" -C "$SLURM_TMPDIR/finwhale_data"
   elif [[ "$TAR_PATH" == *.tar ]]; then
@@ -163,6 +166,14 @@ if [[ -n "$TAR_PATH" ]]; then
       echo "Could not locate mat_files/neg_mat_files in archive"; exit 1
     fi
   fi
+elif [[ "$COPY_DATA" == "true" ]]; then
+  [[ -n "$POS_DIR" && -n "$NEG_DIR" ]] || { echo "Provide --pos-dir and --neg-dir or --tar-path"; exit 1; }
+  echo "Copying data to $SLURM_TMPDIR/finwhale_data..."
+  mkdir -p "$SLURM_TMPDIR/finwhale_data/pos" "$SLURM_TMPDIR/finwhale_data/neg"
+  rsync -a "$POS_DIR/" "$SLURM_TMPDIR/finwhale_data/pos/"
+  rsync -a "$NEG_DIR/" "$SLURM_TMPDIR/finwhale_data/neg/"
+  POS_ARG="$SLURM_TMPDIR/finwhale_data/pos"
+  NEG_ARG="$SLURM_TMPDIR/finwhale_data/neg"
 else
   [[ -n "$POS_DIR" && -n "$NEG_DIR" ]] || { echo "Provide --pos-dir and --neg-dir or --tar-path"; exit 1; }
   POS_ARG="$POS_DIR"

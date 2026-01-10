@@ -124,6 +124,62 @@ def log_test_example_images(
         wandb.log({f"{model_label}/false_negatives": make_wandb_images(fn_images, max_images)})
 
 
+def log_test_metrics(
+    model_label: str,
+    metrics: Dict[str, Any],
+    probs: np.ndarray,
+    y_true: np.ndarray,
+) -> None:
+    """Log test metrics and individual plots for a single model to wandb.
+    
+    Args:
+        model_label: Label/name for this model
+        metrics: Dict of metrics (accuracy, precision, recall, f1, auc)
+        probs: Predicted probabilities for positive class
+        y_true: Ground truth labels
+    """
+    if wandb.run is None:
+        return
+    
+    # Log scalar metrics with model prefix
+    log_dict = {}
+    for k, v in metrics.items():
+        if isinstance(v, (int, float, np.number)):
+            log_dict[f"{model_label}/{k}"] = float(v)
+    
+    # Log individual ROC and PR curves
+    try:
+        from sklearn.metrics import roc_curve, auc, precision_recall_curve
+        
+        fpr, tpr, _ = roc_curve(y_true, probs)
+        roc_auc = auc(fpr, tpr)
+        
+        # ROC curve plot
+        log_dict[f"{model_label}/roc"] = wandb.plot.line_series(
+            xs=[fpr.tolist()],
+            ys=[tpr.tolist()],
+            keys=[f"{model_label} (AUC={roc_auc:.3f})"],
+            title=f"ROC Curve - {model_label}",
+            xname="False Positive Rate",
+            yname="True Positive Rate"
+        )
+        
+        # PR curve plot
+        prec, rec, _ = precision_recall_curve(y_true, probs)
+        log_dict[f"{model_label}/pr"] = wandb.plot.line_series(
+            xs=[rec.tolist()],
+            ys=[prec.tolist()],
+            keys=[model_label],
+            title=f"Precision-Recall - {model_label}",
+            xname="Recall",
+            yname="Precision"
+        )
+    except Exception as e:
+        print(f"Warning: Could not create wandb plots for {model_label}: {e}")
+    
+    wandb.log(log_dict)
+
+
 def log_test_comparison(
     all_results: Dict[str, Dict[str, np.ndarray]],
     out_dir: Path,

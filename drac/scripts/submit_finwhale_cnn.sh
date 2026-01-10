@@ -53,7 +53,7 @@ CROP_SIZE=""            # Empty = full freq range (square). Can be "96" or "96,9
 DEVICE="cuda"
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"   # Path to this repo on DRAC login node
 EXP_DIR="/exp"                # Base experiment dir (shared scratch/project recommended)
-COPY_TO_TMP="false"           # Whether to copy pos/neg dirs into $SLURM_TMPDIR (beware of size!)
+COPY_TO_TMP="true"           # Default to true as requested
 GIT_BRANCH="main"        # Required branch in PROJECT_PATH
 AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJECT_PATH
 SEED=42
@@ -83,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --device) DEVICE="$2"; shift 2 ;;
     --exp-dir) EXP_DIR="$2"; shift 2 ;;
     --copy-to-tmp) COPY_TO_TMP="true"; shift ;;
+    --no-copy) COPY_TO_TMP="false"; shift ;;
     --git-branch) GIT_BRANCH="$2"; shift 2 ;;
     --auto-switch-branch) AUTO_SWITCH_BRANCH="true"; shift ;;
     --seed) SEED="$2"; shift 2 ;;
