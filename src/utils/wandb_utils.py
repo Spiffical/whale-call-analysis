@@ -141,10 +141,11 @@ def log_test_metrics(
     if wandb.run is None:
         return
     
-    # Log scalar metrics with model prefix
+    # Log only valuable scalar metrics with model prefix (not raw counts like tp, tn)
     log_dict = {}
+    valuable_metrics = ['acc', 'precision', 'recall', 'f1', 'auc']
     for k, v in metrics.items():
-        if isinstance(v, (int, float, np.number)):
+        if k in valuable_metrics and isinstance(v, (int, float, np.number)):
             log_dict[f"{model_label}/{k}"] = float(v)
     
     # Log individual ROC and PR curves
@@ -154,6 +155,10 @@ def log_test_metrics(
         fpr, tpr, _ = roc_curve(y_true, probs)
         roc_auc = auc(fpr, tpr)
         
+        # Add AUC to scalar info if not there
+        if f"{model_label}/auc" not in log_dict:
+            log_dict[f"{model_label}/auc"] = float(roc_auc)
+
         # ROC curve plot
         log_dict[f"{model_label}/roc"] = wandb.plot.line_series(
             xs=[fpr.tolist()],
@@ -202,12 +207,14 @@ def log_test_comparison(
     plot_files = [
         ('roc_curve_all.png', 'ROC Curves (All Models)'),
         ('pr_curve_all.png', 'Precision-Recall Curves (All Models)'),
+        ('precision_recall_vs_threshold_all.png', 'P/R vs Threshold (All Models)'),
+        ('accuracy_vs_center_offset_all.png', 'Accuracy vs Call Offset (All Models)'),
     ]
     
     for fname, title in plot_files:
         fpath = out_dir / fname
         if fpath.exists():
-            wandb.log({f"comparison/{fname.replace('.png', '')}": wandb.Image(str(fpath), caption=title)})
+            wandb.log({f"comparison/{fname.replace('_all.png', '')}": wandb.Image(str(fpath), caption=title)})
     
     # Create summary metrics table
     columns = ["Model", "AUC", "F1", "Precision", "Recall", "Accuracy"]

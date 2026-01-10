@@ -47,7 +47,15 @@ def compute_metrics(y_true: torch.Tensor, y_pred_logits: torch.Tensor) -> dict:
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
-        return dict(acc=acc, precision=prec, recall=rec, f1=f1, tp=tp, tn=tn, fp=fp, fn=fn, total=total)
+        
+        # Add AUC
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc_val = roc_auc_score(y_true.cpu().numpy(), probs[:, 1].cpu().numpy())
+        except Exception:
+            auc_val = 0.0
+            
+        return dict(acc=acc, precision=prec, recall=rec, f1=f1, auc=auc_val, tp=tp, tn=tn, fp=fp, fn=fn, total=total)
 
 
 def apply_contrast(x01: np.ndarray, pmin: float, pmax: float) -> np.ndarray:
