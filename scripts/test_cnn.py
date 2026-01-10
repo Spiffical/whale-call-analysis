@@ -325,13 +325,14 @@ def main():
                         overlay = f"{label} pred={pred} truth={truth} file={src}"
                         out_path = model_dir / 'pngs' / cls / f"{Path(src).stem}.png"
                         marker_x = None
-                        m = meta_list[i]
-                        try:
-                            if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
-                                marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
-                                marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
-                        except Exception:
-                            marker_x = None
+                        if truth == 1:
+                            m = meta_list[i]
+                            try:
+                                if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
+                                    marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
+                                    marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
+                            except Exception:
+                                marker_x = None
                         save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
                                  cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
                         png_counts[cls] += 1
