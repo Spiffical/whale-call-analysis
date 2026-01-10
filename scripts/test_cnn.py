@@ -120,6 +120,7 @@ def main():
     ap.add_argument('--png-cmap', type=str, default='inferno', help='Colormap for saved PNGs')
     ap.add_argument('--png-pmin', type=float, default=2.0, help='Lower percentile for PNG contrast')
     ap.add_argument('--png-pmax', type=float, default=98.0, help='Upper percentile for PNG contrast')
+    ap.add_argument('--max-pngs-per-class', type=int, default=100, help='Max PNGs to save per category (tp, tn, fp, fn) per model')
     # WandB arguments
     ap.add_argument('--use-wandb', action='store_true', help='Log results to Weights & Biases')
     ap.add_argument('--wandb-project', type=str, default='whale-call-analysis', help='WandB project name')
@@ -276,6 +277,7 @@ def main():
             else:
                 return [None] * batch_size
 
+        png_counts = {'tp': 0, 'tn': 0, 'fp': 0, 'fn': 0}
         with torch.no_grad():
             total_batches = len(test_loader)
             for batch_idx, batch in enumerate(test_loader):
@@ -300,7 +302,7 @@ def main():
                 all_paths.extend(list(paths))
                 all_meta.extend(meta_list)
 
-                # Save PNGs for this batch
+                # Save PNGs for this batch (limited)
                 probs = torch.softmax(logits, dim=1)
                 preds = torch.argmax(probs, dim=1)
                 for i in range(x.size(0)):
@@ -309,19 +311,22 @@ def main():
                     cls = 'tp' if (pred == 1 and truth == 1) else \
                           'tn' if (pred == 0 and truth == 0) else \
                           'fp' if (pred == 1 and truth == 0) else 'fn'
-                    src = Path(all_paths[-x.size(0) + i]).name
-                    overlay = f"{label} pred={pred} truth={truth} file={src}"
-                    out_path = model_dir / 'pngs' / cls / f"{Path(src).stem}.png"
-                    marker_x = None
-                    m = meta_list[i]
-                    try:
-                        if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
-                            marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
-                            marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
-                    except Exception:
+                    
+                    if png_counts[cls] < args.max_pngs_per_class:
+                        src = Path(all_paths[-x.size(0) + i]).name
+                        overlay = f"{label} pred={pred} truth={truth} file={src}"
+                        out_path = model_dir / 'pngs' / cls / f"{Path(src).stem}.png"
                         marker_x = None
-                    save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
-                             cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
+                        m = meta_list[i]
+                        try:
+                            if isinstance(m, dict) and 'crop_start' in m and 'full_T' in m and 'crop_size' in m:
+                                marker_x = int((int(m['full_T']) // 2) - int(m['crop_start']))
+                                marker_x = max(0, min(marker_x, int(m['crop_size']) - 1))
+                        except Exception:
+                            marker_x = None
+                        save_png(x[i].detach().cpu(), out_path, overlay_text=overlay, scale=int(args.png_scale),
+                                 cmap=args.png_cmap, pmin=args.png_pmin, pmax=args.png_pmax, marker_x=marker_x)
+                        png_counts[cls] += 1
             print() # new line after batch progress
 
         logits_cat = torch.cat(all_logits, dim=0)

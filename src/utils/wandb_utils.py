@@ -161,7 +161,6 @@ def log_test_metrics(
             keys=[f"{model_label} (AUC={roc_auc:.3f})"],
             title=f"ROC Curve - {model_label}",
             xname="False Positive Rate",
-            yname="True Positive Rate"
         )
         
         # PR curve plot
@@ -172,7 +171,6 @@ def log_test_metrics(
             keys=[model_label],
             title=f"Precision-Recall - {model_label}",
             xname="Recall",
-            yname="Precision"
         )
     except Exception as e:
         print(f"Warning: Could not create wandb plots for {model_label}: {e}")
