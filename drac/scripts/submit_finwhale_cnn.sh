@@ -39,6 +39,8 @@ exec > >(tee -a "$LOG_DIR/finwhale_cnn_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$L
 # Parameters (with defaults)
 POS_DIR=""
 NEG_DIR=""
+# WandB settings
+USE_WANDB="false"
 WANDB_PROJECT="finwhale_cnn"
 WANDB_GROUP="supervised_cnn"
 WANDB_ENTITY=""
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --pos-dir) POS_DIR="$2"; shift 2 ;;
     --neg-dir) NEG_DIR="$2"; shift 2 ;;
+    --use-wandb) USE_WANDB="true"; shift ;;
     --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
     --wandb-group) WANDB_GROUP="$2"; shift 2 ;;
     --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
@@ -238,19 +241,23 @@ PYTHON_CMD=(
   --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS"
   --lr "$LR" --balance "$BALANCE"
   --train-ratio "$TRAIN_RATIO" --val-ratio "$VAL_RATIO"
-  --device "$DEVICE" --use_wandb --wandb_project "$WANDB_PROJECT" --wandb_group "$WANDB_GROUP"
+  --device "$DEVICE"
   --exp_dir "$EXP_PATH" --save-path "$EXP_PATH/best.pt" --seed "$SEED"
-  --split-strategy "$SPLIT_STRATEGY" --min-gap-seconds "$MIN_GAP_SECONDS" --model "$MODEL" \
+  --split-strategy "$SPLIT_STRATEGY" --min-gap-seconds "$MIN_GAP_SECONDS" --model "$MODEL"
   --main-metric "$MAIN_METRIC"
 )
+
+# WandB arguments
+if [[ "$USE_WANDB" == "true" ]]; then
+  PYTHON_CMD+=( --use_wandb --wandb_project "$WANDB_PROJECT" --wandb_group "$WANDB_GROUP" )
+  if [[ -n "$WANDB_ENTITY" ]]; then
+    PYTHON_CMD+=( --wandb_entity "$WANDB_ENTITY" )
+  fi
+fi
 
 # Add optional crop-size if specified
 if [[ -n "$CROP_SIZE" ]]; then
   PYTHON_CMD+=( --crop-size "$CROP_SIZE" )
-fi
-
-if [[ -n "$WANDB_ENTITY" ]]; then
-  PYTHON_CMD+=( --wandb_entity "$WANDB_ENTITY" )
 fi
 
 # Ensure src is importable

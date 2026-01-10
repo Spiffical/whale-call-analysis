@@ -242,6 +242,15 @@ def main():
     except Exception as e:
         print(f"Warning: failed to save args.pkl: {e}")
 
+    # Initialize WandB
+    if args.use_wandb:
+        init_wandb(
+            args, 
+            project_name=args.wandb_project, 
+            entity=args.wandb_entity, 
+            group=args.wandb_group
+        )
+
     # Create loaders
     if args.split_strategy == 'internal':
         train_loader, val_loader, test_loader = make_dataloaders(
