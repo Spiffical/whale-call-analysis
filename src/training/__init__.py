@@ -1,5 +1,5 @@
 # Model training utilities for whale call analysis
-# Used by scripts/train_cnn.py and scripts/test_cnn.py
+# Used by scripts/train/train_cnn.py and scripts/train/test_cnn.py
 
 from .mat_dataset import FinWhaleMatDataset, make_dataloaders
 from .splits import build_entries, split_group_by_source, split_time_separated

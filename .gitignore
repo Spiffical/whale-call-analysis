@@ -50,7 +50,7 @@ results/
 wandb/
 
 # Data files (not public)
-data/
+/data/
 
 # Audio and spectrogram outputs
 *.wav
@@ -68,3 +68,10 @@ Thumbs.db
 # Logs
 *.log
 logs/
+OCEANS3_CSV_SCHEMA.html
+.gitignore
+.gitignore
+UNIFIED_LABELING_TOOL_SPEC.md
+OCEANS3_JSON_SCHEMA.md
+OCEANS3_CSV_SCHEMA.md
+trained-models/

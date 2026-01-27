@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Tuple
 
 # Ensure repo root is on sys.path so `src` is importable when running as a script
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -38,6 +38,7 @@ from src.utils.wandb_utils import (
     log_validation_metrics,
     finish_run,
 )
+from src.utils.model_utils import create_checkpoint_metadata
 
 
 class SmallCNN(nn.Module):
@@ -243,13 +244,16 @@ def main():
         print(f"Warning: failed to save args.pkl: {e}")
 
     # Initialize WandB
+    wandb_run_id = None
     if args.use_wandb:
-        init_wandb(
+        run = init_wandb(
             args, 
             project_name=args.wandb_project, 
             entity=args.wandb_entity, 
             group=args.wandb_group
         )
+        if run is not None:
+            wandb_run_id = run.id
 
     # Create loaders
     if args.split_strategy == 'internal':
@@ -369,8 +373,15 @@ def main():
         current = float(val_metrics[args.main_metric])
         if current > best_metric:
             best_metric = current
-            torch.save({'model_state': model.state_dict(), 'epoch': epoch, 'val_metrics': val_metrics, 'args': {'model': args.model, 'main_metric': args.main_metric}}, save_path)
-            print(f"  [checkpoint] Saved new best to {save_path} ({args.main_metric}={best_metric:.3f})")
+            # Create checkpoint with full versioning metadata
+            checkpoint = create_checkpoint_metadata(model, args, wandb_run_id)
+            checkpoint.update({
+                'model_state': model.state_dict(),
+                'epoch': epoch,
+                'val_metrics': val_metrics,
+            })
+            torch.save(checkpoint, save_path)
+            print(f"  [checkpoint] Saved new best to {save_path} ({args.main_metric}={best_metric:.3f}, model_id={checkpoint['model_id']})")
 
     # Final test
     # Load best checkpoint

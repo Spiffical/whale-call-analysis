@@ -13,7 +13,7 @@
 # otherwise try to resolve from the original script path
 if [[ -n "$SLURM_SUBMIT_DIR" && -f "$SLURM_SUBMIT_DIR/drac/scripts/submit_finwhale_test.sh" ]]; then
   REPO_ROOT="$SLURM_SUBMIT_DIR"
-elif [[ -n "$SLURM_SUBMIT_DIR" && -f "$SLURM_SUBMIT_DIR/scripts/test_cnn.py" ]]; then
+elif [[ -n "$SLURM_SUBMIT_DIR" && -f "$SLURM_SUBMIT_DIR/scripts/train/test_cnn.py" ]]; then
   REPO_ROOT="$SLURM_SUBMIT_DIR"
 else
   # Fallback: assume script was called with absolute path, resolve it
@@ -22,7 +22,7 @@ else
     SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
   fi
   SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd)"
-  if [[ -d "$SCRIPT_DIR/../.." && -f "$SCRIPT_DIR/../../scripts/test_cnn.py" ]]; then
+  if [[ -d "$SCRIPT_DIR/../.." && -f "$SCRIPT_DIR/../../scripts/train/test_cnn.py" ]]; then
     REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
   else
     # Last resort: assume ~/whale-call-analysis
@@ -188,7 +188,7 @@ export PYTHONPATH="$PYTHONPATH:$SLURM_TMPDIR/whale_project/src"
 cd "$SLURM_TMPDIR/whale_project"
 
 CMD=(
-  python -u scripts/test_cnn.py \
+  python -u scripts/train/test_cnn.py \
     --pos-dir "$POS_ARG" --neg-dir "$NEG_ARG" \
     --out-dir "$RUN_OUT_DIR" \
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \

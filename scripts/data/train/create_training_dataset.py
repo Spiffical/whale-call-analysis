@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fin Whale Dataset Creation Script
+Fin Whale Training Dataset Creation Script
 
 Creates training datasets from whale call annotations by:
 1. Loading annotations from Excel files
@@ -10,7 +10,9 @@ Creates training datasets from whale call annotations by:
 5. Creating an analysis report
 
 Usage:
-    python scripts/create_dataset.py --excel-file data/finwhales/calls.xlsx --output-dir output/
+    python scripts/data/train/create_training_dataset.py \
+        --excel-file data/finwhales/calls.xlsx \
+        --output-dir output/
 """
 
 import os
@@ -21,7 +23,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Ensure repo root is on sys.path so `src` is importable when running as a script
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

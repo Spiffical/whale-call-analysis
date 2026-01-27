@@ -13,7 +13,7 @@
 # otherwise try to resolve from the original script path
 if [[ -n "$SLURM_SUBMIT_DIR" && -f "$SLURM_SUBMIT_DIR/drac/scripts/submit_finwhale_cnn.sh" ]]; then
   REPO_ROOT="$SLURM_SUBMIT_DIR"
-elif [[ -n "$SLURM_SUBMIT_DIR" && -f "$SLURM_SUBMIT_DIR/scripts/train_cnn.py" ]]; then
+elif [[ -n "$SLURM_SUBMIT_DIR" && -f "$SLURM_SUBMIT_DIR/scripts/train/train_cnn.py" ]]; then
   REPO_ROOT="$SLURM_SUBMIT_DIR"
 else
   # Fallback: assume script was called with absolute path, resolve it
@@ -22,7 +22,7 @@ else
     SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
   fi
   SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd)"
-  if [[ -d "$SCRIPT_DIR/../.." && -f "$SCRIPT_DIR/../../scripts/train_cnn.py" ]]; then
+  if [[ -d "$SCRIPT_DIR/../.." && -f "$SCRIPT_DIR/../../scripts/train/train_cnn.py" ]]; then
     REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
   else
     # Last resort: assume ~/whale-call-analysis
@@ -234,7 +234,7 @@ BASE_FOLDER="finwhale-cnn-b${BATCH_SIZE}-lr${LR}-tr$(printf '%.1f' ${TRAIN_RATIO
 EXP_PATH="${EXP_DIR}/finwhale/${BASE_FOLDER}"
 mkdir -p "$EXP_PATH"
 
-PYTHON_SCRIPT="$SLURM_TMPDIR/whale_project/scripts/train_cnn.py"
+PYTHON_SCRIPT="$SLURM_TMPDIR/whale_project/scripts/train/train_cnn.py"
 PYTHON_CMD=(
   python -u -W ignore "$PYTHON_SCRIPT"
   --pos-dir "$POS_ARG" --neg-dir "$NEG_ARG"

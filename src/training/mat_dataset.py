@@ -16,6 +16,8 @@ SPECTRO_KEYS: Sequence[str] = (
     'spectrogram', 'PdB_norm', 'power_db_norm', 'PdB', 'P_db',
     'P', 'PSD', 'psd', 'Sxx', 'S', 'spec', 'power_spectrogram'
 )
+POWER_KEYS: Sequence[str] = ('P', 'Sxx', 'PSD', 'psd', 'power_spectrogram')
+DB_KEYS: Sequence[str] = ('PdB_norm', 'power_db_norm', 'PdB', 'P_db')
 FREQ_KEYS: Sequence[str] = ('frequencies', 'F', 'freqs', 'freq', 'f')
 TIME_KEYS: Sequence[str] = ('times', 'T', 'time', 't')
 
@@ -49,6 +51,16 @@ def _normalize_db_to_unit(x: np.ndarray, min_db: float = -80.0, max_db: float = 
     x = x.astype(np.float32)
     x = np.clip(x, min_db, max_db)
     return (x - min_db) / (max_db - min_db)
+
+
+def _power_to_db_norm(power: np.ndarray) -> np.ndarray:
+    power = np.abs(power.astype(np.float32))
+    max_power = float(np.max(power)) if power.size else 0.0
+    if max_power > 0:
+        normalized = power / max_power
+        normalized = np.maximum(normalized, 1e-10)
+        return 10.0 * np.log10(normalized)
+    return np.full_like(power, -100.0, dtype=np.float32)
 
 
 def _start_from_fraction(T: int, crop: int, frac_in_crop: float) -> int:
@@ -212,10 +224,18 @@ class FinWhaleMatDataset(Dataset):
     def __len__(self) -> int:
         return len(self.files)
 
-    def _load_spectrogram(self, path: Path) -> np.ndarray:
-        """Load spectrogram from MAT file (already frequency-cropped)."""
+    def _load_spectrogram_raw(self, path: Path) -> Tuple[np.ndarray, str]:
+        """Load spectrogram from MAT file (already frequency-cropped).
+
+        Returns:
+            Tuple of (spec, spec_kind) where spec_kind is 'power' or 'db'.
+        """
         data = sio.loadmat(str(path), simplify_cells=True)
-        k = _find_key(data, SPECTRO_KEYS)
+        k = _find_key(data, POWER_KEYS)
+        spec_kind = 'power'
+        if k is None:
+            k = _find_key(data, DB_KEYS) or _find_key(data, SPECTRO_KEYS)
+            spec_kind = 'db'
         if k is None:
             raise KeyError(f"No spectrogram-like key found in {path.name}")
         spec = np.asarray(data[k])
@@ -232,7 +252,7 @@ class FinWhaleMatDataset(Dataset):
             if (r, c) == (t_len, f_len):
                 spec = spec.T  # now (F, T)
         
-        return spec
+        return spec, spec_kind
 
     def _crop(self, spec: np.ndarray, is_positive: bool) -> Tuple[np.ndarray, int]:
         """Crop spectrogram to target dimensions.
@@ -273,14 +293,17 @@ class FinWhaleMatDataset(Dataset):
 
     def __getitem__(self, index: int):
         path, label = self.files[index]
-        spec = self._load_spectrogram(path)
+        spec, spec_kind = self._load_spectrogram_raw(path)
         F, T = spec.shape
-        
-        # Normalize to [0,1]
-        spec = _normalize_db_to_unit(spec, self.min_db, self.max_db)
-        
-        # Crop with augmentation
+
+        # Crop with augmentation (normalize after crop for consistent context)
         spec, start = self._crop(spec, is_positive=bool(label))
+
+        if spec_kind == 'power':
+            spec = _power_to_db_norm(spec)
+
+        # Normalize to [0,1] after cropping
+        spec = _normalize_db_to_unit(spec, self.min_db, self.max_db)
         
         # To torch [C=1, F, T]
         x = torch.from_numpy(spec).unsqueeze(0).float()

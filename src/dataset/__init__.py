@@ -1,5 +1,5 @@
 # Dataset creation utilities for whale call analysis
-# Used by scripts/create_dataset.py
+# Used by scripts/data/train/create_training_dataset.py
 
 from .call_catalog import load_whale_data, sample_calls
 from .audio import stitch_audio_files, cleanup_audio_files
