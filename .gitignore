@@ -69,9 +69,12 @@ Thumbs.db
 *.log
 logs/
 OCEANS3_CSV_SCHEMA.html
-.gitignore
-.gitignore
 UNIFIED_LABELING_TOOL_SPEC.md
 OCEANS3_JSON_SCHEMA.md
 OCEANS3_CSV_SCHEMA.md
 trained-models/
+diagnostics/
+mat_list.txt    
+neg_mat_list.txt
+scripts/data/test/prepare_test_windows.py
+scripts/data/test/prepare_trainstyle_windows.py

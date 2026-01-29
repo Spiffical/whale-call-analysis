@@ -74,6 +74,8 @@ def main():
     parser.add_argument('--no-save-chunk-audio', dest='save_chunk_audio', action='store_false',
                         help='Disable saving audio clips for each chunk')
     parser.add_argument('--edge-padding', type=float, default=2.0, help='Seconds of edge padding')
+    parser.add_argument('--renorm-per-window', action='store_true',
+                        help='Renormalize PdB_norm per 96x96 chunk (matches training normalization scope)')
     parser.add_argument('--config', type=str, default='./config/dataset_config.yaml', help='Config path (fallback)')
     parser.add_argument('--workers', type=int, default=4, help='Download workers')
 
@@ -283,6 +285,16 @@ def main():
                     chunk_PdB = np.pad(chunk_PdB, ((0, 0), (0, pad_width)), mode='edge')
                     chunk_Sxx = np.pad(chunk_Sxx, ((0, 0), (0, pad_width)), mode='constant', constant_values=0)
                 
+                # Optional: renormalize PdB per window (matches training pipeline)
+                if args.renorm_per_window:
+                    max_power = np.max(np.abs(chunk_Sxx)) if chunk_Sxx.size else 0.0
+                    if max_power > 0:
+                        norm = np.abs(chunk_Sxx) / max_power
+                        norm = np.maximum(norm, 1e-10)
+                        chunk_PdB = 10 * np.log10(norm)
+                    else:
+                        chunk_PdB = np.full_like(chunk_PdB, -100.0)
+
                 # Create unique chunk ID
                 chunk_id = f"{audio_path.stem}_w{win_idx:02d}"
                 

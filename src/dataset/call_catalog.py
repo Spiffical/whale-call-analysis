@@ -88,31 +88,42 @@ def normalize_offsets(df: pd.DataFrame) -> pd.DataFrame:
 def load_whale_data(excel_files: List[str]) -> pd.DataFrame:
     """Load and preprocess fin whale call library data from one or more Excel files"""
     all_data = []
-    
-    def _norm(name: str):
-        return name.strip().lower()
+
+    def _norm_key(name: str) -> str:
+        """Normalize column name by stripping whitespace, lowering, removing underscores/spaces."""
+        return name.strip().lower().replace(' ', '').replace('_', '')
+
+    # Map normalized variants to the canonical column names
+    _COLUMN_ALIASES = {
+        'clip id': ['clipid', 'clipidentifier'],
+        'date (utc)': ['date(utc)', 'dateutc'],
+        'begin time (s)': ['begintime(s)', 'begintimes', 'begintimess'],
+        'end time (s)': ['endtime(s)', 'endtimes', 'endtimess'],
+    }
 
     for file_path in excel_files:
         print_status(f"Loading whale call library: {file_path}", "PROGRESS")
         try:
             # Load the Excel file
             df = pd.read_excel(file_path)
-            
-            # Map columns to standard names
-            col_map = {col: _norm(col) for col in df.columns}
-            
-            # Require essential columns
-            essential = ['date (utc)', 'begin time (s)', 'end time (s)', 'clip id']
-            found_essential = []
-            for ess in essential:
-                for orig, norm in col_map.items():
-                    if ess in norm:
-                        df = df.rename(columns={orig: ess})
-                        found_essential.append(ess)
+
+            # Build rename map using aliases
+            rename_map = {}
+            for canonical, aliases in _COLUMN_ALIASES.items():
+                # Skip if canonical already present
+                if canonical in df.columns:
+                    continue
+                for col in df.columns:
+                    if _norm_key(col) in aliases:
+                        rename_map[col] = canonical
                         break
-            
-            if len(set(found_essential)) < len(essential):
-                missing = set(essential) - set(found_essential)
+            if rename_map:
+                df = df.rename(columns=rename_map)
+
+            # Check essential columns are present
+            essential = ['date (utc)', 'begin time (s)', 'end time (s)', 'clip id']
+            missing = [e for e in essential if e not in df.columns]
+            if missing:
                 print_status(f"Missing essential columns in {file_path}: {missing}", "WARNING")
                 continue
 

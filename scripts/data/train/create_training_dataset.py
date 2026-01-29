@@ -37,8 +37,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Create spectrogram dataset from whale call annotations"
     )
-    parser.add_argument('--excel-file', type=str, required=True, 
-                        help='Path to Excel file with whale call annotations')
+    parser.add_argument('--excel-file', type=str, nargs='+', required=True,
+                        help='Path(s) to Excel file(s) with whale call annotations')
     parser.add_argument('--output-dir', type=str, default='whale_dataset', 
                         help='Output directory for spectrograms')
     parser.add_argument('--sample-size', type=int, default=None,
@@ -55,7 +55,9 @@ def main():
                         help='Path to configuration file')
     parser.add_argument('--skip-onc-spectrograms', action='store_true',
                         help='Skip downloading ONC reference spectrograms')
-    
+    parser.add_argument('--tar-output', action='store_true',
+                        help='Create a tar archive of mat_files and neg_mat_files after processing')
+
     args = parser.parse_args()
     
     # Load environment variables (for ONC_TOKEN)
@@ -68,10 +70,10 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Create generator
+    # 1. Create generator (supports multiple Excel files)
     generator = SpectrogramDatasetGenerator(
         onc_token=onc_token,
-        excel_file=args.excel_file,
+        excel_files=args.excel_file,
         config_path=args.config
     )
     
@@ -112,6 +114,19 @@ def main():
         audio_cleaned_up=args.cleanup_audio
     )
     
+    # 7. Optionally tar up MAT files
+    if args.tar_output:
+        import tarfile
+        tar_path = output_dir / "all_mat_files.tar"
+        print_status(f"Creating tar archive: {tar_path}", "PROGRESS")
+        with tarfile.open(tar_path, 'w') as tar:
+            for dirname in ['mat_files', 'neg_mat_files']:
+                dir_path = output_dir / dirname
+                if dir_path.exists():
+                    tar.add(str(dir_path), arcname=dirname)
+                    print_status(f"  Added {dirname}/", "SUCCESS")
+        print_status(f"Tar archive created: {tar_path} ({tar_path.stat().st_size / (1024**3):.1f} GB)", "SUCCESS")
+
     print_status(f"Dataset created successfully in {output_dir}", "SUCCESS")
 
 
