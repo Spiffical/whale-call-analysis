@@ -47,8 +47,8 @@ def main():
                         help='Process all calls (ignore --sample-size)')
 
     filter_group = parser.add_argument_group("Sampling filters")
-    filter_group.add_argument('--min-duration', type=float, default=1.0,
-                              help='Minimum call duration in seconds (default: 1.0)')
+    filter_group.add_argument('--min-duration', type=float, default=0.2,
+                              help='Minimum call duration in seconds (default: 0.2)')
     filter_group.add_argument('--max-duration', type=float, default=30.0,
                               help='Maximum call duration in seconds (default: 30.0)')
 
