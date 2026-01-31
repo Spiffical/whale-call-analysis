@@ -59,6 +59,9 @@ def create_analysis_report(
     negative_count = sum(1 for k in custom_spectrograms.keys() if "_neg_" in k)
     positive_count = total_specs - negative_count
 
+    freq_span = spectrogram_generator.freq_lims[1] - spectrogram_generator.freq_lims[0]
+    context_duration = config.get('temporal_context', {}).get('context_duration', 40.0)
+
     report = {
         "dataset_metadata": {
             "creation_date": datetime.now().isoformat(),
@@ -96,16 +99,16 @@ def create_analysis_report(
                 "exact_duration_enforcement": config.get('temporal_context', {}).get('exact_duration_enforcement', True)
             },
             "frequency_filtering": {
-                "whale_call_range_hz": [5, 100],
+                "whale_call_range_hz": [spectrogram_generator.freq_lims[0], spectrogram_generator.freq_lims[1]],
                 "post_processing_crop": "applied after spectrogram generation",
                 "actual_freq_bins": f"{actual_dimensions[0]} bins" if actual_dimensions else "varies per spectrogram",
-                "actual_freq_resolution_hz": f"~{95/actual_dimensions[0]:.2f} Hz per bin" if actual_dimensions else "varies per spectrogram"
+                "actual_freq_resolution_hz": f"~{freq_span/actual_dimensions[0]:.2f} Hz per bin" if actual_dimensions else "varies per spectrogram"
             },
             "spectrogram_dimensions": {
                 "actual_dimensions": f"{actual_dimensions[0]} x {actual_dimensions[1]} (freq x time)" if actual_dimensions else "varies per spectrogram",
-                "actual_time_resolution_ms": f"~{40000/actual_dimensions[1]:.1f} ms per bin" if actual_dimensions else "varies per spectrogram",
-                "frequency_range_hz": [5, 100],
-                "temporal_context_s": 40.0,
+                "actual_time_resolution_ms": f"~{(context_duration * 1000)/actual_dimensions[1]:.1f} ms per bin" if actual_dimensions else "varies per spectrogram",
+                "frequency_range_hz": [spectrogram_generator.freq_lims[0], spectrogram_generator.freq_lims[1]],
+                "temporal_context_s": context_duration,
                 "augmentation_ready": "centered context allows sliding window cropping"
             }
         },
@@ -136,8 +139,8 @@ def create_analysis_report(
             "key_parameters": {
                 "win_dur": spectrogram_generator.win_dur,
                 "overlap": spectrogram_generator.overlap,
-                "freq_crop": [5, 100],
-                "context_duration": config.get('temporal_context', {}).get('context_duration', 40.0),
+                "freq_crop": [spectrogram_generator.freq_lims[0], spectrogram_generator.freq_lims[1]],
+                "context_duration": context_duration,
                 "normalization": "10*log10(abs(spectrogram/max(spectrogram)))"
             }
         }

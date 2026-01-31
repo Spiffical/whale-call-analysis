@@ -71,18 +71,7 @@ class SpectrogramDatasetGenerator:
         self.downloader = HydrophoneDownloader(onc_token, ".")
         
         # Setup spectrogram generator using config
-        spec_cfg = self.config.get('custom_spectrograms', {})
-        freq_lims = spec_cfg.get('frequency_limits', {'min': 5, 'max': 100})
-        color_lims = spec_cfg.get('color_limits', {'min': -60, 'max': 0})
-        
-        self.spectrogram_generator = SpectrogramGenerator(
-            win_dur=spec_cfg.get('window_duration', 0.1),
-            overlap=spec_cfg.get('overlap', 0.9),
-            freq_lims=(freq_lims.get('min', 5), freq_lims.get('max', 100)),
-            log_freq=spec_cfg.get('log_frequency', False),
-            clim=(color_lims.get('min', -60), color_lims.get('max', 0)),
-            colormap=spec_cfg.get('colormap', 'viridis')
-        )
+        self._init_spectrogram_generator()
         
         self.whale_data = None
         
@@ -96,6 +85,53 @@ class SpectrogramDatasetGenerator:
         except Exception as e:
             print_status(f"Warning: Could not load config from {config_path}: {e}. Using defaults.", "WARNING")
             return {}
+
+    def _init_spectrogram_generator(self) -> None:
+        """Initialize spectrogram generator from current config."""
+        spec_cfg = self.config.get('custom_spectrograms', {})
+        freq_lims = spec_cfg.get('frequency_limits', {'min': 5, 'max': 100})
+        color_lims = spec_cfg.get('color_limits', {'min': -60, 'max': 0})
+
+        self.spectrogram_generator = SpectrogramGenerator(
+            win_dur=spec_cfg.get('window_duration', 0.1),
+            overlap=spec_cfg.get('overlap', 0.9),
+            freq_lims=(freq_lims.get('min', 5), freq_lims.get('max', 100)),
+            log_freq=spec_cfg.get('log_frequency', False),
+            clim=(color_lims.get('min', -60), color_lims.get('max', 0)),
+            colormap=spec_cfg.get('colormap', 'viridis')
+        )
+
+    def apply_overrides(
+        self,
+        win_dur: Optional[float] = None,
+        overlap: Optional[float] = None,
+        freq_range: Optional[Tuple[float, float]] = None,
+        ml_context: Optional[float] = None
+    ) -> None:
+        """Apply config overrides and rebuild the spectrogram generator if needed."""
+        updated_spec = False
+        if win_dur is not None:
+            self.config.setdefault('custom_spectrograms', {})['window_duration'] = float(win_dur)
+            updated_spec = True
+        if overlap is not None:
+            self.config.setdefault('custom_spectrograms', {})['overlap'] = float(overlap)
+            updated_spec = True
+        if freq_range is not None:
+            if len(freq_range) != 2:
+                raise ValueError("freq_range must be (min, max)")
+            freq_min, freq_max = float(freq_range[0]), float(freq_range[1])
+            if freq_min >= freq_max:
+                raise ValueError("freq_range min must be < max")
+            self.config.setdefault('custom_spectrograms', {})['frequency_limits'] = {
+                'min': freq_min,
+                'max': freq_max,
+            }
+            updated_spec = True
+        if ml_context is not None:
+            self.config.setdefault('temporal_context', {})['context_duration'] = float(ml_context)
+
+        if updated_spec:
+            self._init_spectrogram_generator()
 
     def _create_safe_call_id(self, clip_id: str, call: pd.Series) -> str:
         """Create a safe call ID for filenames."""
@@ -124,6 +160,7 @@ class SpectrogramDatasetGenerator:
                 - generate_negatives: Generate negative samples (default: False)
                 - negatives_per_call: Number of negatives per call (default: 1)
                 - neg_margin: Margin around calls for negatives (default: 2.0)
+                - neg_context: Context duration for negatives (default: ml_context)
         
         Returns:
             Tuple of (spectrogram_files dict, failed_calls list, dimensions tuple)
@@ -141,6 +178,9 @@ class SpectrogramDatasetGenerator:
         generate_negatives = kwargs.get('generate_negatives', False)
         negatives_per_call = kwargs.get('negatives_per_call', 1)
         neg_margin = kwargs.get('neg_margin', 2.0)
+        neg_context = kwargs.get('neg_context', None)
+        if neg_context is None:
+            neg_context = ml_context
         
         spectrogram_files = {}
         failed_calls = []
@@ -223,7 +263,7 @@ class SpectrogramDatasetGenerator:
                 # 3. Process Negative Samples
                 if generate_negatives:
                     neg_windows = sample_negative_windows_for_file(
-                        clip_id, 300.0, ml_context, calls_by_file, 
+                        clip_id, 300.0, neg_context, calls_by_file, 
                         len(calls_in_file) * negatives_per_call, margin=neg_margin
                     )
                     for n_idx, (start, end) in enumerate(neg_windows):
@@ -231,7 +271,7 @@ class SpectrogramDatasetGenerator:
                         try:
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, calls_in_file.iloc[0]['device_code'],
-                                start, end, ml_context, audio_dir
+                                start, end, neg_context, audio_dir
                             )
                             if audio_data is not None:
                                 res = self._generate_and_save(

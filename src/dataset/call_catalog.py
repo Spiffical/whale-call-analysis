@@ -100,6 +100,11 @@ def load_whale_data(excel_files: List[str]) -> pd.DataFrame:
         'begin time (s)': ['begintime(s)', 'begintimes', 'begintimess'],
         'end time (s)': ['endtime(s)', 'endtimes', 'endtimess'],
     }
+    _FREQ_ALIASES = {
+        'low freq': ['lowfreqhz', 'lowfreq', 'lowfrequencyhz', 'lowfrequency', 'lowfrehz'],
+        'high freq': ['highfreqhz', 'highfreq', 'highfrequencyhz', 'highfrequency'],
+        'peak freq': ['peakfreqhz', 'peakfreq', 'peakfrequencyhz', 'peakfrequency'],
+    }
 
     for file_path in excel_files:
         print_status(f"Loading whale call library: {file_path}", "PROGRESS")
@@ -116,6 +121,15 @@ def load_whale_data(excel_files: List[str]) -> pd.DataFrame:
                 for col in df.columns:
                     if _norm_key(col) in aliases:
                         rename_map[col] = canonical
+                        break
+            # Frequency column aliases (optional)
+            norm_to_orig = { _norm_key(c): c for c in df.columns }
+            for canonical, aliases in _FREQ_ALIASES.items():
+                if canonical in df.columns:
+                    continue
+                for alias in aliases:
+                    if alias in norm_to_orig:
+                        rename_map[norm_to_orig[alias]] = canonical
                         break
             if rename_map:
                 df = df.rename(columns=rename_map)
@@ -199,8 +213,21 @@ def sample_calls(
 
     # Duration filter
     df['duration'] = df['end time (s)'] - df['begin time (s)']
-    df = df[(df['duration'] >= min_duration) & (df['duration'] <= max_duration)]
+    if min_duration is not None or max_duration is not None:
+        min_dur = -np.inf if min_duration is None else min_duration
+        max_dur = np.inf if max_duration is None else max_duration
+        df = df[(df['duration'] >= min_dur) & (df['duration'] <= max_dur)]
     print_status(f"Filter: Duration {min_duration}-{max_duration}s ({len(df)} remaining)", "INFO")
+
+    if freq_range is not None:
+        min_f, max_f = freq_range
+        if 'low freq' in df.columns and 'high freq' in df.columns:
+            df['low freq'] = pd.to_numeric(df['low freq'], errors='coerce')
+            df['high freq'] = pd.to_numeric(df['high freq'], errors='coerce')
+            df = df[(df['low freq'] >= min_f) & (df['high freq'] <= max_f)]
+            print_status(f"Filter: Freq {min_f}-{max_f} Hz ({len(df)} remaining)", "INFO")
+        else:
+            print_status("Freq filter skipped: columns not found in annotations", "WARNING")
 
     if df.empty:
         print_status("No calls match the specified filters!", "WARNING")

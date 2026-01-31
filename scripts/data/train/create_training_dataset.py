@@ -39,19 +39,44 @@ def main():
     )
     parser.add_argument('--excel-file', type=str, nargs='+', required=True,
                         help='Path(s) to Excel file(s) with whale call annotations')
-    parser.add_argument('--output-dir', type=str, default='whale_dataset', 
+    parser.add_argument('--output-dir', type=str, default='whale_dataset',
                         help='Output directory for spectrograms')
     parser.add_argument('--sample-size', type=int, default=None,
                         help='Number of calls to sample (default: all)')
-    parser.add_argument('--process-all', action='store_true', 
+    parser.add_argument('--process-all', action='store_true',
                         help='Process all calls (ignore --sample-size)')
-    parser.add_argument('--generate-negatives', action='store_true', 
+
+    filter_group = parser.add_argument_group("Sampling filters")
+    filter_group.add_argument('--min-duration', type=float, default=1.0,
+                              help='Minimum call duration in seconds (default: 1.0)')
+    filter_group.add_argument('--max-duration', type=float, default=30.0,
+                              help='Maximum call duration in seconds (default: 30.0)')
+
+    config_group = parser.add_argument_group("Config overrides")
+    config_group.add_argument('--win-dur', type=float, default=None,
+                              help='Override config custom_spectrograms.window_duration (seconds)')
+    config_group.add_argument('--overlap', type=float, default=None,
+                              help='Override config custom_spectrograms.overlap')
+    config_group.add_argument('--ml-context', type=float, default=None,
+                              help='Override config temporal_context.context_duration (seconds)')
+    config_group.add_argument('--freq-range', type=float, nargs=2, default=None,
+                              metavar=('MIN_HZ', 'MAX_HZ'),
+                              help='Override config frequency limits and filter calls by [min max] Hz')
+
+    parser.add_argument('--generate-negatives', action='store_true',
                         help='Generate negative (no-call) samples')
-    parser.add_argument('--cleanup-audio', action='store_true', 
+    parser.add_argument('--negatives-per-call', type=int, default=1,
+                        help='Number of negative windows per call (default: 1)')
+    parser.add_argument('--neg-context', type=float, default=None,
+                        help='Context duration for negatives in seconds (default: --ml-context)')
+    parser.add_argument('--neg-margin', type=float, default=2.0,
+                        help='Safety margin around calls when sampling negatives (seconds)')
+
+    parser.add_argument('--cleanup-audio', action='store_true',
                         help='Delete audio files after processing to save space')
-    parser.add_argument('--workers', type=int, default=2, 
+    parser.add_argument('--workers', type=int, default=2,
                         help='Number of parallel workers')
-    parser.add_argument('--config', type=str, default='./config/dataset_config.yaml', 
+    parser.add_argument('--config', type=str, default='./config/dataset_config.yaml',
                         help='Path to configuration file')
     parser.add_argument('--skip-onc-spectrograms', action='store_true',
                         help='Skip downloading ONC reference spectrograms')
@@ -83,23 +108,48 @@ def main():
     
     # 3. Sample calls
     sample_size = None if args.process_all else args.sample_size
-    sampled_calls = sample_calls(whale_data, sample_size=sample_size)
+    freq_range = tuple(args.freq_range) if args.freq_range else None
+    sampled_calls = sample_calls(
+        whale_data,
+        sample_size=sample_size,
+        min_duration=args.min_duration,
+        max_duration=args.max_duration,
+        freq_range=freq_range,
+    )
+
+    # 4. Apply config overrides (if provided)
+    generator.apply_overrides(
+        win_dur=args.win_dur,
+        overlap=args.overlap,
+        freq_range=freq_range,
+        ml_context=args.ml_context,
+    )
     
-    # 4. Generate spectrograms
+    # 5. Generate spectrograms
+    gen_kwargs = {
+        "max_workers": args.workers,
+        "cleanup_audio": args.cleanup_audio,
+        "generate_negatives": args.generate_negatives,
+        "negatives_per_call": args.negatives_per_call,
+        "neg_margin": args.neg_margin,
+    }
+    if args.ml_context is not None:
+        gen_kwargs["ml_context"] = args.ml_context
+    if args.neg_context is not None:
+        gen_kwargs["neg_context"] = args.neg_context
+
     specs, failed, dims = generator.generate_spectrograms(
         sampled_calls, 
         output_dir,
-        max_workers=args.workers,
-        cleanup_audio=args.cleanup_audio,
-        generate_negatives=args.generate_negatives
+        **gen_kwargs
     )
     
-    # 5. Optionally download ONC reference spectrograms
+    # 6. Optionally download ONC reference spectrograms
     onc_specs = {}
     if not args.skip_onc_spectrograms:
         onc_specs = download_onc_spectrograms(generator.onc, sampled_calls, output_dir)
     
-    # 6. Create analysis report
+    # 7. Create analysis report
     create_analysis_report(
         output_dir, 
         generator.excel_files, 
@@ -114,7 +164,7 @@ def main():
         audio_cleaned_up=args.cleanup_audio
     )
     
-    # 7. Optionally tar up MAT files
+    # 8. Optionally tar up MAT files
     if args.tar_output:
         import tarfile
         tar_path = output_dir / "all_mat_files.tar"
