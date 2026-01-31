@@ -73,8 +73,16 @@ UNIFIED_LABELING_TOOL_SPEC.md
 OCEANS3_JSON_SCHEMA.md
 OCEANS3_CSV_SCHEMA.md
 trained-models/
-diagnostics/
+diagnostics/compare_train_newprep.py
+!scripts/diagnostics/test_spectrogram_backend.py
 mat_list.txt    
 neg_mat_list.txt
 scripts/data/test/prepare_test_windows.py
 scripts/data/test/prepare_trainstyle_windows.py
+scripts/diagnostics/compare_newtrain_newtest.py
+.gitignore
+scripts/diagnostics/compare_train_test_pipeline.py
+scripts/diagnostics/verify_pipeline_consistency.py
+scripts/diagnostics/visual_compare_train_newprep.py
+.gitignore
+scripts/diagnostics/compare_train_newprep.py
