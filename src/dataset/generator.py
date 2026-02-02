@@ -44,7 +44,8 @@ class SpectrogramDatasetGenerator:
                  onc_token: str, 
                  excel_file: Optional[str] = None,
                  config_path: str = "./config/dataset_config.yaml",
-                 excel_files: Optional[List[str]] = None):
+                 excel_files: Optional[List[str]] = None,
+                 show_onc_warnings: bool = False):
         """Initialize the generator with ONC credentials and configuration.
         
         Args:
@@ -53,7 +54,8 @@ class SpectrogramDatasetGenerator:
             config_path: Path to YAML configuration file
             excel_files: List of Excel files (alternative to excel_file)
         """
-        self.onc = ONC(onc_token)
+        self.show_onc_warnings = show_onc_warnings
+        self.onc = ONC(onc_token, showWarning=show_onc_warnings)
         self.onc_token = onc_token
         
         # Determine Excel files to process
@@ -69,6 +71,14 @@ class SpectrogramDatasetGenerator:
         
         # Initialize sub-modules from onc_hydrophone_data
         self.downloader = HydrophoneDownloader(onc_token, ".")
+        try:
+            self.downloader.onc.showWarning = show_onc_warnings
+        except Exception:
+            pass
+        try:
+            self.downloader.request_manager.onc.showWarning = show_onc_warnings
+        except Exception:
+            pass
         
         # Setup spectrogram generator using config
         self._init_spectrogram_generator()
@@ -227,7 +237,7 @@ class SpectrogramDatasetGenerator:
                 audio_path = audio_dir / clip_id
                 if not audio_path.exists():
                     # Thread-safe download using a local ONC client
-                    local_onc = ONC(self.onc_token)
+                    local_onc = ONC(self.onc_token, showWarning=self.show_onc_warnings)
                     local_onc.outPath = str(audio_dir)
                     local_onc.getFile(clip_id)
                 
@@ -254,7 +264,8 @@ class SpectrogramDatasetGenerator:
                             # Retrieve stitched audio
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, call['device_code'],
-                                desired_start, desired_end, ext_context, audio_dir
+                                desired_start, desired_end, ext_context, audio_dir,
+                                show_onc_warnings=self.show_onc_warnings
                             )
                             
                             if audio_data is not None:
@@ -285,7 +296,8 @@ class SpectrogramDatasetGenerator:
                             desired_end = end + edge_context
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, calls_in_file.iloc[0]['device_code'],
-                                desired_start, desired_end, ext_context, audio_dir
+                                desired_start, desired_end, ext_context, audio_dir,
+                                show_onc_warnings=self.show_onc_warnings
                             )
                             if audio_data is not None:
                                 res_path, res_dims = self._generate_and_save(

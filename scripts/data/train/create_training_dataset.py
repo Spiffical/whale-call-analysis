@@ -124,7 +124,8 @@ def main():
     generator = SpectrogramDatasetGenerator(
         onc_token=onc_token,
         excel_files=args.excel_file,
-        config_path=args.config
+        config_path=args.config,
+        show_onc_warnings=args.show_onc_warnings
     )
 
     def _get_peak_rss_mb() -> float:

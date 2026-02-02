@@ -83,7 +83,8 @@ def stitch_audio_files(
     desired_start: float,
     desired_end: float,
     context_duration: float,
-    audio_dir: Path
+    audio_dir: Path,
+    show_onc_warnings: bool = True
 ) -> Optional[np.ndarray]:
     """Stitch audio files when context window spans multiple files."""
     try:
@@ -110,7 +111,7 @@ def stitch_audio_files(
                 return f.read(count)
                 
         # Case 2: Spans across files
-        thread_onc = ONC(onc_token)
+        thread_onc = ONC(onc_token, showWarning=show_onc_warnings)
         thread_onc.outPath = str(audio_dir)
         
         # Get timestamp of current file to find neighbors
