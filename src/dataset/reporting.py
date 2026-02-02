@@ -10,8 +10,30 @@ from typing import List, Dict, Optional, Tuple
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def print_status(message: str, status: str = "INFO"):
+VERBOSE = True
+USE_TQDM = False
+_TQDM = None
+
+
+def configure_output(verbose: bool = True, use_tqdm: bool = False) -> None:
+    """Configure console output verbosity and tqdm integration."""
+    global VERBOSE, USE_TQDM, _TQDM
+    VERBOSE = verbose
+    USE_TQDM = use_tqdm
+    _TQDM = None
+    if use_tqdm:
+        try:
+            from tqdm import tqdm  # Local import to avoid hard dependency at import time
+            _TQDM = tqdm
+        except Exception:
+            USE_TQDM = False
+            _TQDM = None
+
+
+def print_status(message: str, status: str = "INFO", force: bool = False):
     """Print formatted status messages"""
+    if not VERBOSE and status in {"INFO", "PROGRESS"} and not force:
+        return
     colors = {
         "INFO": "\033[94m",       # Blue
         "SUCCESS": "\033[92m",    # Green
@@ -30,10 +52,16 @@ def print_status(message: str, status: str = "INFO"):
     }.get(status, "")
     
     color = colors.get(status, colors["INFO"])
-    print(f"{color}{prefix}{message}{colors['RESET']}")
+    line = f"{color}{prefix}{message}{colors['RESET']}"
+    if USE_TQDM and _TQDM is not None:
+        _TQDM.write(line)
+    else:
+        print(line)
 
 def print_header(title: str):
     """Print formatted section header"""
+    if not VERBOSE:
+        return
     print("\n" + "="*80)
     print(f" {title} ".center(80, "="))
     print("="*80 + "\n")
@@ -49,7 +77,8 @@ def create_analysis_report(
     config: Dict,
     failed_calls: List[Dict] = None,
     actual_dimensions: Optional[Tuple[int, int]] = None,
-    audio_cleaned_up: bool = False
+    audio_cleaned_up: bool = False,
+    edge_context_s: Optional[float] = None
 ):
     """Create a comprehensive analysis report in JSON format"""
     print_header("CREATING ANALYSIS REPORT")
@@ -94,6 +123,7 @@ def create_analysis_report(
             },
             "temporal_context": {
                 "context_duration_s": config.get('temporal_context', {}).get('context_duration', 40.0),
+                "edge_context_s": edge_context_s,
                 "padding_method": config.get('temporal_context', {}).get('padding_method', 'centered'),
                 "multi_file_stitching": config.get('temporal_context', {}).get('multi_file_stitching', True),
                 "exact_duration_enforcement": config.get('temporal_context', {}).get('exact_duration_enforcement', True)

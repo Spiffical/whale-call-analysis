@@ -74,6 +74,8 @@ class SpectrogramDatasetGenerator:
         self._init_spectrogram_generator()
         
         self.whale_data = None
+        self.last_clip_id = None
+        self.last_file_index = None
         
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file."""
@@ -145,6 +147,8 @@ class SpectrogramDatasetGenerator:
     def generate_spectrograms(self,
                               whale_calls: pd.DataFrame,
                               output_dir: Path,
+                              show_progress: bool = True,
+                              edge_context: float = 0.0,
                               **kwargs) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]]]:
         """
         Generate spectrograms for whale calls.
@@ -156,6 +160,8 @@ class SpectrogramDatasetGenerator:
                 - max_workers: Number of parallel workers (default: 2)
                 - cleanup_audio: Delete audio after processing (default: False)
                 - ml_context: Context duration in seconds (default: from config)
+                - show_progress: Display a progress bar (default: True)
+                - edge_context: Seconds of extra context on each side (trimmed after spectrogram)
                 - generate_positives: Generate positive samples (default: True)
                 - generate_negatives: Generate negative samples (default: False)
                 - negatives_per_call: Number of negatives per call (default: 1)
@@ -207,6 +213,8 @@ class SpectrogramDatasetGenerator:
             d.mkdir(parents=True, exist_ok=True)
 
         def _process_file(clip_id, calls_in_file, idx):
+            self.last_clip_id = clip_id
+            self.last_file_index = idx
             thread_id = threading.current_thread().name
             print_status(f"[{thread_id}] File {idx}/{total_files}: {clip_id}", "PROGRESS")
             
@@ -239,24 +247,27 @@ class SpectrogramDatasetGenerator:
                             begin = call['begin time (s)']
                             end = call['end time (s)']
                             padding = (ml_context - (end - begin)) / 2
+                            ext_context = ml_context + (2 * edge_context)
+                            desired_start = (begin - padding) - edge_context
+                            desired_end = (end + padding) + edge_context
                             
                             # Retrieve stitched audio
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, call['device_code'],
-                                begin - padding, end + padding, ml_context, audio_dir
+                                desired_start, desired_end, ext_context, audio_dir
                             )
                             
                             if audio_data is not None:
                                 # Generate and save
-                                res = self._generate_and_save(
-                                    audio_data, fs, call_id, png_dir, mat_dir
+                                res_path, res_dims = self._generate_and_save(
+                                    audio_data, fs, call_id, png_dir, mat_dir,
+                                    edge_context=edge_context,
+                                    target_duration=ml_context
                                 )
-                                if res:
-                                    local_specs[call_id] = str(res)
-                                    if local_dims is None:
-                                        # Compute dims once for the report
-                                        f_bins, t_bins, _, _ = self.spectrogram_generator.compute_spectrogram(audio_data, fs)
-                                        local_dims = (len(f_bins), len(t_bins))
+                                if res_path:
+                                    local_specs[call_id] = str(res_path)
+                                    if local_dims is None and res_dims:
+                                        local_dims = res_dims
                         except Exception as e:
                             local_failed.append({'call_id': call_id, 'clip_id': clip_id, 'reason': str(e)})
 
@@ -269,16 +280,23 @@ class SpectrogramDatasetGenerator:
                     for n_idx, (start, end) in enumerate(neg_windows):
                         neg_id = f"{clip_id}_neg_{n_idx}"
                         try:
+                            ext_context = neg_context + (2 * edge_context)
+                            desired_start = start - edge_context
+                            desired_end = end + edge_context
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, calls_in_file.iloc[0]['device_code'],
-                                start, end, neg_context, audio_dir
+                                desired_start, desired_end, ext_context, audio_dir
                             )
                             if audio_data is not None:
-                                res = self._generate_and_save(
-                                    audio_data, fs, neg_id, neg_png_dir, neg_mat_dir
+                                res_path, res_dims = self._generate_and_save(
+                                    audio_data, fs, neg_id, neg_png_dir, neg_mat_dir,
+                                    edge_context=edge_context,
+                                    target_duration=neg_context
                                 )
-                                if res:
-                                    local_specs[neg_id] = str(res)
+                                if res_path:
+                                    local_specs[neg_id] = str(res_path)
+                                    if local_dims is None and res_dims:
+                                        local_dims = res_dims
                         except Exception as e:
                             local_failed.append({'call_id': neg_id, 'clip_id': clip_id, 'reason': str(e)})
 
@@ -293,13 +311,29 @@ class SpectrogramDatasetGenerator:
             
             return local_specs, local_failed, local_dims
 
+        pbar = None
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                pbar = tqdm(total=total_files, desc="Processing audio files", unit="file")
+            except Exception:
+                pbar = None
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_process_file, cid, df, i+1) for i, (cid, df) in enumerate(file_groups)]
+            futures = {executor.submit(_process_file, cid, df, i+1): cid for i, (cid, df) in enumerate(file_groups)}
             for future in concurrent.futures.as_completed(futures):
                 s, f, d = future.result()
                 spectrogram_files.update(s)
                 failed_calls.extend(f)
                 if d: actual_dimensions = d
+                if pbar:
+                    clip_id = futures.get(future, "")
+                    if clip_id:
+                        pbar.set_postfix_str(clip_id)
+                    pbar.update(1)
+
+        if pbar:
+            pbar.close()
                 
         return spectrogram_files, failed_calls, actual_dimensions
 
@@ -308,10 +342,13 @@ class SpectrogramDatasetGenerator:
                           fs: float, 
                           call_id: str, 
                           png_dir: Path, 
-                          mat_dir: Path) -> Optional[Path]:
+                          mat_dir: Path,
+                          edge_context: float = 0.0,
+                          target_duration: Optional[float] = None) -> Tuple[Optional[Path], Optional[Tuple[int, int]]]:
         """Generate and save spectrogram.
         
         The MAT file is saved with frequency-cropped data so training doesn't need to re-crop.
+        Returns the saved path and (freq_bins, time_bins) dimensions when available.
         """
         try:
             import scipy.io
@@ -341,14 +378,35 @@ class SpectrogramDatasetGenerator:
                 Sxx_cropped = Sxx
                 power_db_cropped = power_db_norm
             
-            # 3. Save PNG if enabled (use cropped data)
+            # 3. Optionally trim edge context in time domain
+            if edge_context and target_duration:
+                t_start = float(edge_context)
+                t_end = t_start + float(target_duration)
+                time_mask = (times >= t_start) & (times <= t_end)
+                if not np.any(time_mask):
+                    t0 = int(np.searchsorted(times, t_start, side="left"))
+                    t1 = int(np.searchsorted(times, t_end, side="right"))
+                    t0 = max(0, min(t0, len(times) - 1))
+                    t1 = max(t0 + 1, min(t1, len(times)))
+                    time_mask = np.zeros_like(times, dtype=bool)
+                    time_mask[t0:t1] = True
+                times = times[time_mask] - t_start
+                Sxx_cropped = Sxx_cropped[:, time_mask]
+                power_db_cropped = power_db_cropped[:, time_mask]
+
+            # 4. Save PNG if enabled (use cropped data)
             if spec_cfg.get('output_formats', {}).get('plots', True):
                 png_path = png_dir / f"{call_id}.png"
                 self.spectrogram_generator.plot_spectrogram(
                     freqs_cropped, times, power_db_cropped, title=f"Whale Call: {call_id}", save_path=png_path
                 )
+                try:
+                    import matplotlib.pyplot as plt
+                    plt.close('all')
+                except Exception:
+                    pass
             
-            # 4. Save MAT with CROPPED data so training data is already frequency-limited
+            # 5. Save MAT with CROPPED data so training data is already frequency-limited
             if spec_cfg.get('output_formats', {}).get('matlab', True):
                 mat_path = mat_dir / f"{call_id}.mat"
                 scipy.io.savemat(str(mat_path), {
@@ -360,10 +418,12 @@ class SpectrogramDatasetGenerator:
                     'freq_max': freq_max,
                 })
             
+            dims = (len(freqs_cropped), len(times))
+
             # Return path to PNG if it exists, else MAT
             if (png_dir / f"{call_id}.png").exists():
-                return png_dir / f"{call_id}.png"
-            return mat_dir / f"{call_id}.mat"
+                return png_dir / f"{call_id}.png", dims
+            return mat_dir / f"{call_id}.mat", dims
         except Exception as e:
             print_status(f"Generation failed for {call_id}: {e}", "WARNING")
-            return None
+            return None, None

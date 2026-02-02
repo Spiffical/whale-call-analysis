@@ -18,6 +18,10 @@ Usage:
 import os
 import sys
 import argparse
+import logging
+import signal
+import warnings
+import resource
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.dataset.generator import SpectrogramDatasetGenerator
 from src.dataset.call_catalog import load_whale_data, sample_calls
 from src.dataset.spectrogram import download_onc_spectrograms
-from src.dataset.reporting import print_status, create_analysis_report
+from src.dataset.reporting import print_status, create_analysis_report, configure_output
 
 
 def main():
@@ -82,8 +86,29 @@ def main():
                         help='Skip downloading ONC reference spectrograms')
     parser.add_argument('--tar-output', action='store_true',
                         help='Create a tar archive of mat_files and neg_mat_files after processing')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable verbose logging output')
+    parser.add_argument('--show-onc-warnings', action='store_true',
+                        help='Show ONC warning logs (default: suppressed)')
+    parser.add_argument('--no-progress', action='store_true',
+                        help='Disable the progress bar')
+    parser.add_argument('--edge-context', type=float, default=2.0,
+                        help='Seconds of padding before/after each window to reduce edge artifacts (trimmed after spectrogram)')
 
     args = parser.parse_args()
+
+    show_progress = not args.no_progress
+    configure_output(verbose=args.verbose, use_tqdm=show_progress)
+
+    # Reduce noisy library logs unless explicitly requested
+    base_level = logging.INFO if args.verbose else logging.WARNING
+    logging.getLogger().setLevel(base_level)
+    if not args.verbose:
+        logging.getLogger("onc_hydrophone_data").setLevel(logging.WARNING)
+    if not args.show_onc_warnings:
+        for logger_name in ("onc", "onc.onc", "onc.client"):
+            logging.getLogger(logger_name).setLevel(logging.ERROR)
+        warnings.filterwarnings("ignore", module="onc")
     
     # Load environment variables (for ONC_TOKEN)
     load_dotenv()
@@ -101,6 +126,35 @@ def main():
         excel_files=args.excel_file,
         config_path=args.config
     )
+
+    def _get_peak_rss_mb() -> float:
+        try:
+            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            return rss_kb / 1024.0
+        except Exception:
+            return 0.0
+
+    def _handle_signal(signum, frame):
+        try:
+            signame = signal.Signals(signum).name
+        except Exception:
+            signame = str(signum)
+        last_clip = getattr(generator, "last_clip_id", None) or "unknown"
+        last_idx = getattr(generator, "last_file_index", None)
+        msg = f"Received {signame}. Last file: {last_clip}"
+        if last_idx is not None:
+            msg += f" (index {last_idx})."
+        else:
+            msg += "."
+        rss_mb = _get_peak_rss_mb()
+        if rss_mb:
+            msg += f" Peak RSS ~{rss_mb:.0f} MB."
+        msg += " If you see 'Killed' with no traceback, it's likely the OS OOM killer; try fewer workers or smaller window/context."
+        print_status(msg, "ERROR", force=True)
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
     
     # 2. Load whale call data
     whale_data = load_whale_data(generator.excel_files)
@@ -141,6 +195,8 @@ def main():
     specs, failed, dims = generator.generate_spectrograms(
         sampled_calls, 
         output_dir,
+        show_progress=show_progress,
+        edge_context=args.edge_context,
         **gen_kwargs
     )
     
@@ -161,7 +217,8 @@ def main():
         generator.config,
         failed_calls=failed, 
         actual_dimensions=dims, 
-        audio_cleaned_up=args.cleanup_audio
+        audio_cleaned_up=args.cleanup_audio,
+        edge_context_s=args.edge_context
     )
     
     # 8. Optionally tar up MAT files
