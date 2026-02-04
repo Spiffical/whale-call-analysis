@@ -207,7 +207,7 @@ def main():
     ap.add_argument('--exp_dir', type=str, default='exp/finwhale_cnn', help='Experiment directory for logs and checkpoints')
     ap.add_argument('--use-amp', action='store_true', help='Enable mixed precision on CUDA')
     # Leakage-safe split options
-    ap.add_argument('--split-strategy', type=str, default='internal', choices=['internal', 'group_by_source', 'time_separated'])
+    ap.add_argument('--split-strategy', type=str, default='time_separated', choices=['internal', 'group_by_source', 'time_separated'])
     ap.add_argument('--min-gap-seconds', type=float, default=120.0, help='For time_separated strategy')
     # Model selection
     ap.add_argument('--model', type=str, default='SmallCNN', help='Model name: SmallCNN, DeepCNN[:w64:d8], resnet18/34/50')
