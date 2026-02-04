@@ -78,6 +78,8 @@ def main():
 
     parser.add_argument('--cleanup-audio', action='store_true',
                         help='Delete audio files after processing to save space')
+    parser.add_argument('--audio-cache-dir', type=str, default=None,
+                        help='Directory to cache downloaded audio files (default: <output-dir>/audio)')
     parser.add_argument('--workers', type=int, default=2,
                         help='Number of parallel workers')
     parser.add_argument('--config', type=str, default='./config/dataset_config.yaml',
@@ -119,6 +121,7 @@ def main():
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    audio_cache_dir = Path(args.audio_cache_dir) if args.audio_cache_dir else None
 
     # 1. Create generator (supports multiple Excel files)
     generator = SpectrogramDatasetGenerator(
@@ -179,6 +182,17 @@ def main():
         freq_range=freq_range,
         ml_context=args.ml_context,
     )
+
+    backend_info = generator.probe_spectrogram_backend()
+    backend_used = backend_info.get("backend_used") or "unknown"
+    backend_requested = backend_info.get("backend_requested") or "auto"
+    backend_device = backend_info.get("backend_device")
+    backend_msg = f"Spectrogram backend: {backend_used} (requested: {backend_requested})"
+    if backend_device:
+        backend_msg += f", device={backend_device}"
+    if backend_info.get("backend_error"):
+        backend_msg += f" [probe failed: {backend_info['backend_error']}]"
+    print_status(backend_msg, "INFO", force=True)
     
     # 5. Generate spectrograms
     gen_kwargs = {
@@ -187,6 +201,7 @@ def main():
         "generate_negatives": args.generate_negatives,
         "negatives_per_call": args.negatives_per_call,
         "neg_margin": args.neg_margin,
+        "audio_cache_dir": audio_cache_dir,
     }
     if args.ml_context is not None:
         gen_kwargs["ml_context"] = args.ml_context
@@ -219,7 +234,8 @@ def main():
         failed_calls=failed, 
         actual_dimensions=dims, 
         audio_cleaned_up=args.cleanup_audio,
-        edge_context_s=args.edge_context
+        edge_context_s=args.edge_context,
+        audio_dir=audio_cache_dir
     )
     
     # 8. Optionally tar up MAT files

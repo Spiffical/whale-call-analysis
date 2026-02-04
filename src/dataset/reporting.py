@@ -66,6 +66,26 @@ def print_header(title: str):
     print(f" {title} ".center(80, "="))
     print("="*80 + "\n")
 
+def _format_window_type(window_type) -> Optional[str]:
+    if window_type is None:
+        return None
+    if isinstance(window_type, tuple):
+        name = str(window_type[0]) if window_type else "custom"
+        if len(window_type) > 1:
+            params = ", ".join(str(p) for p in window_type[1:])
+            return f"{name}({params})"
+        return name
+    if isinstance(window_type, str):
+        return window_type
+    return "custom"
+
+def _format_scaling(scaling: Optional[str]) -> str:
+    if scaling == "density":
+        return "power spectral density (PSD)"
+    if scaling == "spectrum":
+        return "power spectrum"
+    return scaling or "unknown"
+
 def create_analysis_report(
     output_dir: Path,
     excel_files: List[str],
@@ -78,7 +98,8 @@ def create_analysis_report(
     failed_calls: List[Dict] = None,
     actual_dimensions: Optional[Tuple[int, int]] = None,
     audio_cleaned_up: bool = False,
-    edge_context_s: Optional[float] = None
+    edge_context_s: Optional[float] = None,
+    audio_dir: Optional[Path] = None
 ):
     """Create a comprehensive analysis report in JSON format"""
     print_header("CREATING ANALYSIS REPORT")
@@ -90,6 +111,23 @@ def create_analysis_report(
 
     freq_span = spectrogram_generator.freq_lims[1] - spectrogram_generator.freq_lims[0]
     context_duration = config.get('temporal_context', {}).get('context_duration', 40.0)
+
+    backend_requested = getattr(spectrogram_generator, "backend", None)
+    backend_used = getattr(spectrogram_generator, "_last_backend", None)
+    backend_device = getattr(spectrogram_generator, "_last_device", None)
+    scaling_used = getattr(spectrogram_generator, "_last_scaling", None) or getattr(spectrogram_generator, "scaling", None)
+    window_desc = _format_window_type(getattr(spectrogram_generator, "window_type", None))
+    if backend_used == "torch":
+        fft_method = "torchaudio.transforms.Spectrogram"
+    elif backend_used == "scipy":
+        fft_method = "scipy.signal.spectrogram"
+    else:
+        fft_method = "unknown"
+    if window_desc:
+        fft_method += f" (window={window_desc})"
+    scaling_desc = _format_scaling(scaling_used)
+
+    resolved_audio_dir = Path(audio_dir) if audio_dir else (output_dir / "audio")
 
     report = {
         "dataset_metadata": {
@@ -117,8 +155,11 @@ def create_analysis_report(
                     "max": spectrogram_generator.clim[1]
                 },
                 "log_frequency_scale": spectrogram_generator.log_freq,
-                "fft_method": "scipy.signal.spectrogram with Hann window",
-                "scaling": "power spectral density (PSD)",
+                "backend_requested": backend_requested,
+                "backend_used": backend_used,
+                "backend_device": backend_device,
+                "fft_method": fft_method,
+                "scaling": scaling_desc,
                 "normalization": "10*log10(abs(P/max(P)))"
             },
             "temporal_context": {
@@ -154,7 +195,7 @@ def create_analysis_report(
             }
         },
         "output_locations": {
-            "audio_directory": str(output_dir / "audio") if not audio_cleaned_up else f"{output_dir / 'audio'} (cleaned up)",
+            "audio_directory": str(resolved_audio_dir) if not audio_cleaned_up else f"{resolved_audio_dir} (cleaned up)",
             "mat_files_directory": str(output_dir / "mat_files") if config.get('custom_spectrograms', {}).get('output_formats', {}).get('matlab', False) else None,
             "png_files_directory": str(output_dir / "png_files") if config.get('custom_spectrograms', {}).get('output_formats', {}).get('plots', True) else None,
             "neg_mat_files_directory": str(output_dir / "neg_mat_files") if config.get('custom_spectrograms', {}).get('output_formats', {}).get('matlab', False) else None,
@@ -175,6 +216,9 @@ def create_analysis_report(
             }
         }
     }
+
+    if backend_used == "torch":
+        report["reproduction_instructions"]["required_libraries"].extend(["torch", "torchaudio"])
     
     # Save main dataset report
     dataset_report_file = output_dir / "dataset_documentation.json"

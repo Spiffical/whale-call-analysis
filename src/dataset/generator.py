@@ -113,6 +113,28 @@ class SpectrogramDatasetGenerator:
             colormap=spec_cfg.get('colormap', 'viridis')
         )
 
+    def probe_spectrogram_backend(self, sample_rate: int = 64000) -> Dict[str, Any]:
+        """Probe which spectrogram backend (torch vs scipy) is actually used."""
+        sg = self.spectrogram_generator
+        info: Dict[str, Any] = {
+            "backend_requested": getattr(sg, "backend", None),
+            "backend_used": None,
+            "backend_device": None,
+            "scaling_used": None,
+            "probe_sample_rate_hz": sample_rate,
+        }
+        try:
+            win_length, nfft, _, _ = sg._resolve_fft_params(sample_rate)
+            audio_len = max(int(win_length), int(nfft), 1)
+            dummy_audio = np.zeros(audio_len, dtype=np.float32)
+            sg.compute_spectrogram(dummy_audio, sample_rate)
+            info["backend_used"] = getattr(sg, "_last_backend", None)
+            info["backend_device"] = getattr(sg, "_last_device", None)
+            info["scaling_used"] = getattr(sg, "_last_scaling", None)
+        except Exception as exc:
+            info["backend_error"] = str(exc)
+        return info
+
     def apply_overrides(
         self,
         win_dur: Optional[float] = None,
@@ -159,6 +181,7 @@ class SpectrogramDatasetGenerator:
                               output_dir: Path,
                               show_progress: bool = True,
                               edge_context: float = 0.0,
+                              audio_cache_dir: Optional[Path] = None,
                               **kwargs) -> Tuple[Dict[str, str], List[Dict], Optional[Tuple[int, int]]]:
         """
         Generate spectrograms for whale calls.
@@ -166,6 +189,7 @@ class SpectrogramDatasetGenerator:
         Args:
             whale_calls: DataFrame with whale call annotations
             output_dir: Output directory for spectrograms
+            audio_cache_dir: Optional directory to cache downloaded audio files
             **kwargs: Additional options:
                 - max_workers: Number of parallel workers (default: 2)
                 - cleanup_audio: Delete audio after processing (default: False)
@@ -203,7 +227,7 @@ class SpectrogramDatasetGenerator:
         actual_dimensions = None
         
         output_dir = Path(output_dir)
-        audio_dir = output_dir / "audio"
+        audio_dir = Path(audio_cache_dir) if audio_cache_dir else (output_dir / "audio")
         audio_dir.mkdir(parents=True, exist_ok=True)
         
         # Group calls by audio file
@@ -235,7 +259,9 @@ class SpectrogramDatasetGenerator:
             try:
                 # 1. Ensure audio is downloaded
                 audio_path = audio_dir / clip_id
-                if not audio_path.exists():
+                if audio_path.exists() and audio_path.stat().st_size > 0:
+                    print_status(f"[{thread_id}] Using cached audio: {clip_id}", "INFO")
+                else:
                     # Thread-safe download using a local ONC client
                     local_onc = ONC(self.onc_token, showWarning=self.show_onc_warnings)
                     local_onc.outPath = str(audio_dir)
