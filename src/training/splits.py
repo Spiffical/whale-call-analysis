@@ -1,4 +1,5 @@
 import random
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -36,42 +37,99 @@ def split_group_by_source(entries: List[dict], train_ratio: float, val_ratio: fl
 
 def split_time_separated(entries: List[dict], train_ratio: float, val_ratio: float, seed: int, min_gap_seconds: float) -> Dict[str, List[dict]]:
     rng = random.Random(seed)
-    entries = list(entries)
-    rng.shuffle(entries)
 
-    split_map: Dict[str, List[dict]] = {'train': [], 'val': [], 'test': []}
-    n = len(entries)
-    t_train = int(n * train_ratio)
-    t_val = int(n * val_ratio)
+    split_names = ['train', 'val', 'test']
+    split_map: Dict[str, List[dict]] = {k: [] for k in split_names}
 
-    def violates(target: str, e: dict) -> bool:
-        if e['start'] is None:
-            return False
-        center = float(e['start']) + float(e['dur'] or 0.0) * 0.5
-        src = e['src']
-        for split, items in split_map.items():
-            if split == target:
-                continue
-            for it in items:
-                if it['src'] != src or it['start'] is None:
-                    continue
-                oc = float(it['start']) + float(it['dur'] or 0.0) * 0.5
-                if abs(center - oc) < min_gap_seconds:
-                    return True
-        return False
-
+    # Separate entries by label/time metadata.
+    pos_timed: List[dict] = []
+    pos_untimed: List[dict] = []
+    neg_entries: List[dict] = []
     for e in entries:
-        order = ['train', 'val', 'test']
-        order.sort(key=lambda s: (len(split_map[s]) / max(1, {'train': t_train, 'val': t_val, 'test': n - t_train - t_val}[s])))
-        placed = False
-        for s in order:
-            if not violates(s, e):
-                split_map[s].append(e)
-                placed = True
-                break
-        if not placed:
-            sizes = sorted(['train', 'val', 'test'], key=lambda s: len(split_map[s]))
-            split_map[sizes[0]].append(e)
+        if int(e.get('label', 0)) == 1:
+            if e.get('start') is None:
+                pos_untimed.append(e)
+            else:
+                pos_timed.append(e)
+        else:
+            neg_entries.append(e)
+
+    # Targets are stratified by class to avoid extreme skew in val/test.
+    n_pos = len(pos_timed) + len(pos_untimed)
+    n_neg = len(neg_entries)
+    pos_targets = {
+        'train': int(n_pos * train_ratio),
+        'val': int(n_pos * val_ratio),
+        'test': max(0, n_pos - int(n_pos * train_ratio) - int(n_pos * val_ratio)),
+    }
+    neg_targets = {
+        'train': int(n_neg * train_ratio),
+        'val': int(n_neg * val_ratio),
+        'test': max(0, n_neg - int(n_neg * train_ratio) - int(n_neg * val_ratio)),
+    }
+    pos_counts = {k: 0 for k in split_names}
+    neg_counts = {k: 0 for k in split_names}
+
+    def _center(e: dict) -> float:
+        return float(e['start']) + 0.5 * float(e.get('dur') or 0.0)
+
+    def _choose_split(counts: Dict[str, int], targets: Dict[str, int]) -> str:
+        # Prefer the split with the largest remaining deficit.
+        deficits = [(int(targets[s]) - int(counts[s]), -int(counts[s]), rng.random(), s) for s in split_names]
+        deficits.sort(reverse=True)
+        return deficits[0][3]
+
+    # Cluster positives per source so centers within min_gap_seconds stay together.
+    by_src: Dict[str, List[dict]] = defaultdict(list)
+    for e in pos_timed:
+        by_src[str(e['src'])].append(e)
+
+    pos_clusters: List[List[dict]] = []
+    for src, src_entries in by_src.items():
+        src_entries = sorted(src_entries, key=_center)
+        if not src_entries:
+            continue
+        cluster: List[dict] = [src_entries[0]]
+        prev_c = _center(src_entries[0])
+        for e in src_entries[1:]:
+            c = _center(e)
+            if abs(c - prev_c) < float(min_gap_seconds):
+                cluster.append(e)
+            else:
+                pos_clusters.append(cluster)
+                cluster = [e]
+            prev_c = c
+        if cluster:
+            pos_clusters.append(cluster)
+
+    rng.shuffle(pos_clusters)
+    for cluster in pos_clusters:
+        split = _choose_split(pos_counts, pos_targets)
+        split_map[split].extend(cluster)
+        pos_counts[split] += len(cluster)
+
+    # Untimed positives: keep same-source entries together and assign by deficit.
+    pos_untimed_by_src: Dict[str, List[dict]] = defaultdict(list)
+    for e in pos_untimed:
+        pos_untimed_by_src[str(e['src'])].append(e)
+    untimed_groups = list(pos_untimed_by_src.values())
+    rng.shuffle(untimed_groups)
+    for group in untimed_groups:
+        split = _choose_split(pos_counts, pos_targets)
+        split_map[split].extend(group)
+        pos_counts[split] += len(group)
+
+    # Negatives: assign grouped by source to reduce cross-split background leakage.
+    neg_by_src: Dict[str, List[dict]] = defaultdict(list)
+    for e in neg_entries:
+        neg_by_src[str(e['src'])].append(e)
+    neg_groups = list(neg_by_src.values())
+    rng.shuffle(neg_groups)
+    for group in neg_groups:
+        split = _choose_split(neg_counts, neg_targets)
+        split_map[split].extend(group)
+        neg_counts[split] += len(group)
+
     return split_map
 
 

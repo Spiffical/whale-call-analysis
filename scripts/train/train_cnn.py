@@ -11,9 +11,12 @@ Supports class imbalance via either:
 """
 
 import argparse
+import csv
+import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -179,6 +182,13 @@ def get_device(arg: str) -> torch.device:
     return torch.device(arg)
 
 
+def _dataset_label_counts(ds: FinWhaleMatDataset) -> dict:
+    labels = [int(lbl) for _, lbl in ds.files]
+    pos = int(sum(1 for x in labels if x == 1))
+    neg = int(sum(1 for x in labels if x == 0))
+    return {"total": int(len(labels)), "pos": pos, "neg": neg}
+
+
 def main():
     ap = argparse.ArgumentParser(description="Train CNN on Fin Whale MAT spectrograms")
     ap.add_argument('--pos-dir', type=str, required=True, help='Directory with positive MAT files')
@@ -209,6 +219,8 @@ def main():
     # Leakage-safe split options
     ap.add_argument('--split-strategy', type=str, default='time_separated', choices=['internal', 'group_by_source', 'time_separated'])
     ap.add_argument('--min-gap-seconds', type=float, default=120.0, help='For time_separated strategy')
+    ap.add_argument('--center-bias-sigma-frac', type=float, default=0.25,
+                    help='Positive crop jitter strength in train/eval-augment mode (fraction of half-range)')
     # Model selection
     ap.add_argument('--model', type=str, default='SmallCNN', help='Model name: SmallCNN, DeepCNN[:w64:d8], resnet18/34/50')
     # Main metric selection
@@ -245,6 +257,7 @@ def main():
 
     # Initialize WandB
     wandb_run_id = None
+    wandb_run_url = None
     if args.use_wandb:
         run = init_wandb(
             args, 
@@ -254,6 +267,10 @@ def main():
         )
         if run is not None:
             wandb_run_id = run.id
+            try:
+                wandb_run_url = run.url
+            except Exception:
+                wandb_run_url = None
 
     # Create loaders
     if args.split_strategy == 'internal':
@@ -270,6 +287,7 @@ def main():
             max_db=args.max_db,
             balance=args.balance,
             seed=args.seed,
+            center_bias_sigma_frac=args.center_bias_sigma_frac,
         )
     else:
         # Build leakage-safe splits
@@ -294,12 +312,15 @@ def main():
         to_list = lambda lst: [(Path(e['path']), int(e['label'])) for e in lst]
         train_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='train', crop_size=crop_size,
                                       min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                      center_bias_sigma_frac=args.center_bias_sigma_frac,
                                       file_list=to_list(sp['train']))
         val_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='val', crop_size=crop_size,
                                     min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                    center_bias_sigma_frac=args.center_bias_sigma_frac,
                                     file_list=to_list(sp['val']))
         test_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='test', crop_size=crop_size,
                                      min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                     center_bias_sigma_frac=args.center_bias_sigma_frac,
                                      file_list=to_list(sp['test']))
 
         # Build loaders
@@ -337,6 +358,10 @@ def main():
     scaler = torch.cuda.amp.GradScaler() if args.use_amp and device.type == 'cuda' else None
 
     best_metric = -1.0
+    best_epoch = -1
+    best_val_metrics = None
+    best_model_id = None
+    history_rows = []
     save_path = Path(args.save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -349,6 +374,24 @@ def main():
         print(f"[epoch {epoch}] train loss {train_loss:.4f} | val loss {val_loss:.4f} | "
               f"train acc {train_metrics['acc']:.3f} f1 {train_metrics['f1']:.3f} auc {train_metrics['auc']:.3f} | "
               f"val acc {val_metrics['acc']:.3f} f1 {val_metrics['f1']:.3f} auc {val_metrics['auc']:.3f} | {dt:.1f}s")
+
+        history_rows.append({
+            "epoch": int(epoch),
+            "epoch_time_sec": float(dt),
+            "train_loss": float(train_loss),
+            "val_loss": float(val_loss),
+            "train_acc": float(train_metrics["acc"]),
+            "train_precision": float(train_metrics["precision"]),
+            "train_recall": float(train_metrics["recall"]),
+            "train_f1": float(train_metrics["f1"]),
+            "train_auc": float(train_metrics["auc"]),
+            "val_acc": float(val_metrics["acc"]),
+            "val_precision": float(val_metrics["precision"]),
+            "val_recall": float(val_metrics["recall"]),
+            "val_f1": float(val_metrics["f1"]),
+            "val_auc": float(val_metrics["auc"]),
+            "val_main_metric": float(val_metrics[args.main_metric]),
+        })
 
         # Log to wandb
         if args.use_wandb:
@@ -373,6 +416,8 @@ def main():
         current = float(val_metrics[args.main_metric])
         if current > best_metric:
             best_metric = current
+            best_epoch = int(epoch)
+            best_val_metrics = {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in val_metrics.items()}
             # Create checkpoint with full versioning metadata
             checkpoint = create_checkpoint_metadata(model, args, wandb_run_id)
             checkpoint.update({
@@ -381,6 +426,7 @@ def main():
                 'val_metrics': val_metrics,
             })
             torch.save(checkpoint, save_path)
+            best_model_id = checkpoint.get('model_id')
             print(f"  [checkpoint] Saved new best to {save_path} ({args.main_metric}={best_metric:.3f}, model_id={checkpoint['model_id']})")
 
     # Final test
@@ -404,6 +450,59 @@ def main():
             'ft_test_auc': test_metrics['auc'],
         }, use_wandb=True)
         finish_run()
+
+    # Persist local experiment artifacts for sweep-level analysis.
+    try:
+        train_counts = _dataset_label_counts(train_loader.dataset)  # type: ignore[arg-type]
+        val_counts = _dataset_label_counts(val_loader.dataset)  # type: ignore[arg-type]
+        test_counts = _dataset_label_counts(test_loader.dataset)  # type: ignore[arg-type]
+
+        history_path = exp_dir / "metrics_history.csv"
+        fieldnames = [
+            "epoch", "epoch_time_sec",
+            "train_loss", "val_loss",
+            "train_acc", "train_precision", "train_recall", "train_f1", "train_auc",
+            "val_acc", "val_precision", "val_recall", "val_f1", "val_auc", "val_main_metric",
+        ]
+        with open(history_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in history_rows:
+                writer.writerow(row)
+
+        summary = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "args": vars(args),
+            "wandb": {
+                "run_id": wandb_run_id,
+                "run_url": wandb_run_url,
+                "project": args.wandb_project if args.use_wandb else None,
+                "group": args.wandb_group if args.use_wandb else None,
+            },
+            "dataset_counts": {
+                "train": train_counts,
+                "val": val_counts,
+                "test": test_counts,
+            },
+            "best": {
+                "main_metric": args.main_metric,
+                "value": float(best_metric),
+                "epoch": int(best_epoch),
+                "val_metrics": best_val_metrics,
+                "model_id": best_model_id,
+                "checkpoint_path": str(save_path),
+            },
+            "final_test": {
+                "loss": float(test_loss),
+                "metrics": {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in test_metrics.items()},
+            },
+            "history_rows": int(len(history_rows)),
+        }
+        with open(exp_dir / "run_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"Saved run artifacts: {history_path}, {exp_dir / 'run_summary.json'}")
+    except Exception as e:
+        print(f"Warning: failed to write run artifacts: {e}")
 
 
 if __name__ == '__main__':

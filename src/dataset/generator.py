@@ -201,6 +201,9 @@ class SpectrogramDatasetGenerator:
                 - negatives_per_call: Number of negatives per call (default: 1)
                 - neg_margin: Margin around calls for negatives (default: 2.0)
                 - neg_context: Context duration for negatives (default: ml_context)
+                - neg_strategy: 'random' or 'tiled' (default: random)
+                - neg_step_seconds: Step for tiled negatives (default: context duration)
+                - max_negatives_per_file: Optional cap per source clip
         
         Returns:
             Tuple of (spectrogram_files dict, failed_calls list, dimensions tuple)
@@ -219,6 +222,9 @@ class SpectrogramDatasetGenerator:
         negatives_per_call = kwargs.get('negatives_per_call', 1)
         neg_margin = kwargs.get('neg_margin', 2.0)
         neg_context = kwargs.get('neg_context', None)
+        neg_strategy = kwargs.get('neg_strategy', 'random')
+        neg_step_seconds = kwargs.get('neg_step_seconds', None)
+        max_negatives_per_file = kwargs.get('max_negatives_per_file', None)
         if neg_context is None:
             neg_context = ml_context
         
@@ -310,9 +316,15 @@ class SpectrogramDatasetGenerator:
 
                 # 3. Process Negative Samples
                 if generate_negatives:
+                    requested_negatives = len(calls_in_file) * negatives_per_call
+                    if max_negatives_per_file is not None:
+                        requested_negatives = min(int(max_negatives_per_file), int(requested_negatives))
                     neg_windows = sample_negative_windows_for_file(
                         clip_id, 300.0, neg_context, calls_by_file, 
-                        len(calls_in_file) * negatives_per_call, margin=neg_margin
+                        requested_negatives,
+                        margin=neg_margin,
+                        strategy=neg_strategy,
+                        step_seconds=neg_step_seconds,
                     )
                     for n_idx, (start, end) in enumerate(neg_windows):
                         neg_id = f"{clip_id}_neg_{n_idx}"

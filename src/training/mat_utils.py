@@ -4,8 +4,11 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple, List, Iterator
 
-FILENAME_RE_COMMA = re.compile(r"^(?P<id>[^,]+),(?P<start>[\d\.]+)s,(?P<dur>[\d\.]+)s(?:,.*)?$")
-FILENAME_RE_UNDERSCORE = re.compile(r"^(?P<id>.+?)_(?P<start>[\d\.]+)s_(?P<dur>[\d\.]+)s(?:_.*)?$")
+# Positive samples are encoded as: <clip>_<start>s_<end>s[_suffix].mat
+# (legacy comma-separated form is also supported).
+FILENAME_RE_COMMA = re.compile(r"^(?P<id>[^,]+),(?P<start>[\d\.]+)s,(?P<end>[\d\.]+)s(?:,.*)?$")
+FILENAME_RE_UNDERSCORE = re.compile(r"^(?P<id>.+?)_(?P<start>[\d\.]+)s_(?P<end>[\d\.]+)s(?:_.*)?$")
+NEGATIVE_RE = re.compile(r"^(?P<id>.+?)\.wav_neg_(?P<idx>\d+)(?:_.*)?$")
 
 
 def parse_mat_filename(filename: str) -> Tuple[str, Optional[float], Optional[float]]:
@@ -22,6 +25,10 @@ def parse_mat_filename(filename: str) -> Tuple[str, Optional[float], Optional[fl
     if name.lower().endswith('.mat'):
         name = name[:-4]
 
+    neg = NEGATIVE_RE.match(name)
+    if neg:
+        return neg.group("id"), None, None
+
     m = FILENAME_RE_UNDERSCORE.match(name)
     if not m:
         m = FILENAME_RE_COMMA.match(name)
@@ -37,9 +44,19 @@ def parse_mat_filename(filename: str) -> Tuple[str, Optional[float], Optional[fl
     except Exception:
         start_s = None
     try:
-        dur_s = float(m.group('dur'))
+        end_s = float(m.group('end'))
     except Exception:
+        end_s = None
+
+    # Most MAT names store start/end. Keep backward compatibility with any
+    # duration-like second field by falling back when end < start.
+    dur_s: Optional[float]
+    if start_s is None or end_s is None:
         dur_s = None
+    elif end_s >= start_s:
+        dur_s = end_s - start_s
+    else:
+        dur_s = end_s
     return src_id, start_s, dur_s
 
 

@@ -381,6 +381,26 @@ def _sample_paths(paths: Sequence[Path], n: int, seed: int) -> List[Path]:
     return rng.sample(list(paths), n)
 
 
+def _resolve_sample_paths(paths: Sequence[Path], base_dir: Path) -> Tuple[List[Path], int]:
+    """Resolve sampled paths when split files use stale absolute prefixes.
+
+    If a sampled path does not exist, try resolving by basename in base_dir.
+    Returns (resolved_paths, unresolved_count).
+    """
+    resolved: List[Path] = []
+    unresolved = 0
+    for p in paths:
+        if p.exists():
+            resolved.append(p)
+            continue
+        fallback = base_dir / p.name
+        if fallback.exists():
+            resolved.append(fallback)
+        else:
+            unresolved += 1
+    return resolved, unresolved
+
+
 def _load_name_list(path: Optional[Path]) -> List[str]:
     if not path or not path.exists():
         return []
@@ -701,6 +721,15 @@ def audit(config: AuditConfig) -> str:
         else:
             raise SystemExit("Random sampling requires split files or full scan. Use --use-fixed-samples or --scan-full.")
 
+    # Resolve stale absolute paths from split files by basename against current dirs.
+    pos_samples, unresolved_pos = _resolve_sample_paths(pos_samples, config.pos_dir)
+    neg_samples, unresolved_neg = _resolve_sample_paths(neg_samples, config.neg_dir)
+    if unresolved_pos > 0 or unresolved_neg > 0:
+        _log(
+            f"Sample path resolution: unresolved_pos={unresolved_pos}, unresolved_neg={unresolved_neg} "
+            f"(dropped from normalization/augmentation checks)"
+        )
+
     if config.copy_sample and config.sample_out_dir:
         _log(f"Copying samples to {config.sample_out_dir} ...")
         _copy_sample(pos_samples, neg_samples, config.sample_out_dir)
@@ -741,6 +770,8 @@ def audit(config: AuditConfig) -> str:
     clip_total = 0
 
     # Augmentation stats
+    center_outside = 0
+    center_total = 0
     peak_outside = 0
     peak_total = 0
     peak_offset_abs = []
@@ -786,15 +817,20 @@ def audit(config: AuditConfig) -> str:
 
         # Augmentation: only positives
         if label == 1:
+            center = T // 2
             peak = _compute_peak_time(spec_db)
             if peak is not None:
-                center = T // 2
                 peak_offset_abs.append(abs(peak - center) / max(1, center))
-                for _ in range(config.n_augment):
-                    _, start = ds._crop(spec, is_positive=True)
-                    inside = (peak >= start) and (peak < start + target_t)
+            for _ in range(config.n_augment):
+                _, start = ds._crop(spec, is_positive=True)
+                inside_center = (center >= start) and (center < start + target_t)
+                center_total += 1
+                if not inside_center:
+                    center_outside += 1
+                if peak is not None:
+                    inside_peak = (peak >= start) and (peak < start + target_t)
                     peak_total += 1
-                    if not inside:
+                    if not inside_peak:
                         peak_outside += 1
 
         # Normalized stats: use dataset transform
@@ -908,11 +944,22 @@ def audit(config: AuditConfig) -> str:
     lines.append("")
 
     lines.append("## Augmentation Checks (Positives)")
+    if center_total > 0:
+        center_inside_pct = 100.0 * (center_total - center_outside) / center_total
+        lines.append(
+            f"- assumed call-center bin inside crop: {center_inside_pct:.3f}% "
+            f"({center_total - center_outside}/{center_total})"
+        )
+    else:
+        lines.append("- assumed call-center bin inside crop: N/A")
     if peak_total > 0:
         outside_pct = 100.0 * peak_outside / peak_total
-        lines.append(f"- peak inside crop: {100.0 - outside_pct:.3f}% ({peak_total - peak_outside}/{peak_total})")
+        lines.append(
+            f"- dominant-energy peak inside crop (heuristic): "
+            f"{100.0 - outside_pct:.3f}% ({peak_total - peak_outside}/{peak_total})"
+        )
     else:
-        lines.append("- peak inside crop: N/A (no valid peaks)")
+        lines.append("- dominant-energy peak inside crop (heuristic): N/A (no valid peaks)")
     if peak_offset_abs:
         lines.append(f"- peak offset from center (fraction of half-range): min={min(peak_offset_abs):.4f} mean={np.mean(peak_offset_abs):.4f} max={max(peak_offset_abs):.4f}")
     if crop_center_offset_frac:

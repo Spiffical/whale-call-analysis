@@ -965,6 +965,11 @@ def main():
     results_for_tracker = results
     if args.export_crops and not args.export_all:
         results_for_tracker = [r for r in results if r['file_id'] in export_info]
+        print_status(
+            "Predictions JSON is filtered to exported windows only. "
+            "Use --export-all to keep all inference windows in output-json.",
+            "WARNING",
+        )
 
     # Create prediction tracker
     tracker = UnifiedPredictionTracker(args.output_json)

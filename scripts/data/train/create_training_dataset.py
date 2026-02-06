@@ -75,6 +75,12 @@ def main():
                         help='Context duration for negatives in seconds (default: --ml-context)')
     parser.add_argument('--neg-margin', type=float, default=2.0,
                         help='Safety margin around calls when sampling negatives (seconds)')
+    parser.add_argument('--neg-strategy', type=str, default='random', choices=['random', 'tiled'],
+                        help="Negative sampling strategy: random or tiled free-interval windows")
+    parser.add_argument('--neg-step-seconds', type=float, default=None,
+                        help='Step size for tiled negative windows (seconds, default: neg context duration)')
+    parser.add_argument('--max-negatives-per-file', type=int, default=None,
+                        help='Optional cap on negative windows per source clip')
 
     parser.add_argument('--cleanup-audio', action='store_true',
                         help='Delete audio files after processing to save space')
@@ -201,6 +207,9 @@ def main():
         "generate_negatives": args.generate_negatives,
         "negatives_per_call": args.negatives_per_call,
         "neg_margin": args.neg_margin,
+        "neg_strategy": args.neg_strategy,
+        "neg_step_seconds": args.neg_step_seconds,
+        "max_negatives_per_file": args.max_negatives_per_file,
         "audio_cache_dir": audio_cache_dir,
     }
     if args.ml_context is not None:

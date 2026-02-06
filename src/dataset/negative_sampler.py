@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import random
-from typing import List, Tuple, Dict
-from src.dataset.reporting import print_status
+from typing import List, Tuple, Dict, Optional
 
 def compute_free_intervals(
     occupied_intervals: List[Tuple[float, float]], 
@@ -42,44 +41,102 @@ def compute_free_intervals(
         
     return free
 
+
+def enumerate_negative_windows_for_file(
+    clip_id: str,
+    duration: float,
+    context_duration: float,
+    calls_by_file: Dict[str, List[Tuple[float, float]]],
+    margin: float = 2.0,
+    step_seconds: Optional[float] = None,
+) -> List[Tuple[float, float]]:
+    """Enumerate candidate negative windows from free intervals.
+
+    By default, uses non-overlapping windows (step = context_duration). Set
+    step_seconds smaller for denser candidates.
+    """
+    occupied = calls_by_file.get(clip_id, [])
+    free_intervals = compute_free_intervals(occupied, duration, margin=margin)
+    candidates = [i for i in free_intervals if (i[1] - i[0]) >= context_duration]
+    if not candidates:
+        return []
+
+    step = float(step_seconds) if step_seconds is not None else float(context_duration)
+    if step <= 0:
+        step = float(context_duration)
+
+    windows: List[Tuple[float, float]] = []
+    for start_i, end_i in candidates:
+        max_start = end_i - context_duration
+        if max_start < start_i:
+            continue
+        pos = float(start_i)
+        while pos <= max_start + 1e-9:
+            windows.append((pos, pos + context_duration))
+            pos += step
+        # Always include the rightmost valid window to cover interval edge.
+        if windows and windows[-1][0] < max_start - 1e-9:
+            windows.append((max_start, max_start + context_duration))
+    return windows
+
 def sample_negative_windows_for_file(
     clip_id: str,
     duration: float,
     context_duration: float,
     calls_by_file: Dict[str, List[Tuple[float, float]]],
     max_windows: int,
-    margin: float = 2.0
+    margin: float = 2.0,
+    strategy: str = "random",
+    step_seconds: Optional[float] = None,
 ) -> List[Tuple[float, float]]:
-    """Sample up to max_windows negative [start, end] pairs that avoid any annotated calls."""
+    """Sample up to max_windows negative [start, end] pairs that avoid calls.
+
+    strategy:
+        - random: historical random sampling behavior
+        - tiled: enumerate windows on free intervals then downsample if needed
+    """
+    if max_windows <= 0:
+        return []
+
+    strategy = str(strategy).lower().strip()
+    if strategy == "tiled":
+        all_windows = enumerate_negative_windows_for_file(
+            clip_id=clip_id,
+            duration=duration,
+            context_duration=context_duration,
+            calls_by_file=calls_by_file,
+            margin=margin,
+            step_seconds=step_seconds,
+        )
+        if len(all_windows) <= max_windows:
+            return sorted(all_windows)
+        # Evenly subsample candidates to keep broad temporal coverage.
+        if max_windows == 1:
+            return [all_windows[len(all_windows) // 2]]
+        step = (len(all_windows) - 1) / float(max_windows - 1)
+        idx = sorted(set(int(round(i * step)) for i in range(max_windows)))
+        return sorted(all_windows[i] for i in idx)
+
     occupied = calls_by_file.get(clip_id, [])
     free_intervals = compute_free_intervals(occupied, duration, margin=margin)
-    
-    # Simple sampling strategy:
-    # 1. Filter intervals shorter than context
     candidates = [i for i in free_intervals if (i[1] - i[0]) >= context_duration]
-    
+
     if not candidates:
         return []
-        
+
     negative_windows = []
-    
-    # Randomly sample windows within candidates
-    # We try to distribute them across available free space
     attempts = 0
     max_attempts = max_windows * 5
-    
+
     while len(negative_windows) < max_windows and attempts < max_attempts:
         attempts += 1
-        # Pick a random candidate weighted by length
         lengths = [i[1] - i[0] for i in candidates]
         interval = random.choices(candidates, weights=lengths)[0]
-        
-        # Pick a random start time within that interval
+
         max_start = interval[1] - context_duration
         win_start = random.uniform(interval[0], max_start)
         win_end = win_start + context_duration
-        
-        # Check for overlap with already picked negatives to avoid redundancy
+
         overlap_threshold = 0.2 * context_duration
         too_much_overlap = False
         for s, e in negative_windows:
@@ -87,8 +144,8 @@ def sample_negative_windows_for_file(
             if overlap > overlap_threshold:
                 too_much_overlap = True
                 break
-        
+
         if not too_much_overlap:
             negative_windows.append((win_start, win_end))
-            
+
     return sorted(negative_windows)

@@ -50,11 +50,14 @@ NUM_WORKERS=4
 CROP_SIZE=""            # Empty = full freq range (square). Can be "96" or "96,96" for [freq,time]
 MIN_DB=-80
 MAX_DB=0
+CENTER_BIAS_SIGMA_FRAC=0.25
 TRAIN_RATIO=0.8
 VAL_RATIO=0.1
 SEED=42
 AUGMENT_TEST="false"
 DEVICE="cuda"
+SPLITS_DIR=""
+EVAL_SPLIT="test"
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 PNG_SCALE=3
@@ -84,11 +87,14 @@ while [[ $# -gt 0 ]]; do
     --crop-size) CROP_SIZE="$2"; shift 2 ;;
     --min-db) MIN_DB="$2"; shift 2 ;;
     --max-db) MAX_DB="$2"; shift 2 ;;
+    --center-bias-sigma-frac) CENTER_BIAS_SIGMA_FRAC="$2"; shift 2 ;;
     --train-ratio) TRAIN_RATIO="$2"; shift 2 ;;
     --val-ratio) VAL_RATIO="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --augment-test) AUGMENT_TEST="true"; shift ;;
     --device) DEVICE="$2"; shift 2 ;;
+    --splits-dir) SPLITS_DIR="$2"; shift 2 ;;
+    --eval-split) EVAL_SPLIT="$2"; shift 2 ;;
     --png-scale) PNG_SCALE="$2"; shift 2 ;;
     --png-cmap) PNG_CMAP="$2"; shift 2 ;;
     --png-pmin) PNG_PMIN="$2"; shift 2 ;;
@@ -193,6 +199,7 @@ CMD=(
     --out-dir "$RUN_OUT_DIR" \
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
     --min-db "$MIN_DB" --max-db "$MAX_DB" \
+    --center-bias-sigma-frac "$CENTER_BIAS_SIGMA_FRAC" \
     --train-ratio "$TRAIN_RATIO" --val-ratio "$VAL_RATIO" \
     --seed "$SEED" --device "$DEVICE" \
     --png-scale "$PNG_SCALE" --png-cmap "$PNG_CMAP" --png-pmin "$PNG_PMIN" --png-pmax "$PNG_PMAX"
@@ -214,6 +221,9 @@ done
 
 if [[ "$AUGMENT_TEST" == "true" ]]; then
   CMD+=( --augment-test )
+fi
+if [[ -n "$SPLITS_DIR" ]]; then
+  CMD+=( --splits-dir "$SPLITS_DIR" --eval-split "$EVAL_SPLIT" )
 fi
 
 # WandB arguments

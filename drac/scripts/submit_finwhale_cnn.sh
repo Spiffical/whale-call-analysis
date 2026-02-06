@@ -65,6 +65,8 @@ SPLIT_STRATEGY="time_separated"
 MIN_GAP_SECONDS=120
 MODEL="SmallCNN"
 MAIN_METRIC="f1"
+CENTER_BIAS_SIGMA_FRAC=0.25
+RUN_TAG=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -95,6 +97,8 @@ while [[ $# -gt 0 ]]; do
     --min-gap-seconds) MIN_GAP_SECONDS="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
     --main-metric) MAIN_METRIC="$2"; shift 2 ;;
+    --center-bias-sigma-frac) CENTER_BIAS_SIGMA_FRAC="$2"; shift 2 ;;
+    --run-tag) RUN_TAG="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -116,6 +120,7 @@ echo "  neg-dir: $NEG_DIR"
 echo "  project: $WANDB_PROJECT | group: $WANDB_GROUP | entity: ${WANDB_ENTITY:-<default>}"
 echo "  epochs: $EPOCHS | batch: $BATCH_SIZE | lr: $LR | balance: $BALANCE"
 echo "  train_ratio: $TRAIN_RATIO | val_ratio: $VAL_RATIO | crop: $CROP_SIZE"
+echo "  split: $SPLIT_STRATEGY | min_gap: $MIN_GAP_SECONDS | center_bias_sigma_frac: $CENTER_BIAS_SIGMA_FRAC"
 echo "  copy_to_tmp: $COPY_TO_TMP"
 
 # Load modules and venv
@@ -230,7 +235,18 @@ else
 fi
 
 # Build experiment directory and python command
-BASE_FOLDER="finwhale-cnn-b${BATCH_SIZE}-lr${LR}-tr$(printf '%.1f' ${TRAIN_RATIO})-${WANDB_GROUP}"
+MODEL_TAG=$(echo "$MODEL" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+SPLIT_TAG=$(echo "$SPLIT_STRATEGY" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+BAL_TAG=$(echo "$BALANCE" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+METRIC_TAG=$(echo "$MAIN_METRIC" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+LR_TAG=$(echo "$LR" | tr '+.' 'pp' | tr -cs '[:alnum:]_-' '_')
+GAP_TAG=$(printf '%.3f' "$MIN_GAP_SECONDS" | sed 's/0*$//' | sed 's/\.$//' | tr '.' 'p')
+CBS_TAG=$(printf '%.3f' "$CENTER_BIAS_SIGMA_FRAC" | sed 's/0*$//' | sed 's/\.$//' | tr '.' 'p')
+BASE_FOLDER="finwhale-${MODEL_TAG}-b${BATCH_SIZE}-lr${LR_TAG}-tr$(printf '%.1f' ${TRAIN_RATIO})-${BAL_TAG}-${SPLIT_TAG}-gap${GAP_TAG}-cbs${CBS_TAG}-seed${SEED}-m${METRIC_TAG}"
+if [[ -n "$RUN_TAG" ]]; then
+  RUN_TAG_SAFE=$(echo "$RUN_TAG" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+  BASE_FOLDER="${BASE_FOLDER}-${RUN_TAG_SAFE}"
+fi
 EXP_PATH="${EXP_DIR}/finwhale/${BASE_FOLDER}"
 mkdir -p "$EXP_PATH"
 
@@ -245,6 +261,7 @@ PYTHON_CMD=(
   --exp_dir "$EXP_PATH" --save-path "$EXP_PATH/best.pt" --seed "$SEED"
   --split-strategy "$SPLIT_STRATEGY" --min-gap-seconds "$MIN_GAP_SECONDS" --model "$MODEL"
   --main-metric "$MAIN_METRIC"
+  --center-bias-sigma-frac "$CENTER_BIAS_SIGMA_FRAC"
 )
 
 # WandB arguments

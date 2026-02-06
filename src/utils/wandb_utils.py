@@ -22,6 +22,16 @@ def init_wandb(args, project_name="whale-call-analysis", entity=None, group=None
         "batch_size": getattr(args, 'batch_size', None),
         "learning_rate": getattr(args, 'lr', None),
         "epochs": getattr(args, 'epochs', None) or getattr(args, 'n_epochs', None),
+        "weight_decay": getattr(args, 'weight_decay', None),
+        "balance": getattr(args, 'balance', None),
+        "split_strategy": getattr(args, 'split_strategy', None),
+        "min_gap_seconds": getattr(args, 'min_gap_seconds', None),
+        "center_bias_sigma_frac": getattr(args, 'center_bias_sigma_frac', None),
+        "main_metric": getattr(args, 'main_metric', None),
+        "seed": getattr(args, 'seed', None),
+        "train_ratio": getattr(args, 'train_ratio', None),
+        "val_ratio": getattr(args, 'val_ratio', None),
+        "crop_size": getattr(args, 'crop_size', None),
     }
     
     run = wandb.init(

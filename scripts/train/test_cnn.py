@@ -117,12 +117,18 @@ def main():
                     help='Crop size: int for square, "freq,time" for non-square, or omit for full freq range (square)')
     ap.add_argument('--min-db', type=float, default=-80.0)
     ap.add_argument('--max-db', type=float, default=0.0)
+    ap.add_argument('--center-bias-sigma-frac', type=float, default=0.25,
+                    help='Positive crop jitter strength when --augment-test is enabled')
     ap.add_argument('--train-ratio', type=float, default=0.8)
     ap.add_argument('--val-ratio', type=float, default=0.1)
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--augment-test', action='store_true', help='Jitter test crops like training')
     ap.add_argument('--device', type=str, default='cuda')
     ap.add_argument('--out-dir', type=str, required=True, help='Output directory for this test run')
+    ap.add_argument('--splits-dir', type=str, default=None,
+                    help='Optional split directory containing train/val/test.txt from training run')
+    ap.add_argument('--eval-split', type=str, default='test', choices=['train', 'val', 'test'],
+                    help='Which saved split file to evaluate when --splits-dir is provided')
     ap.add_argument('--ignore-checkpoint-seed', action='store_true', help='Do not load seed from args.pkl next to checkpoint')
     ap.add_argument('--png-scale', type=int, default=3, help='Scale factor for saved spectrogram PNGs')
     ap.add_argument('--png-cmap', type=str, default='inferno', help='Colormap for saved PNGs')
@@ -202,12 +208,48 @@ def main():
         except Exception:
             pass
 
+    def _load_file_list_from_split(split_file: Path, pos_dir: str, neg_dir: str):
+        items = []
+        missing = 0
+        with open(split_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split('\t')
+                if len(parts) < 2:
+                    continue
+                path_raw, label_raw = parts[0], parts[1]
+                label = int(label_raw)
+                p = Path(path_raw)
+                if not p.exists():
+                    fallback = Path(pos_dir if label == 1 else neg_dir) / p.name
+                    if fallback.exists():
+                        p = fallback
+                    else:
+                        missing += 1
+                        continue
+                items.append((p, label))
+        return items, missing
+
+    file_list = None
+    if args.splits_dir:
+        split_file = Path(args.splits_dir) / f"{args.eval_split}.txt"
+        if not split_file.exists():
+            raise SystemExit(f"Split file not found: {split_file}")
+        file_list, missing = _load_file_list_from_split(split_file, args.pos_dir, args.neg_dir)
+        if not file_list:
+            raise SystemExit(f"No files resolved from split file: {split_file}")
+        print(f"Using saved split file: {split_file} ({len(file_list)} entries, missing={missing})")
+
     test_ds = FinWhaleMatDataset(
         args.pos_dir, args.neg_dir,
         split='test', train_ratio=args.train_ratio, val_ratio=args.val_ratio,
         crop_size=crop_size,
         min_db=args.min_db, max_db=args.max_db,
-        seed=seed_to_use, augment_eval=bool(args.augment_test), return_path=True, return_meta=True
+        center_bias_sigma_frac=args.center_bias_sigma_frac,
+        seed=seed_to_use, augment_eval=bool(args.augment_test), return_path=True, return_meta=True,
+        file_list=file_list
     )
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False,
@@ -437,7 +479,7 @@ def main():
     plt.xlabel('Threshold'); plt.ylabel('Score'); plt.title('Precision/Recall vs Threshold (combined)')
     plt.legend(ncol=2, fontsize=8); plt.grid(True, alpha=0.3); plt.tight_layout(); plt.savefig(out_dir / 'precision_recall_vs_threshold_all.png', dpi=150); plt.close()
 
-    # Accuracy vs offset combined
+    # Positives-only recall vs offset combined
     plt.figure(figsize=(8,5))
     bins = np.linspace(0, 1.0, 11)
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
@@ -446,15 +488,18 @@ def main():
         y_true = res['y_true']; probs = res['probs']
         preds_bin = (probs >= 0.5).astype(np.int32)
         correct = (preds_bin == y_true).astype(np.float32)
-        acc_by_bin = []
+        recall_by_bin = []
+        pos_mask = (y_true == 1)
         for b0, b1 in zip(bins[:-1], bins[1:]):
-            mask = (dist_fracs >= b0) & (dist_fracs < b1) & (~np.isnan(dist_fracs))
+            mask = pos_mask & (dist_fracs >= b0) & (dist_fracs < b1) & (~np.isnan(dist_fracs))
             if mask.sum() > 0:
-                acc_by_bin.append(float(correct[mask].mean()))
+                recall_by_bin.append(float(correct[mask].mean()))
             else:
-                acc_by_bin.append(np.nan)
-        plt.plot(bin_centers, acc_by_bin, marker='o', label=label)
-    plt.xlabel('Distance from Center (fraction of half-length)'); plt.ylabel('Accuracy'); plt.title('Accuracy vs Call Offset (combined)')
+                recall_by_bin.append(np.nan)
+        plt.plot(bin_centers, recall_by_bin, marker='o', label=label)
+    plt.xlabel('Distance from Center (fraction of half-length)')
+    plt.ylabel('Recall (positives only)')
+    plt.title('Recall vs Call Offset (combined)')
     plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout(); plt.savefig(out_dir / 'accuracy_vs_center_offset_all.png', dpi=150); plt.close()
 
     # Log combined comparison to WandB and finish
