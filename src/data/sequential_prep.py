@@ -93,7 +93,10 @@ def get_processing_params(
 
     # Load from model args.pkl if available
     if model_path:
-        args_path = Path(model_path) / 'args.pkl'
+        model_path_obj = Path(model_path)
+        if model_path_obj.is_file():
+            model_path_obj = model_path_obj.parent
+        args_path = model_path_obj / 'args.pkl'
         if args_path.exists():
             with open(args_path, 'rb') as f:
                 model_args = pickle.load(f)

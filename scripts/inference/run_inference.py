@@ -17,6 +17,8 @@ import argparse
 import json
 import os
 import sys
+from collections import defaultdict
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -29,11 +31,13 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import scipy.io
+import soundfile as sf
 
 from src.models.fin_models import create_model
 from src.utils.model_utils import extract_model_info, verify_model_hash, compute_model_hash
 from src.utils.unified_prediction_tracker import UnifiedPredictionTracker
 from src.dataset.reporting import print_status, print_header
+from src.data.sequential_prep import extract_timestamp_from_filename, parse_datetime
 
 
 class InferenceDataset(torch.utils.data.Dataset):
@@ -59,6 +63,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         max_db: float = 0.0,
         sliding_window: bool = False,
         window_step: Optional[int] = None,  # None = same as crop_size (no overlap)
+        windows_per_file: Optional[int] = None,  # Evenly distribute N windows per file
     ):
         """Initialize the inference dataset.
         
@@ -69,6 +74,7 @@ class InferenceDataset(torch.utils.data.Dataset):
             max_db: Maximum dB for normalization
             sliding_window: If True, slide window across time axis
             window_step: Step size for sliding window. None = crop_size (no overlap)
+            windows_per_file: If set, evenly distribute exactly N windows per file
         """
         self.mat_dir = Path(mat_dir)
         self.crop_size = crop_size
@@ -76,6 +82,8 @@ class InferenceDataset(torch.utils.data.Dataset):
         self.max_db = max_db
         self.sliding_window = sliding_window
         self.window_step = window_step if window_step is not None else crop_size
+        self.windows_per_file = windows_per_file
+        self.window_step_by_file: Dict[int, Optional[float]] = {}
         
         # Find all MAT files
         self.mat_files = sorted(list(self.mat_dir.glob("*.mat")))
@@ -89,26 +97,56 @@ class InferenceDataset(torch.utils.data.Dataset):
             for file_idx, mat_path in enumerate(self.mat_files):
                 spec, _ = self._load_spectrogram_raw(mat_path)
                 F_dim, T_dim = spec.shape
-                
-                if T_dim <= crop_size:
-                    # Single window if spectrogram is smaller than crop
+
+                max_start = max(T_dim - crop_size, 0)
+                if T_dim < crop_size:
+                    raise ValueError(
+                        f"Spectrogram time bins ({T_dim}) smaller than crop_size ({crop_size}) for {mat_path.name}"
+                    )
+
+                if max_start == 0:
+                    # Single window if spectrogram is exactly crop size
                     self.samples.append((file_idx, 0))
-                else:
-                    # Calculate minimum number of windows needed
-                    # and distribute them evenly with equal overlap
-                    n_windows = int(np.ceil((T_dim - crop_size) / (self.window_step or crop_size))) + 1
-                    
-                    # Calculate actual step to distribute windows evenly
-                    # n_windows covers: first at 0, last at (T_dim - crop_size)
-                    # step = (T_dim - crop_size) / (n_windows - 1)
-                    if n_windows > 1:
-                        even_step = (T_dim - crop_size) / (n_windows - 1)
+                    self.window_step_by_file[file_idx] = 0.0
+                    continue
+
+                if self.windows_per_file is not None:
+                    n_windows = int(self.windows_per_file)
+                    if n_windows <= 0:
+                        raise ValueError("windows_per_file must be >= 1")
+                    if n_windows == 1:
+                        starts = [0]
+                        step = 0.0
                     else:
-                        even_step = 0
-                    
-                    for i in range(n_windows):
-                        win_start = int(round(i * even_step))
-                        self.samples.append((file_idx, win_start))
+                        if n_windows > (max_start + 1):
+                            raise ValueError(
+                                f"windows_per_file ({n_windows}) too large for {mat_path.name} "
+                                f"with {T_dim} time bins and crop_size {crop_size}"
+                            )
+                        step = max_start / (n_windows - 1)
+                        starts = np.round(np.linspace(0, max_start, n_windows)).astype(int).tolist()
+
+                    for win_start in starts:
+                        self.samples.append((file_idx, int(win_start)))
+                    self.window_step_by_file[file_idx] = step
+                    continue
+
+                # Calculate minimum overlap windows based on requested step (or crop_size)
+                step_bins = self.window_step or crop_size
+                if step_bins is None or step_bins <= 0:
+                    raise ValueError("window_step must be >= 1 when sliding_window is enabled")
+
+                n_windows = int(np.ceil(max_start / step_bins)) + 1
+                if n_windows <= 1:
+                    starts = [0]
+                    step = 0.0
+                else:
+                    step = max_start / (n_windows - 1)
+                    starts = np.round(np.linspace(0, max_start, n_windows)).astype(int).tolist()
+
+                for win_start in starts:
+                    self.samples.append((file_idx, int(win_start)))
+                self.window_step_by_file[file_idx] = step
         else:
             # One sample per file (center crop)
             self.samples = [(i, None) for i in range(len(self.mat_files))]
@@ -189,7 +227,9 @@ class InferenceDataset(torch.utils.data.Dataset):
             'crop_size': [self.crop_size, self.crop_size] if self.crop_size else None,
             'sliding_window': self.sliding_window,
             'window_start': window_start,
-            'window_step': self.window_step,
+            'window_step': self.window_step_by_file.get(file_idx),
+            'window_step_requested': self.window_step,
+            'windows_per_file': self.windows_per_file,
         }
         
         if self.crop_size is not None:
@@ -199,6 +239,8 @@ class InferenceDataset(torch.utils.data.Dataset):
             if F_dim > crop_f:
                 start_f = (F_dim - crop_f) // 2
                 spec = spec[start_f:start_f + crop_f, :]
+            elif F_dim < crop_f:
+                raise ValueError(f"Spectrogram freq bins ({F_dim}) smaller than crop_size ({crop_f}) for {mat_path.name}")
             
             # Time axis: sliding window or center crop
             if self.sliding_window and window_start is not None:
@@ -215,6 +257,8 @@ class InferenceDataset(torch.utils.data.Dataset):
                     meta['window_time_start'] = start_t
                     meta['window_time_end'] = start_t + crop_t
                 meta['crop_type'] = 'center_crop'
+            if spec.shape[1] < crop_t:
+                raise ValueError(f"Spectrogram time bins ({spec.shape[1]}) smaller than crop_size ({crop_t}) for {mat_path.name}")
             
             meta['output_shape'] = list(spec.shape)
             meta['crop_applied'] = True
@@ -237,6 +281,96 @@ class InferenceDataset(torch.utils.data.Dataset):
         
         return tensor, file_id, meta
 
+
+def _resolve_path(path_value: Optional[str], base_dir: Optional[Path]) -> Optional[Path]:
+    if not path_value:
+        return None
+    p = Path(path_value)
+    if p.is_absolute() or base_dir is None:
+        return p
+    return base_dir / p
+
+
+def _load_mat_with_axes(mat_path: Path) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
+    """Load spectrogram and axes from MAT file.
+
+    Returns (spec, spec_kind, freqs, times)
+    """
+    data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
+    # Use same key logic as InferenceDataset
+    def _find_key(d: dict, keys: tuple) -> Optional[str]:
+        for k in keys:
+            if k in d:
+                return k
+        lowered = {k.lower(): k for k in d.keys()}
+        for k in keys:
+            if k.lower() in lowered:
+                return lowered[k.lower()]
+        return None
+
+    k = _find_key(data, InferenceDataset.POWER_KEYS)
+    spec_kind = 'power'
+    if k is None:
+        k = _find_key(data, InferenceDataset.DB_KEYS) or _find_key(data, InferenceDataset.SPECTRO_KEYS)
+        spec_kind = 'db'
+    if k is None:
+        raise KeyError(f"No spectrogram-like key found in {mat_path.name}")
+
+    spec = np.asarray(data[k])
+    if spec.ndim != 2:
+        raise ValueError(f"Unexpected spectrogram ndim {spec.ndim} in {mat_path.name}")
+
+    freqs = None
+    times = None
+    fk = _find_key(data, InferenceDataset.FREQ_KEYS)
+    tk = _find_key(data, InferenceDataset.TIME_KEYS)
+    if fk in data:
+        freqs = np.asarray(data[fk]).squeeze()
+    if tk in data:
+        times = np.asarray(data[tk]).squeeze()
+
+    # Orient using freq/time vectors if available
+    if freqs is not None and times is not None:
+        f_len = int(np.asarray(freqs).ravel().shape[0])
+        t_len = int(np.asarray(times).ravel().shape[0])
+        r, c = spec.shape[:2]
+        if (r, c) == (t_len, f_len):
+            spec = spec.T  # now (F, T)
+
+    return spec, spec_kind, freqs, times
+
+
+def _power_to_db_norm(power: np.ndarray) -> np.ndarray:
+    power = np.abs(power.astype(np.float32))
+    max_power = float(np.max(power)) if power.size else 0.0
+    if max_power > 0:
+        normalized = power / max_power
+        normalized = np.maximum(normalized, 1e-10)
+        return 10.0 * np.log10(normalized)
+    return np.full_like(power, -100.0, dtype=np.float32)
+
+
+def _compute_window_time_range(
+    times: Optional[np.ndarray],
+    start_idx: int,
+    window_bins: int,
+    win_dur: Optional[float],
+    overlap: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    """Compute window start/end times in seconds using time-bin centers."""
+    if times is None or len(times) == 0:
+        return None, None
+    start_idx = max(0, min(int(start_idx), len(times) - 1))
+    center_start = float(times[start_idx])
+    if len(times) > 1:
+        hop_sec = float(times[1] - times[0])
+    else:
+        hop_sec = (win_dur * (1.0 - overlap)) if (win_dur is not None and overlap is not None) else 0.0
+    if win_dur is None:
+        win_dur = 0.0
+    window_time_start = max(0.0, center_start - (win_dur / 2.0))
+    window_time_end = window_time_start + max(0, window_bins - 1) * hop_sec + win_dur
+    return window_time_start, window_time_end
 
 def extract_crop_size_from_checkpoint(checkpoint_path: str) -> Optional[int]:
     """Extract crop_size from checkpoint's training args.
@@ -477,13 +611,31 @@ def main():
     parser.add_argument('--sliding-window', action='store_true',
                         help='Use sliding window to scan entire spectrogram')
     parser.add_argument('--window-step', type=int, default=None,
-                        help='Step size for sliding window (default: crop_size = no overlap)')
+                        help='Step size for sliding window (default: crop_size = no overlap). '
+                             'Windows are evenly distributed to avoid padding.')
+    parser.add_argument('--windows-per-file', type=int, default=None,
+                        help='Evenly distribute exactly N windows per 5-min spectrogram '
+                             '(minimum overlap). Overrides window-step.')
     parser.add_argument('--min-db', type=float, default=-80.0,
                         help='Min dB for normalization')
     parser.add_argument('--max-db', type=float, default=0.0,
                         help='Max dB for normalization')
     parser.add_argument('--verify-hash', action='store_true',
                         help='Verify model hash matches checkpoint')
+    # Export options for verification app
+    parser.add_argument('--export-crops', action='store_true',
+                        help='Export cropped MATs/audio for windows above threshold')
+    parser.add_argument('--export-threshold', type=float, default=0.7,
+                        help='Score threshold for exporting crops')
+    parser.add_argument('--export-dir', type=str, default=None,
+                        help='Base directory for exported crops (default: output-json directory)')
+    parser.add_argument('--export-all', action='store_true',
+                        help='Include predictions below threshold even when exporting crops')
+    parser.add_argument('--raw-audio-dir', type=str, default=None,
+                        help='Directory containing raw 5-min audio files (for cropped audio export)')
+    parser.add_argument('--no-export-audio', dest='export_audio', action='store_false',
+                        help='Disable exporting cropped audio (MATs still exported)')
+    parser.set_defaults(export_audio=True)
     
     args = parser.parse_args()
     
@@ -498,7 +650,12 @@ def main():
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Device: {device}")
     
-    # Parse crop size - auto-detect from checkpoint if not specified
+    # Load dataset metadata early (to infer crop_size if needed)
+    data_source, spec_config, file_info_map, metadata_type = load_inference_metadata(args.dataset_metadata)
+    if args.dataset_metadata:
+        print(f"Metadata type: {metadata_type}")
+
+    # Parse crop size - auto-detect from checkpoint / metadata / first MAT
     crop_size = None
     if args.crop_size:
         if ',' in args.crop_size:
@@ -512,8 +669,32 @@ def main():
         if crop_size:
             print(f"Auto-detected crop_size from checkpoint: {crop_size}")
         else:
-            print("Warning: crop_size not specified and could not be auto-detected")
-    
+            # Try metadata
+            meta_crop = spec_config.get("crop_size") if spec_config else None
+            if meta_crop:
+                crop_size = int(meta_crop)
+                print(f"Auto-detected crop_size from metadata: {crop_size}")
+            else:
+                # Fallback: infer from first MAT file's freq bins
+                try:
+                    first_mat = next(iter(sorted(Path(args.mat_dir).glob("*.mat"))), None)
+                    if first_mat:
+                        spec, _, freqs, _ = _load_mat_with_axes(first_mat)
+                        if freqs is not None and len(np.atleast_1d(freqs)) > 0:
+                            crop_size = int(len(np.atleast_1d(freqs)))
+                        else:
+                            crop_size = int(spec.shape[0])
+                        print(f"Inferred crop_size from MAT ({first_mat.name}): {crop_size}")
+                except Exception:
+                    pass
+            if crop_size is None:
+                print("Warning: crop_size not specified and could not be auto-detected")
+
+    if args.sliding_window and crop_size is None:
+        raise SystemExit("sliding_window requires crop_size. Provide --crop-size or ensure it exists in args.pkl/metadata.")
+    if args.window_step is not None and args.windows_per_file is not None:
+        raise SystemExit("Use either --window-step or --windows-per-file (not both).")
+
     # Load checkpoint
     print_status("Loading checkpoint...", "PROGRESS")
     checkpoint = torch.load(args.checkpoint, map_location=device)
@@ -550,6 +731,7 @@ def main():
         max_db=args.max_db,
         sliding_window=args.sliding_window,
         window_step=args.window_step,
+        windows_per_file=args.windows_per_file,
     )
     
     n_files = len(dataset.mat_files)
@@ -578,11 +760,212 @@ def main():
     results = run_inference(model, dataloader, device)
     print_status(f"Inference complete: {len(results)} predictions", "SUCCESS")
     
-    # Load dataset metadata if provided (auto-detect format)
-    data_source, spec_config, file_info_map, metadata_type = load_inference_metadata(args.dataset_metadata)
-    if args.dataset_metadata:
-        print(f"Metadata type: {metadata_type}")
-    
+    # Optional: export cropped MATs/audio for verification
+    export_info: Dict[str, Dict[str, Any]] = {}
+    if args.export_crops:
+        export_dir = Path(args.export_dir) if args.export_dir else Path(args.output_json).parent
+        spec_out_dir = export_dir / "spectrograms"
+        audio_out_dir = export_dir / "audio"
+        spec_out_dir.mkdir(parents=True, exist_ok=True)
+        if args.export_audio:
+            audio_out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Map MAT stem -> path for quick lookup
+        mat_path_map = {p.stem: p for p in dataset.mat_files}
+        metadata_base = Path(args.dataset_metadata).parent if args.dataset_metadata else None
+
+        win_dur = spec_config.get("window_duration") or spec_config.get("window_duration_sec") or spec_config.get("win_dur") or spec_config.get("win_dur_s")
+        overlap = spec_config.get("overlap") or spec_config.get("overlap_ratio")
+
+        # Filter results above threshold for export
+        export_results = [r for r in results if r['confidence'] >= args.export_threshold]
+        print_status(f"Exporting crops for {len(export_results)} windows >= {args.export_threshold:.2f}", "PROGRESS")
+
+        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for r in export_results:
+            base_id = r['file_id'].rsplit('_win', 1)[0] if '_win' in r['file_id'] else r['file_id']
+            grouped[base_id].append(r)
+
+        for base_id, group in grouped.items():
+            file_info = file_info_map.get(base_id, {})
+
+            # Resolve MAT path for this base clip
+            mat_path = mat_path_map.get(base_id)
+            if mat_path is None and file_info.get("mat_path"):
+                mat_path = _resolve_path(file_info.get("mat_path"), metadata_base)
+            if mat_path is None:
+                mat_path = Path(args.mat_dir) / f"{base_id}.mat"
+            if not mat_path.exists():
+                print_status(f"Missing MAT for {base_id}: {mat_path}", "WARNING")
+                continue
+
+            # Load MAT once for all windows in this clip
+            try:
+                spec, spec_kind, freqs, times = _load_mat_with_axes(mat_path)
+            except Exception as e:
+                print_status(f"Failed to load MAT {mat_path}: {e}", "WARNING")
+                continue
+
+            F_dim, T_dim = spec.shape
+            # Build fallback axes if missing
+            if freqs is None or len(np.atleast_1d(freqs)) == 0:
+                freqs = np.arange(F_dim)
+            if times is None or len(np.atleast_1d(times)) == 0:
+                hop_sec = (win_dur * (1.0 - overlap)) if (win_dur is not None and overlap is not None) else 0.0
+                times = np.arange(T_dim, dtype=np.float32) * hop_sec
+
+            # Resolve raw audio file
+            raw_audio_path = None
+            if args.raw_audio_dir:
+                source_audio = file_info.get("source_audio")
+                if not source_audio:
+                    source_audio = f"{base_id}.wav"
+                if source_audio:
+                    raw_audio_path = Path(args.raw_audio_dir) / source_audio
+            if raw_audio_path is None and file_info.get("raw_audio_path"):
+                raw_audio_path = _resolve_path(file_info.get("raw_audio_path"), metadata_base)
+            if raw_audio_path is None and file_info.get("source_audio") and metadata_base:
+                cand = metadata_base / "raw_audio" / file_info.get("source_audio")
+                if cand.exists():
+                    raw_audio_path = cand
+
+            # Parse clip start timestamp
+            clip_ts = None
+            if file_info.get("audio_timestamp"):
+                try:
+                    clip_ts = parse_datetime(file_info.get("audio_timestamp"))
+                except Exception:
+                    clip_ts = None
+            if clip_ts is None:
+                # Try source audio filename or base_id
+                source_name = file_info.get("source_audio") or f"{base_id}.wav"
+                clip_ts = extract_timestamp_from_filename(source_name)
+
+            # Export each window for this clip
+            for r in group:
+                item_id = r['file_id']
+                meta = r.get('meta', {})
+                start_idx = meta.get('window_start')
+                if start_idx is None:
+                    continue
+
+                start_idx = int(start_idx)
+                crop_f = int(crop_size) if isinstance(crop_size, int) else F_dim
+                crop_t = int(crop_size) if isinstance(crop_size, int) else T_dim
+
+                # Frequency crop (center)
+                f_start = 0
+                if F_dim > crop_f:
+                    f_start = (F_dim - crop_f) // 2
+                if F_dim < crop_f:
+                    print_status(
+                        f"Skipping {item_id}: freq bins ({F_dim}) smaller than crop_size ({crop_f})",
+                        "WARNING",
+                    )
+                    continue
+                f_end = f_start + crop_f
+                spec_f = spec[f_start:f_end, :]
+                freqs_f = np.asarray(freqs)[f_start:f_end] if freqs is not None else None
+
+                # Time crop (window)
+                max_start = T_dim - crop_t
+                if max_start < 0:
+                    print_status(
+                        f"Skipping {item_id}: time bins ({T_dim}) smaller than crop_size ({crop_t})",
+                        "WARNING",
+                    )
+                    continue
+                if start_idx > max_start:
+                    print_status(
+                        f"Skipping {item_id}: window_start {start_idx} exceeds max {max_start}",
+                        "WARNING",
+                    )
+                    continue
+                t_start = max(0, int(start_idx))
+                t_end = t_start + crop_t
+                spec_crop = spec_f[:, t_start:t_end]
+                times_crop = np.asarray(times)[t_start:t_end] if times is not None else None
+
+                if spec_crop.shape[1] < crop_t or spec_crop.shape[0] < crop_f:
+                    print_status(
+                        f"Skipping {item_id}: crop shape {spec_crop.shape} smaller than {crop_f}x{crop_t}",
+                        "WARNING",
+                    )
+                    continue
+
+                # Compute PdB_norm for this crop (match training normalization scope)
+                if spec_kind == 'power':
+                    pdB_crop = _power_to_db_norm(spec_crop)
+                else:
+                    pdB_crop = spec_crop.astype(np.float32)
+
+                out_mat = spec_out_dir / f"{item_id}.mat"
+                mat_payload = {
+                    "F": np.asarray(freqs_f) if freqs_f is not None else None,
+                    "T": np.asarray(times_crop) if times_crop is not None else None,
+                    "PdB_norm": pdB_crop,
+                }
+                if spec_kind == 'power':
+                    mat_payload["P"] = spec_crop
+                # Remove None entries
+                mat_payload = {k: v for k, v in mat_payload.items() if v is not None}
+                scipy.io.savemat(out_mat, mat_payload)
+
+                # Compute window timing for audio + metadata
+                window_time_start, window_time_end = _compute_window_time_range(
+                    times=np.asarray(times) if times is not None else None,
+                    start_idx=t_start,
+                    window_bins=crop_t,
+                    win_dur=float(win_dur) if win_dur is not None else None,
+                    overlap=float(overlap) if overlap is not None else None,
+                )
+
+                audio_start_time = None
+                audio_end_time = None
+                if clip_ts and window_time_start is not None and window_time_end is not None:
+                    audio_start_time = (clip_ts + timedelta(seconds=float(window_time_start))).isoformat()
+                    audio_end_time = (clip_ts + timedelta(seconds=float(window_time_end))).isoformat()
+
+                # Export audio crop if requested and available
+                out_audio = None
+                if args.export_audio and raw_audio_path and raw_audio_path.exists() and window_time_start is not None and window_time_end is not None:
+                    try:
+                        with sf.SoundFile(str(raw_audio_path)) as f:
+                            fs = f.samplerate
+                            start_frame = int(max(0.0, float(window_time_start)) * fs)
+                            end_frame = int(max(float(window_time_end), float(window_time_start)) * fs)
+                            start_frame = max(0, min(start_frame, len(f)))
+                            end_frame = max(start_frame, min(end_frame, len(f)))
+                            f.seek(start_frame)
+                            audio_data = f.read(end_frame - start_frame)
+                        # Pad/trim to exact expected length
+                        expected_samples = int(max(0.0, float(window_time_end) - float(window_time_start)) * fs)
+                        if len(audio_data) < expected_samples:
+                            audio_data = np.pad(audio_data, (0, expected_samples - len(audio_data)))
+                        elif len(audio_data) > expected_samples:
+                            audio_data = audio_data[:expected_samples]
+                        out_audio = audio_out_dir / f"{item_id}.wav"
+                        sf.write(str(out_audio), audio_data, fs)
+                    except Exception as e:
+                        print_status(f"Audio export failed for {item_id}: {e}", "WARNING")
+
+                export_info[item_id] = {
+                    "spectrogram_mat_path": str(out_mat.relative_to(export_dir)),
+                    "audio_path": str(out_audio.relative_to(export_dir)) if out_audio else None,
+                    "audio_start_time": audio_start_time,
+                    "audio_end_time": audio_end_time,
+                    "window_time_start": window_time_start,
+                    "window_time_end": window_time_end,
+                    "source_audio": file_info.get("source_audio"),
+                }
+
+        print_status(f"Export complete: {len(export_info)} crops", "SUCCESS")
+
+    # Decide which results to include in predictions.json
+    results_for_tracker = results
+    if args.export_crops and not args.export_all:
+        results_for_tracker = [r for r in results if r['file_id'] in export_info]
+
     # Create prediction tracker
     tracker = UnifiedPredictionTracker(args.output_json)
     
@@ -613,7 +996,7 @@ def main():
         tracker.set_spectrogram_config(spec_config)
     
     # Add predictions
-    for result in results:
+    for result in results_for_tracker:
         file_id = result['file_id']
         base_id = file_id.rsplit('_win', 1)[0] if '_win' in file_id else file_id
         file_info = file_info_map.get(file_id, file_info_map.get(base_id, {}))
@@ -642,20 +1025,34 @@ def main():
             window_time_end = file_info.get('window_time_end', window_time_end)
             original_shape = file_info.get('original_shape', original_shape)
 
+        # Override paths and timing if we exported crops
+        export_item = export_info.get(file_id)
+        if export_item:
+            window_time_start = export_item.get('window_time_start', window_time_start)
+            window_time_end = export_item.get('window_time_end', window_time_end)
+
         duration_sec = spec_config.get('context_duration') if spec_config else None
         if duration_sec is None and window_time_start is not None and window_time_end is not None:
             duration_sec = max(0.0, float(window_time_end) - float(window_time_start))
 
         spectrogram_mat_path = file_info.get('mat_path', mat_path_default)
         spectrogram_png_path = spectrogram_path_default
+        audio_path = file_info.get('audio_path', audio_path_default)
+        audio_start_time = None
+        audio_end_time = None
+        if export_item:
+            spectrogram_mat_path = export_item.get('spectrogram_mat_path', spectrogram_mat_path)
+            audio_path = export_item.get('audio_path', audio_path)
+            audio_start_time = export_item.get('audio_start_time')
+            audio_end_time = export_item.get('audio_end_time')
 
         tracker.add_item(
             item_id=file_id,
             model_outputs=model_outputs,
             mat_path=spectrogram_mat_path,
-            audio_path=file_info.get('audio_path', audio_path_default),
+            audio_path=audio_path,
             spectrogram_path=spectrogram_png_path,
-            audio_timestamp=file_info.get('audio_timestamp', ''),
+            audio_timestamp=audio_start_time or file_info.get('audio_timestamp', ''),
             duration_sec=duration_sec,
             # Additional metadata
             source_audio=file_info.get('source_audio'),
@@ -674,6 +1071,8 @@ def main():
             window_start=window_start,
             window_time_start=window_time_start,
             window_time_end=window_time_end,
+            audio_start_time=audio_start_time,
+            audio_end_time=audio_end_time,
         )
     
     # Save predictions

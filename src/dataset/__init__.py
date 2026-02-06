@@ -6,4 +6,9 @@ from .audio import stitch_audio_files, cleanup_audio_files
 from .spectrogram import create_custom_spectrograms, download_onc_spectrograms
 from .negative_sampler import sample_negative_windows_for_file
 from .reporting import print_status, print_header, create_analysis_report
-from .generator import SpectrogramDatasetGenerator
+# Optional: avoid hard import of SpectrogramDatasetGenerator (pulls torchaudio)
+# so inference-only workflows don't fail on torchaudio/torch binary mismatches.
+try:
+    from .generator import SpectrogramDatasetGenerator  # noqa: F401
+except Exception:
+    SpectrogramDatasetGenerator = None

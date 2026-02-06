@@ -69,6 +69,10 @@ def main():
     # Options
     parser.add_argument('--save-raw-audio', action='store_true', help='Save original 5-min clips')
     parser.add_argument('--save-full-spectrogram', action='store_true', help='Save full 5-min spectrograms')
+    parser.add_argument('--full-spec-only', action='store_true',
+                        help='Generate full-clip spectrograms only (no chunking)')
+    parser.add_argument('--full-spec-dir', type=str, default='full_spectrograms',
+                        help='Subfolder name for full-clip spectrograms')
     parser.add_argument('--save-chunk-audio', action='store_true',
                         default=True, help='Save audio clips for each chunk (default: true)')
     parser.add_argument('--no-save-chunk-audio', dest='save_chunk_audio', action='store_false',
@@ -193,6 +197,7 @@ def main():
     )
     
     processed_chunks = []
+    processed_files = []
 
     for i, audio_path in enumerate(audio_files):
         print_status(f"Processing {i+1}/{len(audio_files)}: {audio_path.name}", "PROGRESS")
@@ -225,11 +230,28 @@ def main():
             
             full_audio = np.concatenate(buffer)
             
-            # Generate full 5-min spectrogram (full frequency range)
+            # Generate full 5-min spectrogram (with edge padding)
             freqs, times, Sxx, PdB = spec_gen.compute_spectrogram(
                 full_audio, fs, 
                 clip_meta={'clip_offset_seconds': offset_seconds, 'clip_duration_seconds': len(data)/fs}
             )
+
+            # Trim time bins to remove edge padding (match training edge_context trim)
+            clip_duration = len(data) / fs
+            if len(times) > 0:
+                t_start = float(offset_seconds)
+                t_end = t_start + float(clip_duration)
+                time_mask = (times >= t_start) & (times <= t_end)
+                if not np.any(time_mask):
+                    t0 = int(np.searchsorted(times, t_start, side="left"))
+                    t1 = int(np.searchsorted(times, t_end, side="right"))
+                    t0 = max(0, min(t0, len(times) - 1))
+                    t1 = max(t0 + 1, min(t1, len(times)))
+                    time_mask = np.zeros_like(times, dtype=bool)
+                    time_mask[t0:t1] = True
+                times = times[time_mask] - t_start
+                Sxx = Sxx[:, time_mask]
+                PdB = PdB[:, time_mask]
             
             # Apply frequency cropping to match training data
             cropped_freqs, cropped_Sxx = crop_to_freq_lims(freqs, Sxx, freq_lims[0], freq_lims[1])
@@ -255,12 +277,30 @@ def main():
                     n_freq_bins = crop_size
                 # If smaller, we can't produce square chunks - warn and continue
             
-            # Save full if requested (before chunking)
-            if args.save_full_spectrogram:
-                full_spec_dir = get_structure_path(file_ts, args.device_code, "full_spectrograms")
-                scipy.io.savemat(full_spec_dir / f"{audio_path.stem}.mat", {
+            # Save full-clip spectrogram (for sliding-window inference)
+            if args.save_full_spectrogram or args.full_spec_only:
+                full_spec_dir = get_structure_path(file_ts, args.device_code, args.full_spec_dir)
+                full_spec_path = full_spec_dir / f"{audio_path.stem}.mat"
+                scipy.io.savemat(full_spec_path, {
                     'F': cropped_freqs, 'T': times, 'P': cropped_Sxx, 'PdB_norm': cropped_PdB, 'fs': fs
                 })
+
+                processed_files.append({
+                    "file_id": audio_path.stem,
+                    "source_audio": audio_path.name,
+                    "audio_timestamp": file_ts.isoformat(),
+                    "segment_index": None,
+                    "segment_start_sec": 0.0,
+                    "segment_end_sec": float(clip_duration),
+                    "mat_path": str(full_spec_path.relative_to(output_dir)),
+                    "raw_audio_path": str(audio_path.relative_to(output_dir)),
+                    "original_shape": [int(n_freq_bins), int(n_time_bins)],
+                    "sample_rate": float(fs),
+                })
+
+            if args.full_spec_only:
+                # Skip chunking when in full-spec-only mode
+                continue
 
             # Tiling / Chunking: create crop_size x crop_size square chunks
             # Tile along time axis
@@ -357,27 +397,57 @@ def main():
             traceback.print_exc()
 
     # Save metadata with full processing parameters
-    metadata = {
-        "device_code": args.device_code,
-        "start_date": args.start_date,
-        "end_date": args.end_date,
-        "processing_parameters": {
-            "crop_size": crop_size,
-            "freq_lims_hz": list(freq_lims),
-            "win_dur_s": win_dur,
-            "overlap": overlap,
-            "clim_db": list(clim),
-        },
-        "spectrogram_source": {
-            "type": "computed",
-            "generator": "onc_hydrophone_data.SpectrogramGenerator",
-        },
-        "processed_at": datetime.now(timezone.utc).isoformat(),
-        "dataset_documentation_source": args.dataset_documentation,
-        "model_path": args.model_path,
-        "chunks": processed_chunks
-    }
-    with open(output_dir / "metadata.json", 'w') as f:
+    metadata_path = output_dir / "metadata.json"
+    if args.full_spec_only:
+        metadata = {
+            "version": "1.0",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "data_source": {
+                "device_code": args.device_code,
+                "date_from": args.start_date,
+                "date_to": args.end_date,
+            },
+            "spectrogram_config": {
+                "window_duration": win_dur,
+                "overlap": overlap,
+                "frequency_limits": {"min": freq_lims[0], "max": freq_lims[1]},
+                "color_limits": {"min": clim[0], "max": clim[1]},
+                "crop_size": crop_size,
+                "source": {
+                    "type": "computed",
+                    "generator": "onc_hydrophone_data.SpectrogramGenerator",
+                },
+            },
+            "processing": {
+                "full_spec_only": True,
+                "total_files": len(processed_files),
+                "edge_padding_sec": args.edge_padding,
+                "save_raw_audio": args.save_raw_audio,
+            },
+            "files": processed_files,
+        }
+    else:
+        metadata = {
+            "device_code": args.device_code,
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "processing_parameters": {
+                "crop_size": crop_size,
+                "freq_lims_hz": list(freq_lims),
+                "win_dur_s": win_dur,
+                "overlap": overlap,
+                "clim_db": list(clim),
+            },
+            "spectrogram_source": {
+                "type": "computed",
+                "generator": "onc_hydrophone_data.SpectrogramGenerator",
+            },
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "dataset_documentation_source": args.dataset_documentation,
+            "model_path": args.model_path,
+            "chunks": processed_chunks
+        }
+    with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
 
     # Cleanup raw audio if not requested
@@ -387,7 +457,10 @@ def main():
         shutil.rmtree(raw_audio_dir)
 
     print_header("PREPARATION COMPLETE")
-    print(f"Generated {len(processed_chunks)} chunks for inference.")
+    if args.full_spec_only:
+        print(f"Generated {len(processed_files)} full-clip spectrograms for inference.")
+    else:
+        print(f"Generated {len(processed_chunks)} chunks for inference.")
     print_status(f"Project directory: {args.output_dir}", "SUCCESS")
 
 if __name__ == "__main__":
