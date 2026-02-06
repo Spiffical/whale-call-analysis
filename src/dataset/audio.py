@@ -84,7 +84,8 @@ def stitch_audio_files(
     desired_end: float,
     context_duration: float,
     audio_dir: Path,
-    show_onc_warnings: bool = True
+    show_onc_warnings: bool = True,
+    allow_downloads: bool = True,
 ) -> Optional[np.ndarray]:
     """Stitch audio files when context window spans multiple files."""
     try:
@@ -111,8 +112,10 @@ def stitch_audio_files(
                 return f.read(count)
                 
         # Case 2: Spans across files
-        thread_onc = ONC(onc_token, showWarning=show_onc_warnings)
-        thread_onc.outPath = str(audio_dir)
+        thread_onc = None
+        if allow_downloads:
+            thread_onc = ONC(onc_token, showWarning=show_onc_warnings)
+            thread_onc.outPath = str(audio_dir)
         
         # Get timestamp of current file to find neighbors
         time_str = clip_id.replace('.wav', '').split('_')[1].replace('Z', '')
@@ -120,9 +123,17 @@ def stitch_audio_files(
         
         full_audio_list = []
         
+        prev_filename, next_filename = get_adjacent_filenames(clip_id, device_code)
+
         # Handle prefix (previous file)
         if desired_start < 0:
-            prev_path = download_adjacent_file(thread_onc, device_code, dt - timedelta(minutes=5), audio_dir)
+            prev_path = None
+            if prev_filename:
+                prev_candidate = audio_dir / prev_filename
+                if prev_candidate.exists():
+                    prev_path = prev_candidate
+            if prev_path is None and allow_downloads and thread_onc is not None:
+                prev_path = download_adjacent_file(thread_onc, device_code, dt - timedelta(minutes=5), audio_dir)
             if prev_path and prev_path.exists():
                 with sf.SoundFile(prev_path) as f:
                     p_fs = f.samplerate
@@ -149,7 +160,13 @@ def stitch_audio_files(
                 
         # Handle suffix (next file)
         if desired_end > main_duration:
-            next_path = download_adjacent_file(thread_onc, device_code, dt + timedelta(minutes=5), audio_dir)
+            next_path = None
+            if next_filename:
+                next_candidate = audio_dir / next_filename
+                if next_candidate.exists():
+                    next_path = next_candidate
+            if next_path is None and allow_downloads and thread_onc is not None:
+                next_path = download_adjacent_file(thread_onc, device_code, dt + timedelta(minutes=5), audio_dir)
             if next_path and next_path.exists():
                 with sf.SoundFile(next_path) as f:
                     needed_next = desired_end - main_duration

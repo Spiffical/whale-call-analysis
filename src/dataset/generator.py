@@ -18,6 +18,9 @@ import numpy as np
 import yaml
 from onc import ONC
 import soundfile as sf
+from PIL import Image
+import matplotlib
+import matplotlib.cm as cm
 
 from src.dataset.reporting import print_status, print_header
 from src.dataset.audio import stitch_audio_files
@@ -176,6 +179,51 @@ class SpectrogramDatasetGenerator:
         except Exception:
             return None
 
+    @staticmethod
+    def _apply_contrast(x01: np.ndarray, pmin: float, pmax: float) -> np.ndarray:
+        """Stretch contrast using percentile clipping."""
+        lo = np.percentile(x01, pmin)
+        hi = np.percentile(x01, pmax)
+        if hi <= lo:
+            return x01
+        y = (x01 - lo) / (hi - lo)
+        return np.clip(y, 0.0, 1.0)
+
+    @staticmethod
+    def _to_colormap_rgb(x01: np.ndarray, cmap_name: str = "inferno") -> np.ndarray:
+        """Map a normalized array to RGB using a matplotlib colormap."""
+        try:
+            cmap = matplotlib.colormaps.get_cmap(cmap_name)
+        except Exception:
+            cmap = cm.get_cmap(cmap_name)
+        return (cmap(x01)[..., :3] * 255.0).astype(np.uint8)
+
+    def _save_png_test_style(
+        self,
+        power_db: np.ndarray,
+        save_path: Path,
+        scale: int = 3,
+        cmap: str = "inferno",
+        pmin: float = 2.0,
+        pmax: float = 98.0,
+    ) -> None:
+        """Save PNG in the same visual style as scripts/train/test_cnn.py."""
+        arr = np.asarray(power_db, dtype=np.float32)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        arr_min = float(arr.min()) if arr.size else 0.0
+        arr_max = float(arr.max()) if arr.size else 1.0
+        if arr_max > arr_min:
+            arr01 = (arr - arr_min) / (arr_max - arr_min)
+        else:
+            arr01 = np.zeros_like(arr, dtype=np.float32)
+        arr01 = self._apply_contrast(arr01, pmin=pmin, pmax=pmax)
+        rgb = self._to_colormap_rgb(arr01, cmap_name=cmap)
+        img = Image.fromarray(rgb)
+        if scale > 1:
+            width, height = img.size
+            img = img.resize((width * int(scale), height * int(scale)), resample=Image.BICUBIC)
+        img.save(str(save_path))
+
     def generate_spectrograms(self,
                               whale_calls: pd.DataFrame,
                               output_dir: Path,
@@ -225,6 +273,12 @@ class SpectrogramDatasetGenerator:
         neg_strategy = kwargs.get('neg_strategy', 'random')
         neg_step_seconds = kwargs.get('neg_step_seconds', None)
         max_negatives_per_file = kwargs.get('max_negatives_per_file', None)
+        allow_audio_download = kwargs.get('allow_audio_download', True)
+        png_style = kwargs.get('png_style', 'test')
+        png_scale = kwargs.get('png_scale', 3)
+        png_cmap = kwargs.get('png_cmap', 'inferno')
+        png_pmin = kwargs.get('png_pmin', 2.0)
+        png_pmax = kwargs.get('png_pmax', 98.0)
         if neg_context is None:
             neg_context = ml_context
         
@@ -268,10 +322,15 @@ class SpectrogramDatasetGenerator:
                 if audio_path.exists() and audio_path.stat().st_size > 0:
                     print_status(f"[{thread_id}] Using cached audio: {clip_id}", "INFO")
                 else:
-                    # Thread-safe download using a local ONC client
-                    local_onc = ONC(self.onc_token, showWarning=self.show_onc_warnings)
-                    local_onc.outPath = str(audio_dir)
-                    local_onc.getFile(clip_id)
+                    if allow_audio_download:
+                        # Thread-safe download using a local ONC client
+                        local_onc = ONC(self.onc_token, showWarning=self.show_onc_warnings)
+                        local_onc.outPath = str(audio_dir)
+                        local_onc.getFile(clip_id)
+                    else:
+                        raise FileNotFoundError(
+                            f"Missing local audio {clip_id} and downloads are disabled (--no-audio-download)"
+                        )
                 
                 if not audio_path.exists():
                     raise FileNotFoundError(f"Failed to download {clip_id}")
@@ -297,7 +356,8 @@ class SpectrogramDatasetGenerator:
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, call['device_code'],
                                 desired_start, desired_end, ext_context, audio_dir,
-                                show_onc_warnings=self.show_onc_warnings
+                                show_onc_warnings=self.show_onc_warnings,
+                                allow_downloads=allow_audio_download,
                             )
                             
                             if audio_data is not None:
@@ -305,7 +365,12 @@ class SpectrogramDatasetGenerator:
                                 res_path, res_dims = self._generate_and_save(
                                     audio_data, fs, call_id, png_dir, mat_dir,
                                     edge_context=edge_context,
-                                    target_duration=ml_context
+                                    target_duration=ml_context,
+                                    png_style=png_style,
+                                    png_scale=png_scale,
+                                    png_cmap=png_cmap,
+                                    png_pmin=png_pmin,
+                                    png_pmax=png_pmax,
                                 )
                                 if res_path:
                                     local_specs[call_id] = str(res_path)
@@ -335,13 +400,19 @@ class SpectrogramDatasetGenerator:
                             audio_data = stitch_audio_files(
                                 self.onc_token, clip_id, calls_in_file.iloc[0]['device_code'],
                                 desired_start, desired_end, ext_context, audio_dir,
-                                show_onc_warnings=self.show_onc_warnings
+                                show_onc_warnings=self.show_onc_warnings,
+                                allow_downloads=allow_audio_download,
                             )
                             if audio_data is not None:
                                 res_path, res_dims = self._generate_and_save(
                                     audio_data, fs, neg_id, neg_png_dir, neg_mat_dir,
                                     edge_context=edge_context,
-                                    target_duration=neg_context
+                                    target_duration=neg_context,
+                                    png_style=png_style,
+                                    png_scale=png_scale,
+                                    png_cmap=png_cmap,
+                                    png_pmin=png_pmin,
+                                    png_pmax=png_pmax,
                                 )
                                 if res_path:
                                     local_specs[neg_id] = str(res_path)
@@ -394,7 +465,12 @@ class SpectrogramDatasetGenerator:
                           png_dir: Path, 
                           mat_dir: Path,
                           edge_context: float = 0.0,
-                          target_duration: Optional[float] = None) -> Tuple[Optional[Path], Optional[Tuple[int, int]]]:
+                          target_duration: Optional[float] = None,
+                          png_style: str = "test",
+                          png_scale: int = 3,
+                          png_cmap: str = "inferno",
+                          png_pmin: float = 2.0,
+                          png_pmax: float = 98.0) -> Tuple[Optional[Path], Optional[Tuple[int, int]]]:
         """Generate and save spectrogram.
         
         The MAT file is saved with frequency-cropped data so training doesn't need to re-crop.
@@ -447,9 +523,20 @@ class SpectrogramDatasetGenerator:
             # 4. Save PNG if enabled (use cropped data)
             if spec_cfg.get('output_formats', {}).get('plots', True):
                 png_path = png_dir / f"{call_id}.png"
-                self.spectrogram_generator.plot_spectrogram(
-                    freqs_cropped, times, power_db_cropped, title=f"Whale Call: {call_id}", save_path=png_path
-                )
+                style = str(png_style).lower().strip()
+                if style == "test":
+                    self._save_png_test_style(
+                        power_db_cropped,
+                        png_path,
+                        scale=int(png_scale),
+                        cmap=str(png_cmap),
+                        pmin=float(png_pmin),
+                        pmax=float(png_pmax),
+                    )
+                else:
+                    self.spectrogram_generator.plot_spectrogram(
+                        freqs_cropped, times, power_db_cropped, title=f"Whale Call: {call_id}", save_path=png_path
+                    )
                 try:
                     import matplotlib.pyplot as plt
                     plt.close('all')

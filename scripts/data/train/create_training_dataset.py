@@ -85,7 +85,11 @@ def main():
     parser.add_argument('--cleanup-audio', action='store_true',
                         help='Delete audio files after processing to save space')
     parser.add_argument('--audio-cache-dir', type=str, default=None,
-                        help='Directory to cache downloaded audio files (default: <output-dir>/audio)')
+                        help='Directory to cache/download audio files (default: <output-dir>/audio)')
+    parser.add_argument('--audio-dir', type=str, default=None,
+                        help='Alias for --audio-cache-dir; use a pre-downloaded audio folder')
+    parser.add_argument('--no-audio-download', action='store_true',
+                        help='Use local audio only; do not download missing main/adjacent files from ONC')
     parser.add_argument('--workers', type=int, default=2,
                         help='Number of parallel workers')
     parser.add_argument('--config', type=str, default='./config/dataset_config.yaml',
@@ -102,6 +106,18 @@ def main():
                         help='Disable the progress bar')
     parser.add_argument('--edge-context', type=float, default=2.0,
                         help='Seconds of padding before/after each window to reduce edge artifacts (trimmed after spectrogram)')
+
+    png_group = parser.add_argument_group("PNG rendering")
+    png_group.add_argument('--png-style', type=str, default='test', choices=['test', 'legacy'],
+                           help='PNG style: test matches scripts/train/test_cnn.py visuals')
+    png_group.add_argument('--png-scale', type=int, default=3,
+                           help='Scale factor for saved PNG spectrograms')
+    png_group.add_argument('--png-cmap', type=str, default='inferno',
+                           help='Colormap for saved PNG spectrograms')
+    png_group.add_argument('--png-pmin', type=float, default=2.0,
+                           help='Lower percentile for PNG contrast stretch')
+    png_group.add_argument('--png-pmax', type=float, default=98.0,
+                           help='Upper percentile for PNG contrast stretch')
 
     args = parser.parse_args()
 
@@ -127,7 +143,11 @@ def main():
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    audio_cache_dir = Path(args.audio_cache_dir) if args.audio_cache_dir else None
+    if args.audio_cache_dir and args.audio_dir and args.audio_cache_dir != args.audio_dir:
+        print_status("Error: --audio-cache-dir and --audio-dir disagree; provide only one path", "ERROR")
+        sys.exit(1)
+    resolved_audio_dir = args.audio_dir or args.audio_cache_dir
+    audio_cache_dir = Path(resolved_audio_dir) if resolved_audio_dir else None
 
     # 1. Create generator (supports multiple Excel files)
     generator = SpectrogramDatasetGenerator(
@@ -211,6 +231,12 @@ def main():
         "neg_step_seconds": args.neg_step_seconds,
         "max_negatives_per_file": args.max_negatives_per_file,
         "audio_cache_dir": audio_cache_dir,
+        "allow_audio_download": not args.no_audio_download,
+        "png_style": args.png_style,
+        "png_scale": args.png_scale,
+        "png_cmap": args.png_cmap,
+        "png_pmin": args.png_pmin,
+        "png_pmax": args.png_pmax,
     }
     if args.ml_context is not None:
         gen_kwargs["ml_context"] = args.ml_context
