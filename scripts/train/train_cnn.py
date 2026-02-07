@@ -203,6 +203,10 @@ def main():
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--crop-size', type=str, default=None, 
                     help='Crop size: int for square, "freq,time" for non-square, or omit for full freq range (square)')
+    ap.add_argument('--crop-time-seconds', type=float, default=None,
+                    help='Physical time span (seconds) for final crop; overrides crop-size time bins')
+    ap.add_argument('--crop-freq-range-hz', type=float, nargs=2, default=None, metavar=('MIN_HZ', 'MAX_HZ'),
+                    help='Physical frequency limits for final crop. Default: full MAT frequency axis')
     ap.add_argument('--min-db', type=float, default=-80.0)
     ap.add_argument('--max-db', type=float, default=0.0)
     ap.add_argument('--train-ratio', type=float, default=0.8)
@@ -235,6 +239,9 @@ def main():
             crop_size = [int(p.strip()) for p in parts]
         else:
             crop_size = int(args.crop_size)
+    crop_freq_range_hz = tuple(args.crop_freq_range_hz) if args.crop_freq_range_hz is not None else None
+    if (args.crop_time_seconds is not None or crop_freq_range_hz is not None) and args.crop_size is not None:
+        raise SystemExit("Use either --crop-size or physical crop args (--crop-time-seconds/--crop-freq-range-hz), not both.")
 
     if not hasattr(args, 'task') or args.task is None:
         args.task = 'finwhale_cnn'
@@ -281,6 +288,8 @@ def main():
             num_workers=args.num_workers,
             pin_memory=args.pin_memory,
             crop_size=crop_size,
+            crop_time_seconds=args.crop_time_seconds,
+            crop_freq_range_hz=crop_freq_range_hz,
             train_ratio=args.train_ratio,
             val_ratio=args.val_ratio,
             min_db=args.min_db,
@@ -313,14 +322,20 @@ def main():
         train_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='train', crop_size=crop_size,
                                       min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                       center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                      crop_time_seconds=args.crop_time_seconds,
+                                      crop_freq_range_hz=crop_freq_range_hz,
                                       file_list=to_list(sp['train']))
         val_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='val', crop_size=crop_size,
                                     min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                     center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                    crop_time_seconds=args.crop_time_seconds,
+                                    crop_freq_range_hz=crop_freq_range_hz,
                                     file_list=to_list(sp['val']))
         test_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='test', crop_size=crop_size,
                                      min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                      center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                     crop_time_seconds=args.crop_time_seconds,
+                                     crop_freq_range_hz=crop_freq_range_hz,
                                      file_list=to_list(sp['test']))
 
         # Build loaders

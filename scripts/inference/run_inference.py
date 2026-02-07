@@ -40,6 +40,33 @@ from src.dataset.reporting import print_status, print_header
 from src.data.sequential_prep import extract_timestamp_from_filename, parse_datetime
 
 
+def _parse_crop_size(crop_size: Optional[Any]) -> Tuple[Optional[int], Optional[int]]:
+    """Parse crop size into (freq_bins, time_bins)."""
+    if crop_size is None:
+        return (None, None)
+    if isinstance(crop_size, int):
+        return (int(crop_size), int(crop_size))
+    if isinstance(crop_size, (list, tuple)) and len(crop_size) == 2:
+        return (
+            int(crop_size[0]) if crop_size[0] is not None else None,
+            int(crop_size[1]) if crop_size[1] is not None else None,
+        )
+    raise ValueError(f"crop_size must be int or [freq,time], got {crop_size}")
+
+
+def _infer_time_bin_seconds(times: Optional[np.ndarray]) -> Optional[float]:
+    if times is None:
+        return None
+    t = np.asarray(times).ravel()
+    if t.size < 2:
+        return None
+    diffs = np.diff(t.astype(np.float64))
+    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+    if diffs.size == 0:
+        return None
+    return float(np.median(diffs))
+
+
 class InferenceDataset(torch.utils.data.Dataset):
     """Dataset for inference on MAT spectrograms with optional sliding window.
     
@@ -58,50 +85,89 @@ class InferenceDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         mat_dir: str,
-        crop_size: Optional[int] = None,
+        crop_size: Optional[Any] = None,
+        crop_time_seconds: Optional[float] = None,
+        crop_freq_range_hz: Optional[Tuple[float, float]] = None,
         min_db: float = -80.0,
         max_db: float = 0.0,
         sliding_window: bool = False,
         window_step: Optional[int] = None,  # None = same as crop_size (no overlap)
+        window_step_seconds: Optional[float] = None,  # None = derive from window_step or crop size
         windows_per_file: Optional[int] = None,  # Evenly distribute N windows per file
     ):
         """Initialize the inference dataset.
         
         Args:
             mat_dir: Directory containing MAT files
-            crop_size: Crop size (should match training). If None, no cropping.
+            crop_size: Crop size. int for square, [freq,time] for non-square.
+            crop_time_seconds: Physical time span for final crop. Overrides crop_size time bins.
+            crop_freq_range_hz: Physical frequency range [min_hz, max_hz] for final crop.
             min_db: Minimum dB for normalization
             max_db: Maximum dB for normalization
             sliding_window: If True, slide window across time axis
             window_step: Step size for sliding window. None = crop_size (no overlap)
+            window_step_seconds: Sliding step in seconds. Overrides window_step when provided.
             windows_per_file: If set, evenly distribute exactly N windows per file
         """
         self.mat_dir = Path(mat_dir)
         self.crop_size = crop_size
+        self.freq_crop, self.time_crop = _parse_crop_size(crop_size)
+        self.crop_time_seconds = float(crop_time_seconds) if crop_time_seconds is not None else None
+        if self.crop_time_seconds is not None and self.crop_time_seconds <= 0:
+            raise ValueError("crop_time_seconds must be > 0")
+        if crop_freq_range_hz is not None:
+            fmin, fmax = float(crop_freq_range_hz[0]), float(crop_freq_range_hz[1])
+            if not np.isfinite(fmin) or not np.isfinite(fmax) or fmax <= fmin:
+                raise ValueError("crop_freq_range_hz must be [min_hz, max_hz] with max > min")
+            self.crop_freq_range_hz = (fmin, fmax)
+        else:
+            self.crop_freq_range_hz = None
         self.min_db = min_db
         self.max_db = max_db
         self.sliding_window = sliding_window
-        self.window_step = window_step if window_step is not None else crop_size
+        self.window_step = window_step
+        self.window_step_seconds = float(window_step_seconds) if window_step_seconds is not None else None
+        if self.window_step_seconds is not None and self.window_step_seconds <= 0:
+            raise ValueError("window_step_seconds must be > 0")
         self.windows_per_file = windows_per_file
         self.window_step_by_file: Dict[int, Optional[float]] = {}
+        self.crop_dims_by_file: Dict[int, Tuple[int, int]] = {}
+        self.freq_slice_by_file: Dict[int, Optional[Tuple[int, int]]] = {}
+        self.time_bin_seconds_by_file: Dict[int, Optional[float]] = {}
+        self.reference_time_bin_seconds: Optional[float] = None
+        self.output_crop_shape: Optional[List[int]] = None
         
         # Find all MAT files
         self.mat_files = sorted(list(self.mat_dir.glob("*.mat")))
         if not self.mat_files:
             raise ValueError(f"No MAT files found in {mat_dir}")
+
+        # Initialize reference time resolution for seconds-based options.
+        if self.crop_time_seconds is not None or self.window_step_seconds is not None:
+            first_spec, _, _, first_times = self._load_spectrogram_raw(self.mat_files[0])
+            _ = first_spec  # shape is not needed here; keeps explicit intent
+            self.reference_time_bin_seconds = _infer_time_bin_seconds(first_times)
+            if self.reference_time_bin_seconds is None or self.reference_time_bin_seconds <= 0:
+                raise ValueError(
+                    "crop-time-seconds/window-step-seconds requires MAT time axis with at least 2 increasing entries"
+                )
         
         # Build index: list of (file_idx, window_start) tuples
         self.samples = []
-        if sliding_window and crop_size is not None:
+        if sliding_window:
             # Pre-scan files to build window indices
             for file_idx, mat_path in enumerate(self.mat_files):
-                spec, _ = self._load_spectrogram_raw(mat_path)
+                spec, _, freqs, times = self._load_spectrogram_raw(mat_path)
                 F_dim, T_dim = spec.shape
+                crop_f, crop_t, freq_slice = self._resolve_crop_dims(F_dim, T_dim, freqs=freqs, times=times)
+                self.crop_dims_by_file[file_idx] = (crop_f, crop_t)
+                self.freq_slice_by_file[file_idx] = freq_slice
+                self.time_bin_seconds_by_file[file_idx] = _infer_time_bin_seconds(times) or self.reference_time_bin_seconds
 
-                max_start = max(T_dim - crop_size, 0)
-                if T_dim < crop_size:
+                max_start = max(T_dim - crop_t, 0)
+                if T_dim < crop_t:
                     raise ValueError(
-                        f"Spectrogram time bins ({T_dim}) smaller than crop_size ({crop_size}) for {mat_path.name}"
+                        f"Spectrogram time bins ({T_dim}) smaller than crop target ({crop_t}) for {mat_path.name}"
                     )
 
                 if max_start == 0:
@@ -132,7 +198,15 @@ class InferenceDataset(torch.utils.data.Dataset):
                     continue
 
                 # Calculate minimum overlap windows based on requested step (or crop_size)
-                step_bins = self.window_step or crop_size
+                if self.window_step_seconds is not None:
+                    dt = self.time_bin_seconds_by_file[file_idx] or self.reference_time_bin_seconds
+                    if dt is None or dt <= 0:
+                        raise ValueError("window_step_seconds requires valid MAT time axis")
+                    step_bins = max(1, int(round(self.window_step_seconds / dt)))
+                elif self.window_step is not None:
+                    step_bins = int(self.window_step)
+                else:
+                    step_bins = crop_t
                 if step_bins is None or step_bins <= 0:
                     raise ValueError("window_step must be >= 1 when sliding_window is enabled")
 
@@ -150,6 +224,44 @@ class InferenceDataset(torch.utils.data.Dataset):
         else:
             # One sample per file (center crop)
             self.samples = [(i, None) for i in range(len(self.mat_files))]
+
+        # Determine output shape for metadata/logging.
+        first_spec, _, first_freqs, first_times = self._load_spectrogram_raw(self.mat_files[0])
+        f0, t0 = first_spec.shape
+        crop_f0, crop_t0, _ = self._resolve_crop_dims(f0, t0, freqs=first_freqs, times=first_times)
+        self.output_crop_shape = [int(crop_f0), int(crop_t0)]
+
+    def _resolve_crop_dims(
+        self,
+        F_dim: int,
+        T_dim: int,
+        freqs: Optional[np.ndarray],
+        times: Optional[np.ndarray],
+    ) -> Tuple[int, int, Optional[Tuple[int, int]]]:
+        """Resolve target crop dimensions and optional frequency pre-slice."""
+        freq_slice: Optional[Tuple[int, int]] = None
+        effective_F = int(F_dim)
+
+        if self.crop_freq_range_hz is not None and freqs is not None:
+            freq_arr = np.asarray(freqs).ravel()
+            if freq_arr.shape[0] == F_dim:
+                fmin, fmax = self.crop_freq_range_hz
+                mask = (freq_arr >= fmin) & (freq_arr <= fmax)
+                if np.any(mask):
+                    idx = np.where(mask)[0]
+                    freq_slice = (int(idx[0]), int(idx[-1]) + 1)
+                    effective_F = int(freq_slice[1] - freq_slice[0])
+
+        crop_f = int(self.freq_crop) if self.freq_crop is not None else int(effective_F)
+        if self.crop_time_seconds is not None:
+            dt = _infer_time_bin_seconds(times) or self.reference_time_bin_seconds
+            if dt is None or dt <= 0:
+                raise ValueError("crop_time_seconds requires valid MAT time axis")
+            crop_t = max(1, int(round(self.crop_time_seconds / dt)))
+        else:
+            crop_t = int(self.time_crop) if self.time_crop is not None else int(crop_f)
+
+        return int(crop_f), int(crop_t), freq_slice
     
     def _find_key(self, data: dict, keys: tuple) -> Optional[str]:
         """Find matching key in data dict (same as training)."""
@@ -163,11 +275,13 @@ class InferenceDataset(torch.utils.data.Dataset):
                 return lowered[k.lower()]
         return None
     
-    def _load_spectrogram_raw(self, mat_path: Path) -> Tuple[np.ndarray, str]:
+    def _load_spectrogram_raw(
+        self, mat_path: Path
+    ) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
         """Load raw spectrogram from MAT file without normalization.
 
         Returns:
-            Tuple of (spec, spec_kind) where spec_kind is 'power' or 'db'.
+            Tuple of (spec, spec_kind, freqs, times) where spec_kind is 'power' or 'db'.
         """
         data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
         
@@ -186,14 +300,16 @@ class InferenceDataset(torch.utils.data.Dataset):
         # Check orientation using freq/time vectors if available
         fk = self._find_key(data, self.FREQ_KEYS)
         tk = self._find_key(data, self.TIME_KEYS)
-        if fk in data and tk in data:
-            f_len = int(np.asarray(data[fk]).ravel().shape[0])
-            t_len = int(np.asarray(data[tk]).ravel().shape[0])
+        freqs = np.asarray(data[fk]).squeeze() if fk in data else None
+        times = np.asarray(data[tk]).squeeze() if tk in data else None
+        if freqs is not None and times is not None:
+            f_len = int(np.asarray(freqs).ravel().shape[0])
+            t_len = int(np.asarray(times).ravel().shape[0])
             r, c = spec.shape[:2]
             if (r, c) == (t_len, f_len):
                 spec = spec.T  # now (F, T)
         
-        return spec, spec_kind
+        return spec, spec_kind, freqs, times
     
     def _normalize_db_to_unit(self, x: np.ndarray) -> np.ndarray:
         """Normalize dB to [0, 1] (exactly like training: clip then normalize)."""
@@ -219,53 +335,80 @@ class InferenceDataset(torch.utils.data.Dataset):
         file_id = mat_path.stem
         
         # Load spectrogram
-        spec, spec_kind = self._load_spectrogram_raw(mat_path)
+        spec, spec_kind, freqs, times = self._load_spectrogram_raw(mat_path)
         F_dim, T_dim = spec.shape
-        
+        crop_f, crop_t, freq_slice = self._resolve_crop_dims(F_dim, T_dim, freqs=freqs, times=times)
+        time_bin_seconds = _infer_time_bin_seconds(times) or self.reference_time_bin_seconds
+
         meta = {
             'original_shape': [F_dim, T_dim],
-            'crop_size': [self.crop_size, self.crop_size] if self.crop_size else None,
+            'crop_size': [crop_f, crop_t],
+            'crop_freq_bins': int(crop_f),
+            'crop_time_bins': int(crop_t),
+            'crop_time_seconds': float(self.crop_time_seconds) if self.crop_time_seconds is not None else None,
+            'crop_freq_range_hz': list(self.crop_freq_range_hz) if self.crop_freq_range_hz is not None else None,
+            'time_bin_seconds': float(time_bin_seconds) if time_bin_seconds is not None else None,
             'sliding_window': self.sliding_window,
             'window_start': window_start,
             'window_step': self.window_step_by_file.get(file_idx),
             'window_step_requested': self.window_step,
+            'window_step_seconds_requested': self.window_step_seconds,
             'windows_per_file': self.windows_per_file,
         }
-        
-        if self.crop_size is not None:
-            crop_f, crop_t = self.crop_size, self.crop_size
-            
-            # Frequency axis: center crop
-            if F_dim > crop_f:
-                start_f = (F_dim - crop_f) // 2
-                spec = spec[start_f:start_f + crop_f, :]
-            elif F_dim < crop_f:
-                raise ValueError(f"Spectrogram freq bins ({F_dim}) smaller than crop_size ({crop_f}) for {mat_path.name}")
-            
-            # Time axis: sliding window or center crop
-            if self.sliding_window and window_start is not None:
-                # Use specified window position
-                spec = spec[:, window_start:window_start + crop_t]
-                meta['crop_type'] = 'sliding_window'
-                meta['window_time_start'] = window_start
-                meta['window_time_end'] = window_start + crop_t
+
+        # Optional physical frequency pre-slice.
+        if freq_slice is not None:
+            f0, f1 = freq_slice
+            spec = spec[f0:f1, :]
+            F_dim, T_dim = spec.shape
+
+        # Frequency axis: pad or center-crop (match training behavior).
+        if F_dim < crop_f:
+            pad = crop_f - F_dim
+            spec = np.pad(spec, ((0, pad), (0, 0)), mode='edge')
+            F_dim = crop_f
+        elif F_dim > crop_f:
+            start_f = max(0, (F_dim - crop_f) // 2)
+            spec = spec[start_f:start_f + crop_f, :]
+            F_dim = crop_f
+
+        # Time axis: sliding window or center crop.
+        if self.sliding_window and window_start is not None:
+            start_t = int(window_start)
+            end_t = start_t + int(crop_t)
+            if end_t > T_dim:
+                start_t = max(0, T_dim - int(crop_t))
+                end_t = start_t + int(crop_t)
+            if T_dim < crop_t:
+                # Sliding mode generally pre-validates this, but keep it robust.
+                pad = crop_t - T_dim
+                spec = np.pad(spec, ((0, 0), (0, pad)), mode='edge')
+                start_t = 0
+                end_t = crop_t
             else:
-                # Center crop
-                if T_dim > crop_t:
-                    start_t = (T_dim - crop_t) // 2
-                    spec = spec[:, start_t:start_t + crop_t]
-                    meta['window_time_start'] = start_t
-                    meta['window_time_end'] = start_t + crop_t
-                meta['crop_type'] = 'center_crop'
-            if spec.shape[1] < crop_t:
-                raise ValueError(f"Spectrogram time bins ({spec.shape[1]}) smaller than crop_size ({crop_t}) for {mat_path.name}")
-            
-            meta['output_shape'] = list(spec.shape)
-            meta['crop_applied'] = True
+                spec = spec[:, start_t:end_t]
+            meta['crop_type'] = 'sliding_window'
+            meta['window_time_start'] = int(start_t)
+            meta['window_time_end'] = int(end_t)
         else:
-            meta['output_shape'] = [F_dim, T_dim]
-            meta['crop_applied'] = False
-            meta['crop_type'] = None
+            if T_dim < crop_t:
+                pad = crop_t - T_dim
+                spec = np.pad(spec, ((0, 0), (0, pad)), mode='edge')
+                start_t = 0
+                end_t = crop_t
+            elif T_dim > crop_t:
+                start_t = max(0, (T_dim - crop_t) // 2)
+                end_t = start_t + crop_t
+                spec = spec[:, start_t:end_t]
+            else:
+                start_t = 0
+                end_t = crop_t
+            meta['crop_type'] = 'center_crop'
+            meta['window_time_start'] = int(start_t)
+            meta['window_time_end'] = int(end_t)
+
+        meta['output_shape'] = list(spec.shape)
+        meta['crop_applied'] = True
 
         # Normalize after cropping for consistent context
         if spec_kind == 'power':
@@ -607,12 +750,19 @@ def main():
                         choices=['auto', 'cpu', 'cuda'],
                         help='Device to use')
     parser.add_argument('--crop-size', type=str, default=None,
-                        help='Crop size (int). Auto-detected from checkpoint if not specified.')
+                        help='Crop size: int for square or "freq,time" for non-square. '
+                             'Auto-detected from checkpoint if not specified.')
+    parser.add_argument('--crop-time-seconds', type=float, default=None,
+                        help='Physical time span (seconds) for final crop. Overrides crop-size time bins.')
+    parser.add_argument('--crop-freq-range-hz', type=float, nargs=2, default=None, metavar=('MIN_HZ', 'MAX_HZ'),
+                        help='Physical frequency range for final crop. Default: full MAT frequency axis.')
     parser.add_argument('--sliding-window', action='store_true',
                         help='Use sliding window to scan entire spectrogram')
     parser.add_argument('--window-step', type=int, default=None,
                         help='Step size for sliding window (default: crop_size = no overlap). '
                              'Windows are evenly distributed to avoid padding.')
+    parser.add_argument('--window-step-seconds', type=float, default=None,
+                        help='Sliding step in seconds. Overrides --window-step when provided.')
     parser.add_argument('--windows-per-file', type=int, default=None,
                         help='Evenly distribute exactly N windows per 5-min spectrogram '
                              '(minimum overlap). Overrides window-step.')
@@ -663,7 +813,12 @@ def main():
             crop_size = [int(p.strip()) for p in parts]
         else:
             crop_size = int(args.crop_size)
-    else:
+    crop_freq_range_hz = tuple(args.crop_freq_range_hz) if args.crop_freq_range_hz is not None else None
+    if (args.crop_time_seconds is not None or crop_freq_range_hz is not None) and args.crop_size is not None:
+        raise SystemExit(
+            "Use either --crop-size or physical crop args (--crop-time-seconds/--crop-freq-range-hz), not both."
+        )
+    if args.crop_size is None and args.crop_time_seconds is None and crop_freq_range_hz is None:
         # Try to auto-detect from checkpoint
         crop_size = extract_crop_size_from_checkpoint(args.checkpoint)
         if crop_size:
@@ -672,7 +827,10 @@ def main():
             # Try metadata
             meta_crop = spec_config.get("crop_size") if spec_config else None
             if meta_crop:
-                crop_size = int(meta_crop)
+                if isinstance(meta_crop, (list, tuple)) and len(meta_crop) == 2:
+                    crop_size = [int(meta_crop[0]), int(meta_crop[1])]
+                else:
+                    crop_size = int(meta_crop)
                 print(f"Auto-detected crop_size from metadata: {crop_size}")
             else:
                 # Fallback: infer from first MAT file's freq bins
@@ -690,10 +848,41 @@ def main():
             if crop_size is None:
                 print("Warning: crop_size not specified and could not be auto-detected")
 
-    if args.sliding_window and crop_size is None:
-        raise SystemExit("sliding_window requires crop_size. Provide --crop-size or ensure it exists in args.pkl/metadata.")
+    # Normalize auto-detected crop_size representations (e.g., "96,192" from args.pkl).
+    if isinstance(crop_size, str):
+        text = crop_size.strip()
+        if "," in text:
+            parts = [p.strip() for p in text.split(",")]
+            if len(parts) == 2:
+                crop_size = [int(parts[0]), int(parts[1])]
+            else:
+                raise SystemExit(f"Invalid auto-detected crop_size string: {crop_size}")
+        elif text:
+            crop_size = int(text)
+
+    if args.sliding_window and crop_size is None and args.crop_time_seconds is None:
+        raise SystemExit(
+            "sliding_window requires either crop-size bins or crop-time-seconds. "
+            "Provide --crop-size / --crop-time-seconds or ensure crop_size exists in args.pkl/metadata."
+        )
     if args.window_step is not None and args.windows_per_file is not None:
         raise SystemExit("Use either --window-step or --windows-per-file (not both).")
+    if args.window_step_seconds is not None and args.windows_per_file is not None:
+        raise SystemExit("Use either --window-step-seconds or --windows-per-file (not both).")
+    if args.window_step is not None and args.window_step_seconds is not None:
+        raise SystemExit("Use either --window-step (bins) or --window-step-seconds, not both.")
+
+    # Record effective crop intent in spectrogram config metadata.
+    if spec_config is None:
+        spec_config = {}
+    if crop_size is not None:
+        spec_config["crop_size"] = crop_size
+    if args.crop_time_seconds is not None:
+        spec_config["crop_time_seconds"] = float(args.crop_time_seconds)
+    if crop_freq_range_hz is not None:
+        spec_config["crop_freq_range_hz"] = {"min": float(crop_freq_range_hz[0]), "max": float(crop_freq_range_hz[1])}
+    if args.window_step_seconds is not None:
+        spec_config["window_step_seconds"] = float(args.window_step_seconds)
 
     # Load checkpoint
     print_status("Loading checkpoint...", "PROGRESS")
@@ -727,10 +916,13 @@ def main():
     dataset = InferenceDataset(
         mat_dir=args.mat_dir,
         crop_size=crop_size,
+        crop_time_seconds=args.crop_time_seconds,
+        crop_freq_range_hz=crop_freq_range_hz,
         min_db=args.min_db,
         max_db=args.max_db,
         sliding_window=args.sliding_window,
         window_step=args.window_step,
+        window_step_seconds=args.window_step_seconds,
         windows_per_file=args.windows_per_file,
     )
     
@@ -738,6 +930,8 @@ def main():
     n_samples = len(dataset)
     mode = "sliding window" if args.sliding_window else "center crop"
     print(f"  Found {n_files} MAT files -> {n_samples} samples ({mode})")
+    if dataset.output_crop_shape is not None:
+        print(f"  Effective crop shape [freq, time]: {dataset.output_crop_shape}")
     
     # Create dataloader with custom collate for variable metadata
     def collate_fn(batch):
@@ -850,41 +1044,76 @@ def main():
                     continue
 
                 start_idx = int(start_idx)
-                crop_f = int(crop_size) if isinstance(crop_size, int) else F_dim
-                crop_t = int(crop_size) if isinstance(crop_size, int) else T_dim
+                crop_f = int(meta.get('crop_freq_bins') or (meta.get('output_shape', [F_dim, T_dim])[0]))
+                crop_t = int(meta.get('crop_time_bins') or (meta.get('output_shape', [F_dim, T_dim])[1]))
+                spec_work = spec
+                freqs_work = np.asarray(freqs).ravel() if freqs is not None else None
+                times_work = np.asarray(times).ravel() if times is not None else None
+                F_work, T_work = spec_work.shape
+
+                # Optional physical frequency pre-slice to match inference dataset.
+                freq_range_meta = meta.get('crop_freq_range_hz')
+                if freq_range_meta is not None and freqs_work is not None:
+                    if isinstance(freq_range_meta, dict):
+                        fmin = freq_range_meta.get('min')
+                        fmax = freq_range_meta.get('max')
+                    elif isinstance(freq_range_meta, (list, tuple)) and len(freq_range_meta) >= 2:
+                        fmin, fmax = freq_range_meta[0], freq_range_meta[1]
+                    else:
+                        fmin, fmax = None, None
+                    if fmin is not None and fmax is not None:
+                        mask = (freqs_work >= float(fmin)) & (freqs_work <= float(fmax))
+                        if np.any(mask):
+                            idx = np.where(mask)[0]
+                            spec_work = spec_work[idx[0]:idx[-1] + 1, :]
+                            freqs_work = freqs_work[idx[0]:idx[-1] + 1]
+                            F_work, T_work = spec_work.shape
 
                 # Frequency crop (center)
                 f_start = 0
-                if F_dim > crop_f:
-                    f_start = (F_dim - crop_f) // 2
-                if F_dim < crop_f:
-                    print_status(
-                        f"Skipping {item_id}: freq bins ({F_dim}) smaller than crop_size ({crop_f})",
-                        "WARNING",
-                    )
-                    continue
+                if F_work > crop_f:
+                    f_start = (F_work - crop_f) // 2
                 f_end = f_start + crop_f
-                spec_f = spec[f_start:f_end, :]
-                freqs_f = np.asarray(freqs)[f_start:f_end] if freqs is not None else None
+                if F_work < crop_f:
+                    spec_f = np.pad(spec_work, ((0, crop_f - F_work), (0, 0)), mode='edge')
+                    if freqs_work is not None:
+                        if len(freqs_work) > 0:
+                            pad_vals = np.full((crop_f - F_work,), freqs_work[-1], dtype=freqs_work.dtype)
+                            freqs_f = np.concatenate([freqs_work, pad_vals], axis=0)
+                        else:
+                            freqs_f = None
+                    else:
+                        freqs_f = None
+                else:
+                    spec_f = spec_work[f_start:f_end, :]
+                    freqs_f = freqs_work[f_start:f_end] if freqs_work is not None else None
 
                 # Time crop (window)
-                max_start = T_dim - crop_t
-                if max_start < 0:
-                    print_status(
-                        f"Skipping {item_id}: time bins ({T_dim}) smaller than crop_size ({crop_t})",
-                        "WARNING",
-                    )
-                    continue
-                if start_idx > max_start:
+                max_start = T_work - crop_t
+                if max_start >= 0 and start_idx > max_start:
                     print_status(
                         f"Skipping {item_id}: window_start {start_idx} exceeds max {max_start}",
                         "WARNING",
                     )
                     continue
-                t_start = max(0, int(start_idx))
+                t_start = max(0, int(start_idx)) if max_start >= 0 else 0
                 t_end = t_start + crop_t
-                spec_crop = spec_f[:, t_start:t_end]
-                times_crop = np.asarray(times)[t_start:t_end] if times is not None else None
+                if T_work < crop_t:
+                    spec_crop = np.pad(spec_f, ((0, 0), (0, crop_t - T_work)), mode='edge')
+                    if times_work is not None:
+                        if len(times_work) >= 2:
+                            dt = float(np.median(np.diff(times_work.astype(np.float64))))
+                            pad_vals = times_work[-1] + dt * np.arange(1, (crop_t - T_work) + 1, dtype=np.float64)
+                            times_crop = np.concatenate([times_work, pad_vals], axis=0)
+                        elif len(times_work) == 1:
+                            times_crop = np.concatenate([times_work, np.full((crop_t - T_work,), times_work[-1])], axis=0)
+                        else:
+                            times_crop = None
+                    else:
+                        times_crop = None
+                else:
+                    spec_crop = spec_f[:, t_start:t_end]
+                    times_crop = times_work[t_start:t_end] if times_work is not None else None
 
                 if spec_crop.shape[1] < crop_t or spec_crop.shape[0] < crop_f:
                     print_status(
@@ -981,7 +1210,7 @@ def main():
         checkpoint_path=model_info['checkpoint_path'],
         trained_at=model_info['trained_at'],
         wandb_run_id=model_info['wandb_run_id'],
-        input_shape=[crop_size, crop_size] if crop_size and isinstance(crop_size, int) else None,
+        input_shape=dataset.output_crop_shape,
         output_classes=["Biophony > Marine mammal > Cetacean > Baleen whale > Fin whale"]
     )
     

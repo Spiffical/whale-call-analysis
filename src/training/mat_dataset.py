@@ -130,6 +130,20 @@ def parse_crop_size(crop_size: Union[int, List[int], Tuple[int, int], None]) -> 
     raise ValueError(f"crop_size must be int, [freq, time], or None, got {crop_size}")
 
 
+def _infer_time_bin_seconds(times: Optional[np.ndarray]) -> Optional[float]:
+    """Infer spectrogram time-bin spacing (seconds per frame) from MAT time axis."""
+    if times is None:
+        return None
+    t = np.asarray(times).ravel()
+    if t.size < 2:
+        return None
+    diffs = np.diff(t.astype(np.float64))
+    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+    if diffs.size == 0:
+        return None
+    return float(np.median(diffs))
+
+
 class FinWhaleMatDataset(Dataset):
     """Supervised spectrogram dataset from MAT files.
 
@@ -148,6 +162,8 @@ class FinWhaleMatDataset(Dataset):
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
         crop_size: Union[int, List[int], Tuple[int, int], None] = None,
+        crop_time_seconds: Optional[float] = None,
+        crop_freq_range_hz: Optional[Tuple[float, float]] = None,
         min_db: float = -80.0,
         max_db: float = 0.0,
         center_bias_sigma_frac: float = 0.25,
@@ -165,6 +181,10 @@ class FinWhaleMatDataset(Dataset):
                 - None: Use full frequency range, time crop = freq bins (square)
                 - int: Square crop of this size
                 - [freq, time]: Different crop for each axis (None = full dimension)
+            crop_time_seconds: Optional physical time span for time crop (overrides
+                crop_size time bins when provided and a valid MAT time axis exists).
+            crop_freq_range_hz: Optional physical frequency crop limits [min_hz, max_hz]
+                applied before bin-based cropping. `None` keeps the full MAT frequency axis.
         """
         if sio is None:
             raise RuntimeError("scipy is required to load .mat files. Please install scipy.")
@@ -181,6 +201,16 @@ class FinWhaleMatDataset(Dataset):
         self.rng = np.random.default_rng(seed)
         self.augment_eval = bool(augment_eval)
         self.return_meta = bool(return_meta)
+        self.crop_time_seconds = float(crop_time_seconds) if crop_time_seconds is not None else None
+        if self.crop_time_seconds is not None and self.crop_time_seconds <= 0:
+            raise ValueError("crop_time_seconds must be > 0 when provided")
+        if crop_freq_range_hz is not None:
+            fmin, fmax = float(crop_freq_range_hz[0]), float(crop_freq_range_hz[1])
+            if not np.isfinite(fmin) or not np.isfinite(fmax) or fmax <= fmin:
+                raise ValueError("crop_freq_range_hz must be [min_hz, max_hz] with max > min")
+            self.crop_freq_range_hz = (fmin, fmax)
+        else:
+            self.crop_freq_range_hz = None
         
         # Parse crop_size
         self.freq_crop, self.time_crop = parse_crop_size(crop_size)
@@ -224,11 +254,11 @@ class FinWhaleMatDataset(Dataset):
     def __len__(self) -> int:
         return len(self.files)
 
-    def _load_spectrogram_raw(self, path: Path) -> Tuple[np.ndarray, str]:
+    def _load_spectrogram_raw(self, path: Path) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
         """Load spectrogram from MAT file (already frequency-cropped).
 
         Returns:
-            Tuple of (spec, spec_kind) where spec_kind is 'power' or 'db'.
+            Tuple of (spec, spec_kind, freqs, times) where spec_kind is 'power' or 'db'.
         """
         data = sio.loadmat(str(path), simplify_cells=True)
         k = _find_key(data, POWER_KEYS)
@@ -245,28 +275,57 @@ class FinWhaleMatDataset(Dataset):
         # Check orientation using freq/time vectors if available
         fk = _find_key(data, FREQ_KEYS)
         tk = _find_key(data, TIME_KEYS)
-        if fk in data and tk in data:
-            f_len = int(np.asarray(data[fk]).ravel().shape[0])
-            t_len = int(np.asarray(data[tk]).ravel().shape[0])
+        freqs = np.asarray(data[fk]).squeeze() if fk in data else None
+        times = np.asarray(data[tk]).squeeze() if tk in data else None
+        if freqs is not None and times is not None:
+            f_len = int(np.asarray(freqs).ravel().shape[0])
+            t_len = int(np.asarray(times).ravel().shape[0])
             r, c = spec.shape[:2]
             if (r, c) == (t_len, f_len):
                 spec = spec.T  # now (F, T)
-        
-        return spec, spec_kind
 
-    def _crop(self, spec: np.ndarray, is_positive: bool) -> Tuple[np.ndarray, int]:
+        return spec, spec_kind, freqs, times
+
+    def _crop(
+        self,
+        spec: np.ndarray,
+        is_positive: bool,
+        freqs: Optional[np.ndarray] = None,
+        times: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, int, int]:
         """Crop spectrogram to target dimensions.
         
         Returns:
-            Tuple of (cropped_spec, time_start_idx)
+            Tuple of (cropped_spec, time_start_idx, target_time_bins)
         """
         F, T = spec.shape
-        
+
+        # Optional physical frequency crop first.
+        if self.crop_freq_range_hz is not None and freqs is not None:
+            freq_arr = np.asarray(freqs).ravel()
+            if freq_arr.shape[0] == F:
+                fmin, fmax = self.crop_freq_range_hz
+                mask = (freq_arr >= fmin) & (freq_arr <= fmax)
+                if np.any(mask):
+                    idx = np.where(mask)[0]
+                    spec = spec[idx[0]:idx[-1] + 1, :]
+                    F, T = spec.shape
+
         # Determine target dimensions
         # If freq_crop is None, use full frequency range
         target_f = self.freq_crop if self.freq_crop is not None else F
-        # If time_crop is None, default to square (same as freq)
-        target_t = self.time_crop if self.time_crop is not None else target_f
+        # Physical time crop (seconds) overrides bin-based time crop when possible.
+        if self.crop_time_seconds is not None:
+            dt = _infer_time_bin_seconds(times)
+            if dt is not None and dt > 0:
+                target_t = max(1, int(round(self.crop_time_seconds / dt)))
+            elif self.time_crop is not None:
+                target_t = self.time_crop
+            else:
+                target_t = target_f
+        else:
+            # If time_crop is None, default to square (same as freq)
+            target_t = self.time_crop if self.time_crop is not None else target_f
         
         # Frequency axis: pad or center-crop
         if F < target_f:
@@ -289,15 +348,15 @@ class FinWhaleMatDataset(Dataset):
         else:
             spec = spec[:, start:start + target_t]
         
-        return spec, start
+        return spec, start, target_t
 
     def __getitem__(self, index: int):
         path, label = self.files[index]
-        spec, spec_kind = self._load_spectrogram_raw(path)
+        spec, spec_kind, freqs, times = self._load_spectrogram_raw(path)
         F, T = spec.shape
 
         # Crop with augmentation (normalize after crop for consistent context)
-        spec, start = self._crop(spec, is_positive=bool(label))
+        spec, start, target_t = self._crop(spec, is_positive=bool(label), freqs=freqs, times=times)
 
         if spec_kind == 'power':
             spec = _power_to_db_norm(spec)
@@ -315,7 +374,6 @@ class FinWhaleMatDataset(Dataset):
             meta = None
             if self.return_meta:
                 # Distance of crop center from spectrogram center (frames and fraction)
-                target_t = self.time_crop if self.time_crop is not None else F
                 crop_center = start + (target_t // 2)
                 spec_center = T // 2
                 dist_frames = abs(crop_center - spec_center)
@@ -344,6 +402,8 @@ def make_dataloaders(
     num_workers: int = 4,
     pin_memory: bool = True,
     crop_size: Union[int, List[int], Tuple[int, int], None] = None,
+    crop_time_seconds: Optional[float] = None,
+    crop_freq_range_hz: Optional[Tuple[float, float]] = None,
     train_ratio: float = 0.8,
     val_ratio: float = 0.1,
     min_db: float = -80.0,
@@ -360,21 +420,26 @@ def make_dataloaders(
             - None: Use full frequency range, time crop = freq bins (square)
             - int: Square crop of this size
             - [freq, time]: Different crop for each axis
+        crop_time_seconds: Optional physical time span for time crop.
+        crop_freq_range_hz: Optional physical frequency limits [min_hz, max_hz].
     """
     train_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='train', train_ratio=train_ratio, val_ratio=val_ratio,
         crop_size=crop_size, min_db=min_db, max_db=max_db,
-        center_bias_sigma_frac=center_bias_sigma_frac, seed=seed
+        center_bias_sigma_frac=center_bias_sigma_frac, seed=seed,
+        crop_time_seconds=crop_time_seconds, crop_freq_range_hz=crop_freq_range_hz,
     )
     val_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='val', train_ratio=train_ratio, val_ratio=val_ratio,
         crop_size=crop_size, min_db=min_db, max_db=max_db,
-        center_bias_sigma_frac=center_bias_sigma_frac, seed=seed
+        center_bias_sigma_frac=center_bias_sigma_frac, seed=seed,
+        crop_time_seconds=crop_time_seconds, crop_freq_range_hz=crop_freq_range_hz,
     )
     test_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='test', train_ratio=train_ratio, val_ratio=val_ratio,
         crop_size=crop_size, min_db=min_db, max_db=max_db,
-        center_bias_sigma_frac=center_bias_sigma_frac, seed=seed, augment_eval=augment_test
+        center_bias_sigma_frac=center_bias_sigma_frac, seed=seed, augment_eval=augment_test,
+        crop_time_seconds=crop_time_seconds, crop_freq_range_hz=crop_freq_range_hz,
     )
 
     # Build train sampler for balancing
