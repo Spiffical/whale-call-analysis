@@ -106,6 +106,13 @@ def main():
                         help='Disable the progress bar')
     parser.add_argument('--edge-context', type=float, default=2.0,
                         help='Seconds of padding before/after each window to reduce edge artifacts (trimmed after spectrogram)')
+    parser.add_argument(
+        '--existing-policy',
+        type=str,
+        default='overwrite',
+        choices=['overwrite', 'skip'],
+        help="How to handle existing spectrogram outputs: 'overwrite' regenerates, 'skip' reuses existing files",
+    )
 
     png_group = parser.add_argument_group("PNG rendering")
     png_group.add_argument('--png-style', type=str, default='test', choices=['test', 'legacy'],
@@ -237,6 +244,7 @@ def main():
         "png_cmap": args.png_cmap,
         "png_pmin": args.png_pmin,
         "png_pmax": args.png_pmax,
+        "existing_policy": args.existing_policy,
     }
     if args.ml_context is not None:
         gen_kwargs["ml_context"] = args.ml_context

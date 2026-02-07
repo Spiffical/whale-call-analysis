@@ -252,6 +252,7 @@ class SpectrogramDatasetGenerator:
                 - neg_strategy: 'random' or 'tiled' (default: random)
                 - neg_step_seconds: Step for tiled negatives (default: context duration)
                 - max_negatives_per_file: Optional cap per source clip
+                - existing_policy: 'overwrite' (default) or 'skip'
         
         Returns:
             Tuple of (spectrogram_files dict, failed_calls list, dimensions tuple)
@@ -279,6 +280,9 @@ class SpectrogramDatasetGenerator:
         png_cmap = kwargs.get('png_cmap', 'inferno')
         png_pmin = kwargs.get('png_pmin', 2.0)
         png_pmax = kwargs.get('png_pmax', 98.0)
+        existing_policy = str(kwargs.get('existing_policy', 'overwrite')).strip().lower()
+        if existing_policy not in {"overwrite", "skip"}:
+            raise ValueError("existing_policy must be 'overwrite' or 'skip'")
         if neg_context is None:
             neg_context = ml_context
         
@@ -306,7 +310,28 @@ class SpectrogramDatasetGenerator:
         for d in [png_dir, mat_dir, neg_png_dir, neg_mat_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
+        spec_cfg = self.config.get('custom_spectrograms', {})
+        save_png = bool(spec_cfg.get('output_formats', {}).get('plots', True))
+        save_mat = bool(spec_cfg.get('output_formats', {}).get('matlab', True))
+        skipped_existing_total = 0
+        skipped_lock = threading.Lock()
+
+        def _existing_output_path(call_id: str, out_png_dir: Path, out_mat_dir: Path) -> Optional[Path]:
+            png_path = out_png_dir / f"{call_id}.png"
+            mat_path = out_mat_dir / f"{call_id}.mat"
+            # Prefer the format that is enabled by config, but still accept either existing file.
+            if save_mat and mat_path.exists():
+                return mat_path
+            if save_png and png_path.exists():
+                return png_path
+            if mat_path.exists():
+                return mat_path
+            if png_path.exists():
+                return png_path
+            return None
+
         def _process_file(clip_id, calls_in_file, idx):
+            nonlocal skipped_existing_total
             self.last_clip_id = clip_id
             self.last_file_index = idx
             thread_id = threading.current_thread().name
@@ -343,6 +368,13 @@ class SpectrogramDatasetGenerator:
                 if generate_positives:
                     for _, call in calls_in_file.iterrows():
                         call_id = self._create_safe_call_id(clip_id, call)
+                        if existing_policy == "skip":
+                            existing_path = _existing_output_path(call_id, png_dir, mat_dir)
+                            if existing_path is not None:
+                                local_specs[call_id] = str(existing_path)
+                                with skipped_lock:
+                                    skipped_existing_total += 1
+                                continue
                         try:
                             # Context window calculation
                             begin = call['begin time (s)']
@@ -393,6 +425,13 @@ class SpectrogramDatasetGenerator:
                     )
                     for n_idx, (start, end) in enumerate(neg_windows):
                         neg_id = f"{clip_id}_neg_{n_idx}"
+                        if existing_policy == "skip":
+                            existing_path = _existing_output_path(neg_id, neg_png_dir, neg_mat_dir)
+                            if existing_path is not None:
+                                local_specs[neg_id] = str(existing_path)
+                                with skipped_lock:
+                                    skipped_existing_total += 1
+                                continue
                         try:
                             ext_context = neg_context + (2 * edge_context)
                             desired_start = start - edge_context
@@ -455,6 +494,8 @@ class SpectrogramDatasetGenerator:
 
         if pbar:
             pbar.close()
+        if existing_policy == "skip" and skipped_existing_total:
+            print_status(f"Reused {skipped_existing_total} existing spectrogram files (existing_policy=skip)", "INFO")
                 
         return spectrogram_files, failed_calls, actual_dimensions
 
