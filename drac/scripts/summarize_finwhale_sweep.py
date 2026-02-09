@@ -72,6 +72,8 @@ def _write_csv(rows: List[Dict[str, Any]], out_path: Path) -> None:
     fieldnames = [
         "job_id",
         "run_slug",
+        "dataset_tag",
+        "dataset_source",
         "status",
         "exp_dir",
         "model",
@@ -137,10 +139,14 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
     lines.append(f"- Pending/failed/missing: {len(pending)}")
     lines.append("")
 
+    dataset_tags = sorted({(r.get("dataset_tag") or "dataset") for r in rows})
+    lines.append(f"- Datasets: {', '.join(dataset_tags)}")
+    lines.append("")
+
     lines.append("## Top Runs")
     lines.append("")
-    lines.append("| rank | run_slug | best(main) | best_epoch | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed | wandb |")
-    lines.append("|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|")
+    lines.append("| rank | dataset | run_slug | best(main) | best_epoch | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed | wandb |")
+    lines.append("|---:|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|")
 
     for idx, row in enumerate(completed_sorted[:top_n], start=1):
         wandb_url = row.get("wandb_run_url") or ""
@@ -150,6 +156,7 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
             + " | ".join(
                 [
                     str(idx),
+                    str(row.get("dataset_tag", "")),
                     str(row.get("run_slug", "")),
                     _format_metric(_to_float(row.get("best_main_metric"))),
                     str(row.get("best_epoch", "")),
@@ -168,11 +175,53 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
         )
 
     lines.append("")
+    lines.append("## Best Per Dataset")
+    lines.append("")
+    lines.append("| dataset | run_slug | best(main) | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|")
+
+    by_dataset: Dict[str, List[Dict[str, Any]]] = {}
+    for row in completed:
+        dtag = str(row.get("dataset_tag") or "dataset")
+        by_dataset.setdefault(dtag, []).append(row)
+    for dtag in sorted(by_dataset):
+        ranked = sorted(
+            by_dataset[dtag],
+            key=lambda r: _to_float(r.get(metric_key)) if _to_float(r.get(metric_key)) is not None else float("-inf"),
+            reverse=True,
+        )
+        best = ranked[0] if ranked else None
+        if best is None:
+            continue
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    dtag,
+                    str(best.get("run_slug", "")),
+                    _format_metric(_to_float(best.get("best_main_metric"))),
+                    _format_metric(_to_float(best.get("best_val_f1"))),
+                    _format_metric(_to_float(best.get("best_val_auc"))),
+                    _format_metric(_to_float(best.get("test_f1"))),
+                    _format_metric(_to_float(best.get("test_auc"))),
+                    str(best.get("balance", "")),
+                    str(best.get("center_bias_sigma_frac", "")),
+                    str(best.get("min_gap_seconds", "")),
+                    str(best.get("seed", "")),
+                ]
+            )
+            + " |"
+        )
+
+    lines.append("")
     if pending:
         lines.append("## Pending Or Missing Runs")
         lines.append("")
         for row in pending:
-            lines.append(f"- {row.get('run_slug', '')}: status={row.get('status', '')}, job_id={row.get('job_id', '')}")
+            lines.append(
+                f"- {row.get('run_slug', '')} "
+                f"(dataset={row.get('dataset_tag', '')}): status={row.get('status', '')}, job_id={row.get('job_id', '')}"
+            )
         lines.append("")
 
     out_path.write_text("\n".join(lines) + "\n")
@@ -206,6 +255,8 @@ def main() -> int:
         out: Dict[str, Any] = {
             "job_id": row.get("job_id", ""),
             "run_slug": run_slug,
+            "dataset_tag": row.get("dataset_tag", ""),
+            "dataset_source": row.get("dataset_source", ""),
             "status": status,
             "exp_dir": str(exp_dir),
             "model": row.get("model", ""),

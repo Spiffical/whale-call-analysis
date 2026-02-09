@@ -22,6 +22,8 @@ fi
 TAR_PATH=""
 POS_DIR=""
 NEG_DIR=""
+DATASET_TARS_CSV=""      # CSV list: tag=/path/to/all_mat_files.tar,tag2=/path/to/all_mat_files.tar
+DATASET_TAG_SINGLE=""    # Optional tag for single data source
 MODEL="resnet18"
 BATCH_SIZE=64
 EPOCHS=100
@@ -50,10 +52,13 @@ Usage:
   bash drac/scripts/launch_finwhale_training_sweep.sh [options]
 
 Required (choose one data source):
+  --dataset-tars CSV
   --tar-path PATH
   --pos-dir PATH --neg-dir PATH
 
 Options:
+  --dataset-tag TAG                Optional tag for single data source (default: auto)
+  --dataset-tars CSV               Multi-dataset tar list: tag=/path/a.tar,tag2=/path/b.tar
   --model NAME                     (default: resnet18)
   --batch-size N                   (default: 64)
   --epochs N                       (default: 100)
@@ -81,6 +86,8 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --dataset-tars) DATASET_TARS_CSV="$2"; shift 2 ;;
+    --dataset-tag) DATASET_TAG_SINGLE="$2"; shift 2 ;;
     --tar-path) TAR_PATH="$2"; shift 2 ;;
     --pos-dir) POS_DIR="$2"; shift 2 ;;
     --neg-dir) NEG_DIR="$2"; shift 2 ;;
@@ -110,8 +117,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$TAR_PATH" && ( -z "$POS_DIR" || -z "$NEG_DIR" ) ]]; then
-  echo "Error: provide either --tar-path or both --pos-dir and --neg-dir"
+if [[ -n "$DATASET_TARS_CSV" && ( -n "$TAR_PATH" || -n "$POS_DIR" || -n "$NEG_DIR" ) ]]; then
+  echo "Error: --dataset-tars cannot be combined with --tar-path or --pos-dir/--neg-dir"
+  exit 1
+fi
+if [[ -z "$DATASET_TARS_CSV" && -z "$TAR_PATH" && ( -z "$POS_DIR" || -z "$NEG_DIR" ) ]]; then
+  echo "Error: provide one of: --dataset-tars, --tar-path, or --pos-dir/--neg-dir"
   exit 1
 fi
 
@@ -148,11 +159,10 @@ mkdir -p "$RUNS_DIR"
 PLAN_TSV="$SWEEP_DIR/plan.tsv"
 SUBMITTED_TSV="$SWEEP_DIR/submitted_jobs.tsv"
 REPLAY_SH="$SWEEP_DIR/replay_commands.sh"
+WANDB_GROUP_BASE="${WANDB_GROUP_PREFIX}-${SWEEP_ID}"
 
-WANDB_GROUP="${WANDB_GROUP_PREFIX}-${SWEEP_ID}"
-
-echo -e "run_slug\tmodel\tlr\tbalance\tcenter_bias_sigma_frac\tmin_gap_seconds\tseed\texp_dir\twandb_group" > "$PLAN_TSV"
-echo -e "job_id\trun_slug\tmodel\tlr\tbalance\tcenter_bias_sigma_frac\tmin_gap_seconds\tseed\texp_dir\twandb_group" > "$SUBMITTED_TSV"
+echo -e "run_slug\tdataset_tag\tdataset_source\tmodel\tlr\tbalance\tcenter_bias_sigma_frac\tmin_gap_seconds\tseed\texp_dir\twandb_group" > "$PLAN_TSV"
+echo -e "job_id\trun_slug\tdataset_tag\tdataset_source\tmodel\tlr\tbalance\tcenter_bias_sigma_frac\tmin_gap_seconds\tseed\texp_dir\twandb_group" > "$SUBMITTED_TSV"
 echo "#!/bin/bash" > "$REPLAY_SH"
 echo "set -euo pipefail" >> "$REPLAY_SH"
 
@@ -164,75 +174,135 @@ to_tag() {
   echo "$v" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//'
 }
 
+declare -a DATASET_TAG_LIST=()
+declare -a DATASET_SOURCE_LIST=()
+declare -a DATASET_MODE_LIST=()
+
+if [[ -n "$DATASET_TARS_CSV" ]]; then
+  readarray -t DATASET_PAIR_LIST < <(split_csv "$DATASET_TARS_CSV")
+  if [[ ${#DATASET_PAIR_LIST[@]} -eq 0 ]]; then
+    echo "Error: --dataset-tars is empty"
+    exit 1
+  fi
+  for pair in "${DATASET_PAIR_LIST[@]}"; do
+    if [[ "$pair" != *=* ]]; then
+      echo "Error: invalid --dataset-tars entry '$pair' (expected tag=/path/to/archive.tar)"
+      exit 1
+    fi
+    tag_raw="${pair%%=*}"
+    src="${pair#*=}"
+    tag="$(to_tag "$tag_raw")"
+    if [[ -z "$tag" || -z "$src" ]]; then
+      echo "Error: invalid --dataset-tars entry '$pair'"
+      exit 1
+    fi
+    DATASET_TAG_LIST+=("$tag")
+    DATASET_SOURCE_LIST+=("$src")
+    DATASET_MODE_LIST+=("tar")
+  done
+elif [[ -n "$TAR_PATH" ]]; then
+  default_tag="$(basename "$(dirname "$TAR_PATH")")"
+  tag="$(to_tag "${DATASET_TAG_SINGLE:-$default_tag}")"
+  if [[ -z "$tag" ]]; then
+    tag="dataset"
+  fi
+  DATASET_TAG_LIST+=("$tag")
+  DATASET_SOURCE_LIST+=("$TAR_PATH")
+  DATASET_MODE_LIST+=("tar")
+else
+  tag="$(to_tag "${DATASET_TAG_SINGLE:-dirs}")"
+  if [[ -z "$tag" ]]; then
+    tag="dataset"
+  fi
+  DATASET_TAG_LIST+=("$tag")
+  DATASET_SOURCE_LIST+=("$POS_DIR|$NEG_DIR")
+  DATASET_MODE_LIST+=("dirs")
+fi
+
+if [[ ${#DATASET_TAG_LIST[@]} -eq 0 ]]; then
+  echo "Error: no datasets resolved for sweep"
+  exit 1
+fi
+
 RUN_COUNT=0
-for seed in "${SEED_LIST[@]}"; do
-  for lr in "${LR_LIST[@]}"; do
-    for balance in "${BALANCE_LIST[@]}"; do
-      for cbs in "${CENTER_BIAS_LIST[@]}"; do
-        for gap in "${MIN_GAP_LIST[@]}"; do
-          RUN_COUNT=$((RUN_COUNT + 1))
-          run_slug=$(printf "r%03d_%s_lr%s_bal%s_cbs%s_gap%s_s%s" \
-            "$RUN_COUNT" \
-            "$(to_tag "$MODEL")" \
-            "$(to_tag "$lr")" \
-            "$(to_tag "$balance")" \
-            "$(to_tag "$cbs")" \
-            "$(to_tag "$gap")" \
-            "$(to_tag "$seed")")
+for d_idx in "${!DATASET_TAG_LIST[@]}"; do
+  dataset_tag="${DATASET_TAG_LIST[$d_idx]}"
+  dataset_source="${DATASET_SOURCE_LIST[$d_idx]}"
+  dataset_mode="${DATASET_MODE_LIST[$d_idx]}"
+  dataset_group="${WANDB_GROUP_BASE}-${dataset_tag}"
 
-          run_exp_dir="$RUNS_DIR/$run_slug"
-          mkdir -p "$run_exp_dir"
+  for seed in "${SEED_LIST[@]}"; do
+    for lr in "${LR_LIST[@]}"; do
+      for balance in "${BALANCE_LIST[@]}"; do
+        for cbs in "${CENTER_BIAS_LIST[@]}"; do
+          for gap in "${MIN_GAP_LIST[@]}"; do
+            RUN_COUNT=$((RUN_COUNT + 1))
+            run_slug=$(printf "r%03d_d%s_%s_lr%s_bal%s_cbs%s_gap%s_s%s" \
+              "$RUN_COUNT" \
+              "$(to_tag "$dataset_tag")" \
+              "$(to_tag "$MODEL")" \
+              "$(to_tag "$lr")" \
+              "$(to_tag "$balance")" \
+              "$(to_tag "$cbs")" \
+              "$(to_tag "$gap")" \
+              "$(to_tag "$seed")")
 
-          echo -e "${run_slug}\t${MODEL}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${WANDB_GROUP}" >> "$PLAN_TSV"
+            run_exp_dir="$RUNS_DIR/$dataset_tag/$run_slug"
+            mkdir -p "$run_exp_dir"
 
-          cmd=(
-            sbatch --parsable "$SUBMIT_SCRIPT"
-            --model "$MODEL"
-            --batch-size "$BATCH_SIZE"
-            --epochs "$EPOCHS"
-            --num-workers "$NUM_WORKERS"
-            --lr "$lr"
-            --balance "$balance"
-            --train-ratio "$TRAIN_RATIO"
-            --val-ratio "$VAL_RATIO"
-            --main-metric "$MAIN_METRIC"
-            --device "$DEVICE"
-            --exp-dir "$run_exp_dir"
-            --seed "$seed"
-            --split-strategy "$SPLIT_STRATEGY"
-            --min-gap-seconds "$gap"
-            --center-bias-sigma-frac "$cbs"
-            --run-tag "$run_slug"
-          )
+            echo -e "${run_slug}\t${dataset_tag}\t${dataset_source}\t${MODEL}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${dataset_group}" >> "$PLAN_TSV"
 
-          if [[ -n "$TAR_PATH" ]]; then
-            cmd+=( --tar-path "$TAR_PATH" )
-          else
-            cmd+=( --pos-dir "$POS_DIR" --neg-dir "$NEG_DIR" )
-          fi
+            cmd=(
+              sbatch --parsable "$SUBMIT_SCRIPT"
+              --model "$MODEL"
+              --batch-size "$BATCH_SIZE"
+              --epochs "$EPOCHS"
+              --num-workers "$NUM_WORKERS"
+              --lr "$lr"
+              --balance "$balance"
+              --train-ratio "$TRAIN_RATIO"
+              --val-ratio "$VAL_RATIO"
+              --main-metric "$MAIN_METRIC"
+              --device "$DEVICE"
+              --exp-dir "$run_exp_dir"
+              --seed "$seed"
+              --split-strategy "$SPLIT_STRATEGY"
+              --min-gap-seconds "$gap"
+              --center-bias-sigma-frac "$cbs"
+              --run-tag "$run_slug"
+            )
 
-          if [[ "$USE_WANDB" == "true" ]]; then
-            cmd+=( --use-wandb --wandb-project "$WANDB_PROJECT" --wandb-group "$WANDB_GROUP" )
-            if [[ -n "$WANDB_ENTITY" ]]; then
-              cmd+=( --wandb-entity "$WANDB_ENTITY" )
+            if [[ "$dataset_mode" == "tar" ]]; then
+              cmd+=( --tar-path "$dataset_source" )
+            else
+              ds_pos="${dataset_source%%|*}"
+              ds_neg="${dataset_source#*|}"
+              cmd+=( --pos-dir "$ds_pos" --neg-dir "$ds_neg" )
             fi
-          fi
 
-          {
-            printf '%q ' "${cmd[@]}"
-            printf '\n'
-          } >> "$REPLAY_SH"
+            if [[ "$USE_WANDB" == "true" ]]; then
+              cmd+=( --use-wandb --wandb-project "$WANDB_PROJECT" --wandb-group "$dataset_group" )
+              if [[ -n "$WANDB_ENTITY" ]]; then
+                cmd+=( --wandb-entity "$WANDB_ENTITY" )
+              fi
+            fi
 
-          if [[ "$DRY_RUN" == "true" ]]; then
-            job_id="DRYRUN_${RUN_COUNT}"
-            echo "[dry-run] $job_id $run_slug"
-          else
-            sbatch_out="$("${cmd[@]}")"
-            job_id="${sbatch_out%%;*}"
-            echo "[submitted] job_id=${job_id} run_slug=${run_slug}"
-          fi
+            {
+              printf '%q ' "${cmd[@]}"
+              printf '\n'
+            } >> "$REPLAY_SH"
 
-          echo -e "${job_id}\t${run_slug}\t${MODEL}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${WANDB_GROUP}" >> "$SUBMITTED_TSV"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              job_id="DRYRUN_${RUN_COUNT}"
+              echo "[dry-run] $job_id $run_slug dataset=$dataset_tag"
+            else
+              sbatch_out="$("${cmd[@]}")"
+              job_id="${sbatch_out%%;*}"
+              echo "[submitted] job_id=${job_id} run_slug=${run_slug} dataset=${dataset_tag}"
+            fi
+
+            echo -e "${job_id}\t${run_slug}\t${dataset_tag}\t${dataset_source}\t${MODEL}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${dataset_group}" >> "$SUBMITTED_TSV"
+          done
         done
       done
     done
@@ -243,6 +313,10 @@ chmod +x "$REPLAY_SH"
 
 echo ""
 echo "Sweep prepared: $SWEEP_DIR"
+echo "Datasets:"
+for d_idx in "${!DATASET_TAG_LIST[@]}"; do
+  echo "  - ${DATASET_TAG_LIST[$d_idx]} -> ${DATASET_SOURCE_LIST[$d_idx]}"
+done
 echo "Planned runs: $RUN_COUNT"
 echo "Plan file: $PLAN_TSV"
 echo "Submitted jobs: $SUBMITTED_TSV"
