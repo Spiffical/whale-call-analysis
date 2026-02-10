@@ -43,6 +43,7 @@ THRESHOLD="0.5"
 THRESHOLD_HIGH="0.7"
 TARGET_RECALL="0.95"
 TARGET_PRECISION="0.95"
+FPR_TARGETS="0.05,0.10,0.20"
 THRESHOLD_STEP="0.01"
 OFFSET_FRACS=""
 MAX_SAMPLES="0"
@@ -66,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --threshold-high) THRESHOLD_HIGH="$2"; shift 2 ;;
     --target-recall) TARGET_RECALL="$2"; shift 2 ;;
     --target-precision) TARGET_PRECISION="$2"; shift 2 ;;
+    --fpr-targets) FPR_TARGETS="$2"; shift 2 ;;
     --threshold-step) THRESHOLD_STEP="$2"; shift 2 ;;
     --offset-fracs) OFFSET_FRACS="$2"; shift 2 ;;
     --max-samples) MAX_SAMPLES="$2"; shift 2 ;;
@@ -147,6 +149,7 @@ CMD=(
   --threshold-high "$THRESHOLD_HIGH"
   --target-recall "$TARGET_RECALL"
   --target-precision "$TARGET_PRECISION"
+  --fpr-targets "$FPR_TARGETS"
   --threshold-step "$THRESHOLD_STEP"
   --max-samples "$MAX_SAMPLES"
   --max-neg-samples "$MAX_NEG_SAMPLES"
@@ -175,4 +178,3 @@ fi
 
 echo "Running: ${CMD[*]}"
 "${CMD[@]}"
-

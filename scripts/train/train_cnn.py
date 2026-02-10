@@ -242,6 +242,17 @@ def main():
     crop_freq_range_hz = tuple(args.crop_freq_range_hz) if args.crop_freq_range_hz is not None else None
     if (args.crop_time_seconds is not None or crop_freq_range_hz is not None) and args.crop_size is not None:
         raise SystemExit("Use either --crop-size or physical crop args (--crop-time-seconds/--crop-freq-range-hz), not both.")
+    # Persist explicit crop intent for downstream tooling.
+    args.crop_size_parsed = crop_size
+    args.crop_freq_range_hz_parsed = list(crop_freq_range_hz) if crop_freq_range_hz is not None else None
+    if args.crop_time_seconds is not None:
+        args.crop_mode = 'time_seconds'
+    elif crop_freq_range_hz is not None:
+        args.crop_mode = 'freq_range_hz'
+    elif crop_size is not None:
+        args.crop_mode = 'explicit_bins'
+    else:
+        args.crop_mode = 'full_frequency_square'
 
     if not hasattr(args, 'task') or args.task is None:
         args.task = 'finwhale_cnn'

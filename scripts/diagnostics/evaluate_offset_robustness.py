@@ -82,6 +82,23 @@ def _parse_offset_fracs(raw: Optional[str]) -> List[float]:
     return sorted(vals)
 
 
+def _parse_fpr_targets(raw: Optional[str]) -> List[float]:
+    if raw is None:
+        return [0.05, 0.10, 0.20]
+    vals: List[float] = []
+    for token in str(raw).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        v = float(token)
+        if not (0.0 <= v <= 1.0):
+            raise SystemExit(f"FPR target must be in [0,1], got {v}")
+        vals.append(v)
+    if not vals:
+        raise SystemExit("No valid --fpr-targets values parsed")
+    return sorted(set(vals))
+
+
 def _list_mat_files(folder: Path) -> List[Path]:
     out: List[Path] = []
     for entry in os.scandir(folder):
@@ -213,10 +230,12 @@ def _infer_crop_from_sidecar(checkpoint_path: Path) -> Optional[Any]:
         with open(sidecar, "rb") as f:
             args_obj = pickle.load(f)
         crop = None
-        if hasattr(args_obj, "crop_size"):
+        if hasattr(args_obj, "crop_size_parsed"):
+            crop = getattr(args_obj, "crop_size_parsed")
+        elif hasattr(args_obj, "crop_size"):
             crop = getattr(args_obj, "crop_size")
         elif isinstance(args_obj, dict):
-            crop = args_obj.get("crop_size")
+            crop = args_obj.get("crop_size_parsed", args_obj.get("crop_size"))
         if crop is None:
             return None
         if isinstance(crop, str):
@@ -327,6 +346,8 @@ def main() -> int:
                     help="Target recall for low-FP threshold recommendation")
     ap.add_argument("--target-precision", type=float, default=0.95,
                     help="Target precision for high-recall threshold recommendation")
+    ap.add_argument("--fpr-targets", type=str, default="0.05,0.10,0.20",
+                    help="Comma-separated FPR caps for operating points, e.g. 0.05,0.10,0.20")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", type=str, default="cuda", choices=["cpu", "cuda"])
     args = ap.parse_args()
@@ -351,11 +372,10 @@ def main() -> int:
     crop_size = _parse_crop_size_arg(args.crop_size)
     if crop_size is None:
         crop_size = _infer_crop_from_sidecar(checkpoint)
-    if crop_size is None and args.crop_time_seconds is None:
-        raise SystemExit("Unable to resolve crop dimensions. Provide --crop-size or --crop-time-seconds.")
 
     crop_freq_range_hz = tuple(args.crop_freq_range_hz) if args.crop_freq_range_hz is not None else None
     offsets = _parse_offset_fracs(args.offset_fracs)
+    fpr_targets = _parse_fpr_targets(args.fpr_targets)
 
     model, model_name = _load_model(checkpoint, device=device, explicit_model=args.model)
     print(f"Model: {model_name} | Device: {device}")
@@ -382,6 +402,19 @@ def main() -> int:
             neg_mats = [p for p in neg_mats if p.name in split_neg_names]
             if not neg_mats:
                 raise SystemExit(f"No negative MATs from split file matched in {neg_dir}: {args.split_file}")
+
+    # Final fallback: infer square crop_size from the first available MAT's frequency bins.
+    if crop_size is None and args.crop_time_seconds is None:
+        try:
+            probe_spec, _, probe_freqs, _ = _load_spec(mats[0])
+            probe_spec, _ = _apply_physical_freq_crop(probe_spec, probe_freqs, crop_freq_range_hz)
+            crop_size = int(probe_spec.shape[0])
+            print(f"Auto-inferred crop_size from MAT: {crop_size}")
+        except Exception as exc:
+            raise SystemExit(
+                "Unable to resolve crop dimensions from args.pkl or MAT files. "
+                "Provide --crop-size or --crop-time-seconds."
+            ) from exc
 
     rng = np.random.default_rng(args.seed)
     if args.max_samples and args.max_samples > 0 and len(mats) > args.max_samples:
@@ -592,6 +625,7 @@ def main() -> int:
     # Threshold optimization on pooled stress set (all offsets concatenated) + negatives.
     threshold_table: List[Dict[str, Any]] = []
     recommendations: Dict[str, Any] = {}
+    low_fpr_rows: List[Dict[str, Any]] = []
     if has_neg:
         pooled_pos = np.concatenate([v for v in pos_scores_by_offset.values() if v.size > 0], axis=0)
         step = float(args.threshold_step)
@@ -630,6 +664,50 @@ def main() -> int:
             f"min_fpr_at_recall_ge_{args.target_recall:.2f}": best_low_fp,
             f"max_recall_at_precision_ge_{args.target_precision:.2f}": best_high_recall,
         }
+
+        for tgt in fpr_targets:
+            feasible = [r for r in threshold_table if float(r["fpr"]) <= float(tgt)]
+            best_at_tgt = (
+                max(
+                    feasible,
+                    key=lambda r: (float(r["recall"]), float(r["precision"]), float(r["threshold"])),
+                )
+                if feasible
+                else None
+            )
+            key = f"max_recall_at_fpr_le_{float(tgt):.2f}"
+            recommendations[key] = best_at_tgt
+            row: Dict[str, Any] = {"target_fpr": float(tgt), "available": bool(best_at_tgt)}
+            if best_at_tgt is not None:
+                row.update(
+                    {
+                        "threshold": float(best_at_tgt["threshold"]),
+                        "precision": float(best_at_tgt["precision"]),
+                        "recall": float(best_at_tgt["recall"]),
+                        "f1": float(best_at_tgt["f1"]),
+                        "fpr": float(best_at_tgt["fpr"]),
+                        "tp": int(best_at_tgt["tp"]),
+                        "fp": int(best_at_tgt["fp"]),
+                        "tn": int(best_at_tgt["tn"]),
+                        "fn": int(best_at_tgt["fn"]),
+                    }
+                )
+            else:
+                row.update(
+                    {
+                        "threshold": np.nan,
+                        "precision": np.nan,
+                        "recall": np.nan,
+                        "f1": np.nan,
+                        "fpr": np.nan,
+                        "tp": np.nan,
+                        "fp": np.nan,
+                        "tn": np.nan,
+                        "fn": np.nan,
+                    }
+                )
+            low_fpr_rows.append(row)
+        _write_csv(out_dir / "low_fpr_operating_points.csv", low_fpr_rows)
 
         # Precision-Recall curve from threshold sweep.
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -674,6 +752,7 @@ def main() -> int:
         "offsets": offsets,
         "threshold": float(args.threshold),
         "threshold_high": float(args.threshold_high),
+        "fpr_targets": fpr_targets,
         "center_mean_conf": center_conf,
         "edge_mean_conf": edge_conf,
         "edge_minus_center_conf": edge_conf - center_conf if np.isfinite(center_conf) and np.isfinite(edge_conf) else np.nan,
@@ -684,6 +763,7 @@ def main() -> int:
         "edge_precision": edge_prec,
         "edge_minus_center_precision": edge_prec - center_prec if np.isfinite(center_prec) and np.isfinite(edge_prec) else np.nan,
         "threshold_recommendations": recommendations,
+        "low_fpr_operating_points": low_fpr_rows,
     }
 
     with open(out_dir / "summary.json", "w") as f:
@@ -739,6 +819,16 @@ def main() -> int:
                 f"- max recall with precision >= {args.target_precision:.2f}: `{bhr['threshold']:.3f}` "
                 f"(precision `{bhr['precision']:.4f}`, recall `{bhr['recall']:.4f}`, fpr `{bhr['fpr']:.4f}`)"
             )
+        md_lines.extend(["", "## Low-FPR Operating Points", ""])
+        for tgt in fpr_targets:
+            item = recommendations.get(f"max_recall_at_fpr_le_{float(tgt):.2f}")
+            if item:
+                md_lines.append(
+                    f"- max recall with FPR <= {float(tgt):.2f}: `{item['threshold']:.3f}` "
+                    f"(precision `{item['precision']:.4f}`, recall `{item['recall']:.4f}`, fpr `{item['fpr']:.4f}`)"
+                )
+            else:
+                md_lines.append(f"- max recall with FPR <= {float(tgt):.2f}: not achievable in sweep grid")
 
     md_lines.extend(
         [
@@ -760,6 +850,7 @@ def main() -> int:
                 "- `score_distribution_truth.png`",
                 f"- `score_distribution_confusion_thr{str(args.threshold).replace('.', 'p')}.png`",
                 "- `threshold_metrics.csv`",
+                "- `low_fpr_operating_points.csv`",
                 "- `precision_recall_curve_threshold_sweep.png`",
             ]
         )
@@ -773,6 +864,7 @@ def main() -> int:
     if has_neg:
         print(f"Wrote: {out_dir / 'precision_vs_offset.png'}")
         print(f"Wrote: {out_dir / 'threshold_metrics.csv'}")
+        print(f"Wrote: {out_dir / 'low_fpr_operating_points.csv'}")
     return 0
 
 

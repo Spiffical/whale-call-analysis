@@ -86,3 +86,4 @@ scripts/diagnostics/verify_pipeline_consistency.py
 scripts/diagnostics/visual_compare_train_newprep.py
 .gitignore
 scripts/diagnostics/compare_train_newprep.py
+finwhale_offset_eval/
