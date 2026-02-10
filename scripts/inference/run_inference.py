@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
@@ -786,6 +787,30 @@ def main():
     parser.add_argument('--no-export-audio', dest='export_audio', action='store_false',
                         help='Disable exporting cropped audio (MATs still exported)')
     parser.set_defaults(export_audio=True)
+    parser.add_argument('--postprocess', action='store_true',
+                        help='Run temporal clustering/hysteresis postprocessing on predictions JSON')
+    parser.add_argument('--postprocess-output-json', type=str, default=None,
+                        help='Output JSON path for postprocessed predictions '
+                             '(default: <output-json stem>_postprocessed.json)')
+    parser.add_argument('--postprocess-class-hierarchy', type=str, default=None,
+                        help='Class hierarchy to postprocess (default: first model output class)')
+    parser.add_argument('--postprocess-low-threshold', type=float, default=0.70,
+                        help='Low threshold for postprocess candidate windows')
+    parser.add_argument('--postprocess-high-threshold', type=float, default=0.82,
+                        help='High threshold required inside each kept event')
+    parser.add_argument('--postprocess-min-members', type=int, default=2,
+                        help='Minimum number of windows per kept event')
+    parser.add_argument('--postprocess-min-duration-sec', type=float, default=0.0,
+                        help='Minimum event duration in seconds')
+    parser.add_argument('--postprocess-max-gap-seconds', type=float, default=None,
+                        help='Maximum gap (sec) between adjacent windows in an event '
+                             '(default: auto-inferred by postprocessor)')
+    parser.add_argument('--postprocess-events-csv', type=str, default=None,
+                        help='Optional CSV path for postprocessed event summary')
+    parser.add_argument('--postprocess-summary-md', type=str, default=None,
+                        help='Optional markdown summary path for postprocessing')
+    parser.add_argument('--postprocess-debug-json', type=str, default=None,
+                        help='Optional debug JSON path for postprocessing diagnostics')
     
     args = parser.parse_args()
     
@@ -1192,11 +1217,17 @@ def main():
 
     # Decide which results to include in predictions.json
     results_for_tracker = results
-    if args.export_crops and not args.export_all:
+    if args.export_crops and not args.export_all and not args.postprocess:
         results_for_tracker = [r for r in results if r['file_id'] in export_info]
         print_status(
             "Predictions JSON is filtered to exported windows only. "
             "Use --export-all to keep all inference windows in output-json.",
+            "WARNING",
+        )
+    elif args.export_crops and not args.export_all and args.postprocess:
+        print_status(
+            "Postprocessing enabled: keeping all inference windows in predictions JSON "
+            "(ignoring export-only JSON filtering) so temporal clustering can run correctly.",
             "WARNING",
         )
 
@@ -1329,6 +1360,48 @@ def main():
         print(f"  >= {threshold:.1f}: {above} ({100*above/total_items:.1f}%)")
     
     print(f"\nPredictions saved to: {args.output_json}")
+
+    if args.postprocess:
+        postprocess_script = REPO_ROOT / "scripts" / "inference" / "postprocess_predictions.py"
+        if not postprocess_script.exists():
+            raise FileNotFoundError(f"Postprocess script not found: {postprocess_script}")
+
+        post_out = (
+            Path(args.postprocess_output_json)
+            if args.postprocess_output_json
+            else Path(args.output_json).with_name(f"{Path(args.output_json).stem}_postprocessed.json")
+        )
+        post_cmd: List[str] = [
+            sys.executable,
+            str(postprocess_script),
+            "--input-json",
+            str(args.output_json),
+            "--output-json",
+            str(post_out),
+            "--low-threshold",
+            str(args.postprocess_low_threshold),
+            "--high-threshold",
+            str(args.postprocess_high_threshold),
+            "--min-members",
+            str(args.postprocess_min_members),
+            "--min-duration-sec",
+            str(args.postprocess_min_duration_sec),
+        ]
+        if args.postprocess_class_hierarchy:
+            post_cmd.extend(["--class-hierarchy", str(args.postprocess_class_hierarchy)])
+        if args.postprocess_max_gap_seconds is not None:
+            post_cmd.extend(["--max-gap-seconds", str(args.postprocess_max_gap_seconds)])
+        if args.postprocess_events_csv:
+            post_cmd.extend(["--events-csv", str(args.postprocess_events_csv)])
+        if args.postprocess_summary_md:
+            post_cmd.extend(["--summary-md", str(args.postprocess_summary_md)])
+        if args.postprocess_debug_json:
+            post_cmd.extend(["--debug-json", str(args.postprocess_debug_json)])
+
+        print_status("Running postprocessing on predictions...", "PROGRESS")
+        subprocess.run(post_cmd, check=True)
+        print(f"Postprocessed predictions saved to: {post_out}")
+
     print_status("Inference complete!", "SUCCESS")
 
 
