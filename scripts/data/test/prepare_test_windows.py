@@ -82,13 +82,14 @@ def main():
                         help='Renormalize PdB_norm per 96x96 chunk (matches training normalization scope)')
     parser.add_argument('--config', type=str, default='./config/dataset_config.yaml', help='Config path (fallback)')
     parser.add_argument('--workers', type=int, default=4, help='Download workers')
+    parser.add_argument('--skip-download', action='store_true',
+                        help='Skip ONC download and reuse files already present under output-dir/raw_audio')
+    parser.add_argument('--force-download', action='store_true',
+                        help='Force ONC download even when raw_audio already contains files')
 
     args = parser.parse_args()
     load_dotenv()
     onc_token = os.getenv('ONC_TOKEN')
-    if not onc_token:
-        print_status("Error: ONC_TOKEN not found", "ERROR")
-        sys.exit(1)
 
     start_dt = parse_datetime(args.start_date)
     end_dt = parse_datetime(args.end_date)
@@ -137,7 +138,17 @@ def main():
     print_header("PREPARING INFERENCE DATA")
     print(f"Device: {args.device_code}")
     print(f"Date range: {start_dt.isoformat()} to {end_dt.isoformat()}")
-    print(f"Crop size: {crop_size} x {crop_size} (square)")
+    if crop_size is None:
+        if args.full_spec_only:
+            print("Crop size: auto (not required in --full-spec-only mode)")
+        else:
+            print_status(
+                "Error: crop_size is unresolved. Provide --crop-size or --model-path with valid args.pkl.",
+                "ERROR",
+            )
+            sys.exit(1)
+    else:
+        print(f"Crop size: {crop_size} x {crop_size} (square)")
     print(f"Frequency limits: {freq_lims[0]}-{freq_lims[1]} Hz")
     print(f"Window duration: {win_dur}s, Overlap: {overlap}")
     print(f"Color limits: {clim[0]} to {clim[1]} dB")
@@ -162,16 +173,35 @@ def main():
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    # Phase 1: Download all audio
-    print_header("PHASE 1: DOWNLOADING AUDIO")
-    downloader = HydrophoneDownloader(onc_token, str(raw_audio_dir))
-    start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-    end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
-    
-    try:
-        downloader.download_flac_files(args.device_code, start_str, end_str)
-    except Exception as e:
-        print_status(f"Download error: {e}", "WARNING")
+    existing_audio = sorted(list(raw_audio_dir.glob("**/*.flac")) + list(raw_audio_dir.glob("**/*.wav")))
+    should_download = True
+    if args.skip_download:
+        should_download = False
+        print_status("Skipping download (--skip-download). Reusing local raw_audio cache.", "WARNING")
+    elif existing_audio and not args.force_download:
+        should_download = False
+        print_status(
+            f"Found {len(existing_audio)} existing raw audio files in {raw_audio_dir}; "
+            "skipping download to avoid re-downloading. Use --force-download to override.",
+            "WARNING",
+        )
+
+    # Phase 1: Download audio when needed
+    if should_download:
+        if not onc_token:
+            print_status("Error: ONC_TOKEN not found and download is required", "ERROR")
+            sys.exit(1)
+        print_header("PHASE 1: DOWNLOADING AUDIO")
+        downloader = HydrophoneDownloader(onc_token, str(raw_audio_dir))
+        start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+        try:
+            downloader.download_flac_files(args.device_code, start_str, end_str)
+        except Exception as e:
+            print_status(f"Download error: {e}", "WARNING")
+    else:
+        print_header("PHASE 1: REUSING LOCAL AUDIO")
 
     # Find and sort downloaded files
     audio_files = sorted(list(raw_audio_dir.glob("**/*.flac")) + list(raw_audio_dir.glob("**/*.wav")))
@@ -266,7 +296,7 @@ def main():
             n_time_bins = cropped_PdB.shape[1]
             
             # Verify frequency dimension matches crop_size (for square chunks)
-            if n_freq_bins != crop_size:
+            if crop_size is not None and n_freq_bins != crop_size:
                 print_status(f"Warning: freq bins ({n_freq_bins}) != crop_size ({crop_size}). Adjusting via center crop.", "WARNING")
                 # Center crop in frequency dimension if larger, or pad if smaller
                 if n_freq_bins > crop_size:
