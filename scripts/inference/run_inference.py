@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -430,9 +431,140 @@ def _resolve_path(path_value: Optional[str], base_dir: Optional[Path]) -> Option
     if not path_value:
         return None
     p = Path(path_value)
-    if p.is_absolute() or base_dir is None:
+    if p.is_absolute():
         return p
-    return base_dir / p
+    if base_dir is None:
+        return Path(os.path.abspath(str(p)))
+    return Path(os.path.abspath(str(base_dir / p)))
+
+
+def _path_to_json_ref(path_value: Optional[Path], json_base_dir: Path) -> Optional[str]:
+    """Serialize a filesystem path for JSON `paths.*` fields.
+
+    Prefers path relative to the predictions JSON directory so the verification
+    app can relocate the whole folder tree.
+    """
+    if path_value is None:
+        return None
+    try:
+        return str(path_value.relative_to(json_base_dir))
+    except ValueError:
+        return str(path_value)
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _compact_utc_timestamp(value: Optional[str]) -> Optional[str]:
+    dt = _parse_iso_datetime(value)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
+
+
+def _safe_id_token(value: Optional[str], *, fallback: str, max_len: int = 80) -> str:
+    raw = str(value) if value is not None else fallback
+    cleaned = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    if not cleaned:
+        cleaned = fallback
+    return cleaned[:max_len]
+
+
+def _derive_device_token(
+    *,
+    device_code: Optional[str],
+    source_audio: Optional[str],
+    base_id: Optional[str],
+) -> str:
+    if device_code:
+        return _safe_id_token(device_code, fallback="unknown-device", max_len=32)
+    if source_audio:
+        src_name = Path(source_audio).name
+        if "_" in src_name:
+            return _safe_id_token(src_name.split("_", 1)[0], fallback="unknown-device", max_len=32)
+        return _safe_id_token(src_name, fallback="unknown-device", max_len=32)
+    if base_id:
+        if "_" in base_id:
+            return _safe_id_token(base_id.split("_", 1)[0], fallback="unknown-device", max_len=32)
+        return _safe_id_token(base_id, fallback="unknown-device", max_len=32)
+    return "unknown-device"
+
+
+def _build_descriptive_window_id(
+    *,
+    file_id: str,
+    base_id: str,
+    source_audio: Optional[str],
+    device_code: Optional[str],
+    audio_start_time: Optional[str],
+    audio_end_time: Optional[str],
+    window_start: Optional[Any],
+    window_time_start: Optional[Any],
+    window_time_end: Optional[Any],
+) -> str:
+    device = _derive_device_token(
+        device_code=device_code,
+        source_audio=source_audio,
+        base_id=base_id,
+    )
+    src_token = _safe_id_token(Path(source_audio).stem if source_audio else base_id, fallback=base_id, max_len=48)
+    start_token = _compact_utc_timestamp(audio_start_time)
+    end_token = _compact_utc_timestamp(audio_end_time)
+    if start_token and end_token:
+        time_part = f"{start_token}-{end_token}"
+    else:
+        if window_time_start is None:
+            wts = "na"
+        else:
+            wts = f"{float(window_time_start):.3f}".replace(".", "p")
+        if window_time_end is None:
+            wte = "na"
+        else:
+            wte = f"{float(window_time_end):.3f}".replace(".", "p")
+        time_part = f"s{wts}-e{wte}"
+
+    if window_start is None:
+        win_tag = "wna"
+    else:
+        try:
+            win_tag = f"w{int(window_start):06d}"
+        except (TypeError, ValueError):
+            win_tag = f"w{_safe_id_token(str(window_start), fallback='na', max_len=12)}"
+
+    digest = hashlib.sha1(
+        "|".join(
+            [
+                str(file_id),
+                str(base_id),
+                str(source_audio or ""),
+                str(audio_start_time or ""),
+                str(audio_end_time or ""),
+                str(window_start),
+                str(window_time_start),
+                str(window_time_end),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:8]
+    return f"fw-{device}-{time_part}-{src_token}-{win_tag}-h{digest}"
+
+
+def _first_existing_path(candidates: List[Optional[Path]]) -> Optional[Path]:
+    for path in candidates:
+        if path is not None and path.exists():
+            return path
+    return None
 
 
 def _load_mat_with_axes(mat_path: Path) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
@@ -811,6 +943,16 @@ def main():
                         help='Optional markdown summary path for postprocessing')
     parser.add_argument('--postprocess-debug-json', type=str, default=None,
                         help='Optional debug JSON path for postprocessing diagnostics')
+    parser.add_argument('--postprocess-merge-event-media', action='store_true',
+                        help='Merge clustered windows into event-level spectrogram/audio clips')
+    parser.add_argument('--postprocess-merge-min-score', type=float, default=None,
+                        help='Optional score floor for members included in event-media merge')
+    parser.add_argument('--postprocess-event-media-dir', type=str, default=None,
+                        help='Directory for merged event media (default: <postprocess output stem>_events_media)')
+    parser.add_argument('--postprocess-replace-items-with-events', action='store_true',
+                        help='Replace window-level items with one event-level item per kept cluster')
+    parser.add_argument('--postprocess-merge-across-source-audio', action='store_true',
+                        help='Allow postprocess event clustering across adjacent source audio files')
     
     args = parser.parse_args()
     
@@ -979,10 +1121,13 @@ def main():
     results = run_inference(model, dataloader, device)
     print_status(f"Inference complete: {len(results)} predictions", "SUCCESS")
     
+    json_base_dir = Path(args.output_json).resolve().parent
+    metadata_base = Path(args.dataset_metadata).resolve().parent if args.dataset_metadata else None
+
     # Optional: export cropped MATs/audio for verification
     export_info: Dict[str, Dict[str, Any]] = {}
     if args.export_crops:
-        export_dir = Path(args.export_dir) if args.export_dir else Path(args.output_json).parent
+        export_dir = Path(args.export_dir).resolve() if args.export_dir else json_base_dir
         spec_out_dir = export_dir / "spectrograms"
         audio_out_dir = export_dir / "audio"
         spec_out_dir.mkdir(parents=True, exist_ok=True)
@@ -991,21 +1136,34 @@ def main():
 
         # Map MAT stem -> path for quick lookup
         mat_path_map = {p.stem: p for p in dataset.mat_files}
-        metadata_base = Path(args.dataset_metadata).parent if args.dataset_metadata else None
-
         win_dur = spec_config.get("window_duration") or spec_config.get("window_duration_sec") or spec_config.get("win_dur") or spec_config.get("win_dur_s")
         overlap = spec_config.get("overlap") or spec_config.get("overlap_ratio")
 
-        # Filter results above threshold for export
-        export_results = [r for r in results if r['confidence'] >= args.export_threshold]
-        print_status(f"Exporting crops for {len(export_results)} windows >= {args.export_threshold:.2f}", "PROGRESS")
+        export_cutoff = float(args.export_threshold)
+        if args.postprocess:
+            # Ensure postprocessed/kept windows can reference existing exported media.
+            export_cutoff = min(export_cutoff, float(args.postprocess_low_threshold))
+        export_results = [r for r in results if r['confidence'] >= export_cutoff]
+        missing_audio_sources: Dict[str, int] = {}
+        print_status(
+            f"Exporting crops for {len(export_results)} windows >= {export_cutoff:.2f}",
+            "PROGRESS",
+        )
 
         grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for r in export_results:
             base_id = r['file_id'].rsplit('_win', 1)[0] if '_win' in r['file_id'] else r['file_id']
             grouped[base_id].append(r)
 
-        for base_id, group in grouped.items():
+        grouped_items = list(grouped.items())
+        total_groups = len(grouped_items)
+        total_export_targets = len(export_results)
+        print_status(
+            f"Export pass over {total_groups} source clips ({total_export_targets} candidate windows)",
+            "PROGRESS",
+        )
+
+        for group_idx, (base_id, group) in enumerate(grouped_items, start=1):
             file_info = file_info_map.get(base_id, {})
 
             # Resolve MAT path for this base clip
@@ -1033,20 +1191,26 @@ def main():
                 hop_sec = (win_dur * (1.0 - overlap)) if (win_dur is not None and overlap is not None) else 0.0
                 times = np.arange(T_dim, dtype=np.float32) * hop_sec
 
-            # Resolve raw audio file
-            raw_audio_path = None
+            # Resolve raw audio file with robust fallbacks.
+            source_audio = file_info.get("source_audio") or f"{base_id}.wav"
+            raw_candidates: List[Optional[Path]] = []
             if args.raw_audio_dir:
-                source_audio = file_info.get("source_audio")
-                if not source_audio:
-                    source_audio = f"{base_id}.wav"
-                if source_audio:
-                    raw_audio_path = Path(args.raw_audio_dir) / source_audio
-            if raw_audio_path is None and file_info.get("raw_audio_path"):
-                raw_audio_path = _resolve_path(file_info.get("raw_audio_path"), metadata_base)
-            if raw_audio_path is None and file_info.get("source_audio") and metadata_base:
-                cand = metadata_base / "raw_audio" / file_info.get("source_audio")
-                if cand.exists():
-                    raw_audio_path = cand
+                base_raw_dir = Path(args.raw_audio_dir)
+                raw_candidates.append(base_raw_dir / source_audio)
+                stem = Path(source_audio).stem
+                for ext in (".wav", ".flac", ".mp3"):
+                    raw_candidates.append(base_raw_dir / f"{stem}{ext}")
+            if file_info.get("raw_audio_path"):
+                raw_candidates.append(_resolve_path(file_info.get("raw_audio_path"), metadata_base))
+            if metadata_base and source_audio:
+                raw_candidates.append(metadata_base / "raw_audio" / source_audio)
+                stem = Path(source_audio).stem
+                for ext in (".wav", ".flac", ".mp3"):
+                    raw_candidates.append(metadata_base / "raw_audio" / f"{stem}{ext}")
+
+            raw_audio_path = _first_existing_path(raw_candidates)
+            if args.export_audio and raw_audio_path is None:
+                missing_audio_sources[source_audio] = missing_audio_sources.get(source_audio, 0) + 1
 
             # Parse clip start timestamp
             clip_ts = None
@@ -1062,7 +1226,7 @@ def main():
 
             # Export each window for this clip
             for r in group:
-                item_id = r['file_id']
+                file_id = r['file_id']
                 meta = r.get('meta', {})
                 start_idx = meta.get('window_start')
                 if start_idx is None:
@@ -1117,7 +1281,7 @@ def main():
                 max_start = T_work - crop_t
                 if max_start >= 0 and start_idx > max_start:
                     print_status(
-                        f"Skipping {item_id}: window_start {start_idx} exceeds max {max_start}",
+                        f"Skipping {file_id}: window_start {start_idx} exceeds max {max_start}",
                         "WARNING",
                     )
                     continue
@@ -1142,7 +1306,7 @@ def main():
 
                 if spec_crop.shape[1] < crop_t or spec_crop.shape[0] < crop_f:
                     print_status(
-                        f"Skipping {item_id}: crop shape {spec_crop.shape} smaller than {crop_f}x{crop_t}",
+                        f"Skipping {file_id}: crop shape {spec_crop.shape} smaller than {crop_f}x{crop_t}",
                         "WARNING",
                     )
                     continue
@@ -1152,18 +1316,6 @@ def main():
                     pdB_crop = _power_to_db_norm(spec_crop)
                 else:
                     pdB_crop = spec_crop.astype(np.float32)
-
-                out_mat = spec_out_dir / f"{item_id}.mat"
-                mat_payload = {
-                    "F": np.asarray(freqs_f) if freqs_f is not None else None,
-                    "T": np.asarray(times_crop) if times_crop is not None else None,
-                    "PdB_norm": pdB_crop,
-                }
-                if spec_kind == 'power':
-                    mat_payload["P"] = spec_crop
-                # Remove None entries
-                mat_payload = {k: v for k, v in mat_payload.items() if v is not None}
-                scipy.io.savemat(out_mat, mat_payload)
 
                 # Compute window timing for audio + metadata
                 window_time_start, window_time_end = _compute_window_time_range(
@@ -1179,6 +1331,30 @@ def main():
                 if clip_ts and window_time_start is not None and window_time_end is not None:
                     audio_start_time = (clip_ts + timedelta(seconds=float(window_time_start))).isoformat()
                     audio_end_time = (clip_ts + timedelta(seconds=float(window_time_end))).isoformat()
+
+                item_id = _build_descriptive_window_id(
+                    file_id=file_id,
+                    base_id=base_id,
+                    source_audio=source_audio,
+                    device_code=data_source.get("device_code"),
+                    audio_start_time=audio_start_time,
+                    audio_end_time=audio_end_time,
+                    window_start=start_idx,
+                    window_time_start=window_time_start,
+                    window_time_end=window_time_end,
+                )
+
+                out_mat = spec_out_dir / f"{item_id}.mat"
+                mat_payload = {
+                    "F": np.asarray(freqs_f) if freqs_f is not None else None,
+                    "T": np.asarray(times_crop) if times_crop is not None else None,
+                    "PdB_norm": pdB_crop,
+                }
+                if spec_kind == 'power':
+                    mat_payload["P"] = spec_crop
+                # Remove None entries
+                mat_payload = {k: v for k, v in mat_payload.items() if v is not None}
+                scipy.io.savemat(out_mat, mat_payload)
 
                 # Export audio crop if requested and available
                 out_audio = None
@@ -1203,17 +1379,34 @@ def main():
                     except Exception as e:
                         print_status(f"Audio export failed for {item_id}: {e}", "WARNING")
 
-                export_info[item_id] = {
-                    "spectrogram_mat_path": str(out_mat.relative_to(export_dir)),
-                    "audio_path": str(out_audio.relative_to(export_dir)) if out_audio else None,
+                export_info[file_id] = {
+                    "item_id": item_id,
+                    "spectrogram_mat_path": _path_to_json_ref(out_mat, json_base_dir),
+                    "audio_path": _path_to_json_ref(out_audio, json_base_dir) if out_audio else None,
                     "audio_start_time": audio_start_time,
                     "audio_end_time": audio_end_time,
                     "window_time_start": window_time_start,
                     "window_time_end": window_time_end,
-                    "source_audio": file_info.get("source_audio"),
+                    "source_audio": source_audio,
                 }
 
+            if group_idx % 10 == 0 or group_idx == total_groups:
+                print(
+                    f"  Export groups {group_idx}/{total_groups} | "
+                    f"windows written {len(export_info)}/{total_export_targets}",
+                    end='\r',
+                )
+
+        if total_groups:
+            print()
+
         print_status(f"Export complete: {len(export_info)} crops", "SUCCESS")
+        if args.export_audio and missing_audio_sources:
+            print_status(
+                f"Audio source files not found for {len(missing_audio_sources)} base clips; "
+                "those exported items have no clipped audio.",
+                "WARNING",
+            )
 
     # Decide which results to include in predictions.json
     results_for_tracker = results
@@ -1261,7 +1454,10 @@ def main():
         tracker.set_spectrogram_config(spec_config)
     
     # Add predictions
-    for result in results_for_tracker:
+    total_tracker_items = len(results_for_tracker)
+    print_status(f"Building predictions JSON items ({total_tracker_items})...", "PROGRESS")
+    progress_every = 2000 if total_tracker_items >= 10000 else 500
+    for idx, result in enumerate(results_for_tracker, start=1):
         file_id = result['file_id']
         base_id = file_id.rsplit('_win', 1)[0] if '_win' in file_id else file_id
         file_info = file_info_map.get(file_id, file_info_map.get(base_id, {}))
@@ -1274,11 +1470,28 @@ def main():
         }]
         
         # Add item with unified format
-        mat_path_default = str(Path("spectrograms") / f"{base_id}.mat")
-        audio_path_default = str(Path("audio") / f"{base_id}.wav")
-        spectrogram_path_default = None
-        if "spectrogram_path" in file_info:
-            spectrogram_path_default = file_info.get("spectrogram_path")
+        spectrogram_mat_path = None
+        spectrogram_png_path = None
+        audio_path = None
+
+        mat_from_meta = _resolve_path(file_info.get('mat_path'), metadata_base)
+        if mat_from_meta is not None:
+            spectrogram_mat_path = _path_to_json_ref(mat_from_meta, json_base_dir)
+        else:
+            fallback_mat = (Path(args.mat_dir) / f"{base_id}.mat").resolve()
+            if fallback_mat.exists():
+                spectrogram_mat_path = _path_to_json_ref(fallback_mat, json_base_dir)
+
+        png_from_meta = _resolve_path(
+            file_info.get("spectrogram_png_path") or file_info.get("spectrogram_path"),
+            metadata_base,
+        )
+        if png_from_meta is not None:
+            spectrogram_png_path = _path_to_json_ref(png_from_meta, json_base_dir)
+
+        audio_from_meta = _resolve_path(file_info.get('audio_path'), metadata_base)
+        if audio_from_meta is not None:
+            audio_path = _path_to_json_ref(audio_from_meta, json_base_dir)
         # Prefer richer metadata from file_info_map when available (e.g., test windows)
         window_start = meta.get('window_start')
         window_time_start = meta.get('window_time_start')
@@ -1300,19 +1513,52 @@ def main():
         if duration_sec is None and window_time_start is not None and window_time_end is not None:
             duration_sec = max(0.0, float(window_time_end) - float(window_time_start))
 
-        spectrogram_mat_path = file_info.get('mat_path', mat_path_default)
-        spectrogram_png_path = spectrogram_path_default
-        audio_path = file_info.get('audio_path', audio_path_default)
         audio_start_time = None
         audio_end_time = None
+        source_audio = file_info.get('source_audio') or f"{base_id}.wav"
         if export_item:
-            spectrogram_mat_path = export_item.get('spectrogram_mat_path', spectrogram_mat_path)
-            audio_path = export_item.get('audio_path', audio_path)
+            if export_item.get('spectrogram_mat_path'):
+                spectrogram_mat_path = export_item.get('spectrogram_mat_path')
+            if export_item.get('audio_path'):
+                audio_path = export_item.get('audio_path')
             audio_start_time = export_item.get('audio_start_time')
             audio_end_time = export_item.get('audio_end_time')
 
+        # Compute absolute window timestamps for non-exported windows when possible.
+        if audio_start_time is None or audio_end_time is None:
+            clip_ts = None
+            if file_info.get("audio_timestamp"):
+                try:
+                    clip_ts = parse_datetime(file_info.get("audio_timestamp"))
+                except Exception:
+                    clip_ts = None
+            if clip_ts is None:
+                source_name = source_audio or f"{base_id}.wav"
+                clip_ts = extract_timestamp_from_filename(source_name)
+            if clip_ts and window_time_start is not None and window_time_end is not None:
+                if audio_start_time is None:
+                    audio_start_time = (clip_ts + timedelta(seconds=float(window_time_start))).isoformat()
+                if audio_end_time is None:
+                    audio_end_time = (clip_ts + timedelta(seconds=float(window_time_end))).isoformat()
+
+        item_id = (
+            export_item.get("item_id")
+            if export_item and export_item.get("item_id")
+            else _build_descriptive_window_id(
+                file_id=file_id,
+                base_id=base_id,
+                source_audio=source_audio,
+                device_code=data_source.get("device_code"),
+                audio_start_time=audio_start_time,
+                audio_end_time=audio_end_time,
+                window_start=window_start,
+                window_time_start=window_time_start,
+                window_time_end=window_time_end,
+            )
+        )
+
         tracker.add_item(
-            item_id=file_id,
+            item_id=item_id,
             model_outputs=model_outputs,
             mat_path=spectrogram_mat_path,
             audio_path=audio_path,
@@ -1320,7 +1566,7 @@ def main():
             audio_timestamp=audio_start_time or file_info.get('audio_timestamp', ''),
             duration_sec=duration_sec,
             # Additional metadata
-            source_audio=file_info.get('source_audio'),
+            source_audio=source_audio,
             segment_start_sec=file_info.get('segment_start_sec', window_time_start),
             segment_end_sec=file_info.get('segment_end_sec', window_time_end),
             segment_index=file_info.get('segment_index', file_info.get('window_index')),
@@ -1339,8 +1585,13 @@ def main():
             audio_start_time=audio_start_time,
             audio_end_time=audio_end_time,
         )
+        if idx % progress_every == 0 or idx == total_tracker_items:
+            print(f"  Added {idx}/{total_tracker_items} items", end='\r')
+    if total_tracker_items:
+        print()
     
     # Save predictions
+    print_status("Saving predictions JSON...", "PROGRESS")
     tracker.save()
     
     # Print summary
@@ -1397,6 +1648,16 @@ def main():
             post_cmd.extend(["--summary-md", str(args.postprocess_summary_md)])
         if args.postprocess_debug_json:
             post_cmd.extend(["--debug-json", str(args.postprocess_debug_json)])
+        if args.postprocess_merge_event_media:
+            post_cmd.append("--merge-event-media")
+        if args.postprocess_merge_min_score is not None:
+            post_cmd.extend(["--merge-min-score", str(args.postprocess_merge_min_score)])
+        if args.postprocess_event_media_dir:
+            post_cmd.extend(["--event-media-dir", str(args.postprocess_event_media_dir)])
+        if args.postprocess_replace_items_with_events:
+            post_cmd.append("--replace-items-with-events")
+        if args.postprocess_merge_across_source_audio:
+            post_cmd.append("--merge-across-source-audio")
 
         print_status("Running postprocessing on predictions...", "PROGRESS")
         subprocess.run(post_cmd, check=True)
