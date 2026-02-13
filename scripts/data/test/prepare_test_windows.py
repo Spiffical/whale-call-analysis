@@ -266,22 +266,31 @@ def main():
                 clip_meta={'clip_offset_seconds': offset_seconds, 'clip_duration_seconds': len(data)/fs}
             )
 
-            # Trim time bins to remove edge padding (match training edge_context trim)
+            # Trim time bins to remove edge padding (match training edge_context trim).
+            # NOTE: SpectrogramGenerator.compute_spectrogram already applies clip_meta
+            # trimming in current onc_hydrophone_data. Only apply manual trim when
+            # returned times still include padded context.
             clip_duration = len(data) / fs
             if len(times) > 0:
                 t_start = float(offset_seconds)
                 t_end = t_start + float(clip_duration)
-                time_mask = (times >= t_start) & (times <= t_end)
-                if not np.any(time_mask):
-                    t0 = int(np.searchsorted(times, t_start, side="left"))
-                    t1 = int(np.searchsorted(times, t_end, side="right"))
-                    t0 = max(0, min(t0, len(times) - 1))
-                    t1 = max(t0 + 1, min(t1, len(times)))
-                    time_mask = np.zeros_like(times, dtype=bool)
-                    time_mask[t0:t1] = True
-                times = times[time_mask] - t_start
-                Sxx = Sxx[:, time_mask]
-                PdB = PdB[:, time_mask]
+                times = np.asarray(times, dtype=np.float64).ravel()
+                already_trimmed = (
+                    times[0] >= -1e-6
+                    and times[-1] <= (clip_duration + 1e-3)
+                )
+                if not already_trimmed:
+                    time_mask = (times >= t_start) & (times <= t_end)
+                    if not np.any(time_mask):
+                        t0 = int(np.searchsorted(times, t_start, side="left"))
+                        t1 = int(np.searchsorted(times, t_end, side="right"))
+                        t0 = max(0, min(t0, len(times) - 1))
+                        t1 = max(t0 + 1, min(t1, len(times)))
+                        time_mask = np.zeros_like(times, dtype=bool)
+                        time_mask[t0:t1] = True
+                    times = times[time_mask] - t_start
+                    Sxx = Sxx[:, time_mask]
+                    PdB = PdB[:, time_mask]
             
             # Apply frequency cropping to match training data
             cropped_freqs, cropped_Sxx = crop_to_freq_lims(freqs, Sxx, freq_lims[0], freq_lims[1])
@@ -377,21 +386,6 @@ def main():
                     'chunk_shape': [chunk_PdB.shape[0], chunk_PdB.shape[1]]
                 })
                 
-                # Save chunked audio if requested
-                wav_path = None
-                if chunk_audio_dir:
-                    wav_path = chunk_audio_dir / f"{chunk_id}.wav"
-                    # Time to samples
-                    start_sec = times[start_idx]
-                    end_sec = times[min(end_idx, len(times)-1)] + (times[1] - times[0]) if len(times) > 1 else start_sec + 1
-                    s_start = int(start_sec * fs)
-                    s_end = int(end_sec * fs)
-                    # Extract from the original 'data' (which is exactly the 5-min part)
-                    s_start = max(0, min(s_start, len(data)))
-                    s_end = max(s_start, min(s_end, len(data)))
-                    if s_end > s_start:
-                        sf.write(str(wav_path), data[s_start:s_end], fs)
-
                 # Window timing (seconds) relative to the 5-min clip
                 # Use edge-based times so the first window starts at 0.0s.
                 window_time_start = None
@@ -405,6 +399,20 @@ def main():
                     center_start = float(times[start_idx])
                     window_time_start = max(0.0, center_start - (win_dur / 2.0))
                     window_time_end = window_time_start + max(0, window_bins - 1) * hop_sec + win_dur
+
+                # Save chunked audio if requested
+                wav_path = None
+                if chunk_audio_dir:
+                    wav_path = chunk_audio_dir / f"{chunk_id}.wav"
+                    start_sec = float(window_time_start) if window_time_start is not None else float(times[start_idx])
+                    end_sec = float(window_time_end) if window_time_end is not None else start_sec
+                    s_start = int(start_sec * fs)
+                    s_end = int(end_sec * fs)
+                    # Extract from the original 'data' (which is exactly the 5-min part)
+                    s_start = max(0, min(s_start, len(data)))
+                    s_end = max(s_start, min(s_end, len(data)))
+                    if s_end > s_start:
+                        sf.write(str(wav_path), data[s_start:s_end], fs)
 
                 processed_chunks.append({
                     "chunk_id": chunk_id,
