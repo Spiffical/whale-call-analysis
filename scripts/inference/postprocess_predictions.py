@@ -192,13 +192,17 @@ FREQ_KEYS = ("F", "frequencies", "freqs", "freq", "f")
 TIME_KEYS = ("T", "times", "time", "t")
 
 
-def _load_mat_spectrogram(mat_path: Path) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+def _load_mat_spectrogram(
+    mat_path: Path,
+) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
     data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
-    key = _find_key(data, DB_KEYS)
-    spec_kind = "db"
+    # Prefer raw power when present so event-level merge can normalize once
+    # globally instead of stitching pre-normalized window dB maps.
+    key = _find_key(data, POWER_KEYS)
+    spec_kind = "power"
     if key is None:
-        key = _find_key(data, POWER_KEYS)
-        spec_kind = "power"
+        key = _find_key(data, DB_KEYS)
+        spec_kind = "db"
     if key is None:
         key = _find_key(data, SPECTRO_KEYS)
         spec_kind = "db"
@@ -218,15 +222,8 @@ def _load_mat_spectrogram(mat_path: Path) -> Tuple[np.ndarray, Optional[np.ndarr
     if tk in data:
         time = np.asarray(data[tk]).squeeze()
 
-    # Normalize power input to dB-like values used in training/inference payloads.
     if spec_kind == "power":
         spec = np.abs(spec.astype(np.float32))
-        max_power = float(np.max(spec)) if spec.size else 0.0
-        if max_power > 0:
-            norm = np.maximum(spec / max_power, 1e-10)
-            spec = 10.0 * np.log10(norm)
-        else:
-            spec = np.full_like(spec, -100.0, dtype=np.float32)
     else:
         spec = spec.astype(np.float32)
 
@@ -237,7 +234,12 @@ def _load_mat_spectrogram(mat_path: Path) -> Tuple[np.ndarray, Optional[np.ndarr
         if (r, c) == (t_len, f_len):
             spec = spec.T
 
-    return spec, (np.asarray(freq).ravel() if freq is not None else None), (np.asarray(time).ravel() if time is not None else None)
+    return (
+        spec,
+        spec_kind,
+        (np.asarray(freq).ravel() if freq is not None else None),
+        (np.asarray(time).ravel() if time is not None else None),
+    )
 
 
 def _infer_window_times(item: Dict[str, Any], n_time_bins: int) -> Tuple[Optional[float], Optional[float]]:
@@ -414,7 +416,7 @@ def _merge_event_spectrogram(
         if mat_path is None or not mat_path.exists():
             continue
         try:
-            spec, freq, t = _load_mat_spectrogram(mat_path)
+            spec, spec_kind, freq, t = _load_mat_spectrogram(mat_path)
         except Exception:
             continue
         start, end = _infer_window_times(item, spec.shape[1])
@@ -474,6 +476,7 @@ def _merge_event_spectrogram(
         rows.append(
             {
                 "spec": spec,
+                "kind": spec_kind,
                 "freq": freq,
                 "times": t_vec.astype(np.float64),
                 "start": float(start),
@@ -494,6 +497,20 @@ def _merge_event_spectrogram(
     dts = [float(r["dt"]) for r in rows if r.get("dt") is not None and float(r["dt"]) > 0]
     dt_ref = float(median(dts)) if dts else 1.0
     dt_ref = max(dt_ref, 1e-6)
+
+    kinds = {str(r.get("kind", "db")) for r in rows}
+    merge_kind = "power" if kinds == {"power"} else "db"
+    if merge_kind == "db":
+        # Mixed inputs: convert any power member to dB independently.
+        for row in rows:
+            if str(row.get("kind")) == "power":
+                spec_row = np.abs(np.asarray(row["spec"], dtype=np.float32))
+                mx = float(np.max(spec_row)) if spec_row.size else 0.0
+                if mx > 0:
+                    row["spec"] = 10.0 * np.log10(np.maximum(spec_row / mx, 1e-10))
+                else:
+                    row["spec"] = np.full_like(spec_row, -100.0, dtype=np.float32)
+                row["kind"] = "db"
 
     merged_spec = rows[0]["spec"].copy()
     merged_times = rows[0]["times"].copy()
@@ -530,7 +547,16 @@ def _merge_event_spectrogram(
         merged_times = np.concatenate([merged_times, times], axis=0)
         current_end = float(merged_times[-1]) + dt_row
 
-    merged = np.minimum(merged_spec, 0.0).astype(np.float32)
+    if merge_kind == "power":
+        merged_power = np.abs(np.asarray(merged_spec, dtype=np.float32))
+        max_power = float(np.max(merged_power)) if merged_power.size else 0.0
+        if max_power > 0:
+            merged = 10.0 * np.log10(np.maximum(merged_power / max_power, 1e-10))
+        else:
+            merged = np.full_like(merged_power, -100.0, dtype=np.float32)
+    else:
+        merged_power = None
+        merged = np.minimum(merged_spec, 0.0).astype(np.float32)
     timeline = merged_times.astype(np.float64)
     freq = rows[0]["freq"]
     if freq is None or np.asarray(freq).size != freq_bins:
@@ -551,6 +577,8 @@ def _merge_event_spectrogram(
         "F": np.asarray(freq).astype(np.float32),
         "T": timeline.astype(np.float64),
     }
+    if merged_power is not None:
+        payload["P"] = merged_power.astype(np.float32)
     if win_duration_sec is not None:
         payload["window_duration_sec"] = float(win_duration_sec)
 
