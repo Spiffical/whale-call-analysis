@@ -437,31 +437,39 @@ def _merge_event_spectrogram(
             continue
 
         t_vec: Optional[np.ndarray] = None
-        dt = None
-        # Prefer declared window bounds because clipped audio is generated from the same bounds.
-        # This keeps merged spectrogram duration aligned with merged audio duration.
-        if end is not None and end > start:
-            dt = float(end - start) / float(n_cols)
-            dt = max(dt, 1e-6)
-            t_vec = float(start) + np.arange(n_cols, dtype=np.float64) * dt
-        elif t is not None and np.asarray(t).size == n_cols:
+        dt: Optional[float] = None
+
+        # Prefer MAT time bins when available. These preserve the true hop used
+        # during spectrogram generation and avoid seam artifacts when stitching.
+        if t is not None and np.asarray(t).size == n_cols:
             t_raw = np.asarray(t, dtype=np.float64).ravel()
             if t_raw.size >= 2:
                 diffs = np.diff(t_raw)
                 diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
                 if diffs.size:
                     dt = float(np.median(diffs))
-            if dt is None or dt <= 0:
-                dt = 1.0
-            # Re-anchor to the declared window start if available.
-            if start is not None:
-                t_vec = float(start) + np.arange(n_cols, dtype=np.float64) * dt
-            else:
+            if dt is not None and dt > 0 and np.all(np.isfinite(t_raw)):
                 t_vec = t_raw
+
+        # Fallback when MAT has no usable time axis.
+        if t_vec is None and end is not None and end > start:
+            if n_cols > 1:
+                dt = float(end - start) / float(n_cols)
+            else:
+                dt = float(end - start)
+            dt = max(float(dt), 1e-6)
+            t_vec = float(start) + (0.5 * dt) + np.arange(n_cols, dtype=np.float64) * dt
+
         if dt is None or dt <= 0:
             dt = 1.0
         if t_vec is None or t_vec.size != n_cols:
             t_vec = float(start) + np.arange(n_cols, dtype=np.float64) * float(dt)
+
+        win_duration = None
+        if end is not None and end > start and n_cols >= 1:
+            win_duration = float(end - start) - float(max(n_cols - 1, 0)) * float(dt)
+            if win_duration <= 0:
+                win_duration = None
 
         rows.append(
             {
@@ -470,6 +478,7 @@ def _merge_event_spectrogram(
                 "times": t_vec.astype(np.float64),
                 "start": float(start),
                 "dt": float(dt),
+                "win_duration": float(win_duration) if win_duration is not None else None,
             }
         )
     if not rows:
@@ -530,13 +539,24 @@ def _merge_event_spectrogram(
     spec_dir = output_dir / "spectrograms"
     spec_dir.mkdir(parents=True, exist_ok=True)
     out_path = spec_dir / f"{event_id}.mat"
+    win_durations = [
+        float(r["win_duration"])
+        for r in rows
+        if r.get("win_duration") is not None and float(r["win_duration"]) > 0
+    ]
+    win_duration_sec = float(median(win_durations)) if win_durations else None
+
+    payload: Dict[str, Any] = {
+        "PdB_norm": merged,
+        "F": np.asarray(freq).astype(np.float32),
+        "T": timeline.astype(np.float64),
+    }
+    if win_duration_sec is not None:
+        payload["window_duration_sec"] = float(win_duration_sec)
+
     scipy.io.savemat(
         str(out_path),
-        {
-            "PdB_norm": merged,
-            "F": np.asarray(freq).astype(np.float32),
-            "T": timeline.astype(np.float64),
-        },
+        payload,
     )
     return _to_output_rel(out_path, output_json)
 
@@ -630,6 +650,16 @@ def _spectrogram_duration_seconds(mat_path: Path) -> Optional[float]:
     t_arr = np.asarray(t, dtype=np.float64).ravel()
     if t_arr.size == 0:
         return None
+    win_duration = data.get("window_duration_sec")
+    if win_duration is not None:
+        try:
+            win_duration = float(np.asarray(win_duration).ravel()[0])
+        except Exception:
+            win_duration = None
+    if win_duration is not None and np.isfinite(win_duration) and win_duration > 0:
+        if t_arr.size == 1:
+            return float(win_duration)
+        return float(t_arr[-1] - t_arr[0]) + float(win_duration)
     if t_arr.size == 1:
         return 0.0
     diffs = np.diff(t_arr)
