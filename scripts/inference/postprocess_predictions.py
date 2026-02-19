@@ -268,6 +268,21 @@ def _infer_window_times(item: Dict[str, Any], n_time_bins: int) -> Tuple[Optiona
     start = _safe_float(item.get("window_time_start"))
     end = _safe_float(item.get("window_time_end"))
     if start is not None and end is not None and end > start:
+        # Backward-compatibility: some exports stored window_time_* in bin units.
+        tbin = _safe_float(item.get("time_bin_seconds"))
+        ws = _safe_float(item.get("window_start"))
+        crop_t = _safe_int(item.get("crop_time_bins"))
+        if crop_t is None:
+            crop_t = _safe_int(item.get("crop_size"))
+        if (
+            tbin is not None
+            and tbin > 0
+            and ws is not None
+            and abs(start - ws) < 1e-6
+            and (crop_t is None or abs((end - start) - float(crop_t)) < 1e-3)
+        ):
+            start = float(start) * float(tbin)
+            end = float(end) * float(tbin)
         return start, end
     start = _safe_float(item.get("segment_start_sec"))
     end = _safe_float(item.get("segment_end_sec"))
@@ -540,6 +555,46 @@ def _event_time_bounds_seconds(member_items: Sequence[Dict[str, Any]]) -> Tuple[
     return start, end
 
 
+def _event_time_bounds_from_parent_mat(
+    member_items: Sequence[Dict[str, Any]],
+    input_json: Path,
+) -> Tuple[Optional[float], Optional[float]]:
+    parent_mat_rel = _common_parent_path(member_items, "parent_spectrogram_mat_path")
+    if parent_mat_rel is None:
+        return None, None
+    parent_mat = _resolve_media_path(input_json, parent_mat_rel)
+    if parent_mat is None or not parent_mat.exists():
+        return None, None
+    try:
+        data = scipy.io.loadmat(str(parent_mat), simplify_cells=True)
+    except Exception:
+        return None, None
+    t = data.get("T")
+    if t is None:
+        return None, None
+    t_arr = np.asarray(t, dtype=np.float64).ravel()
+    if t_arr.size == 0:
+        return None, None
+    bounds = _parent_time_bounds(member_items, int(t_arr.size))
+    if bounds is None:
+        return None, None
+    t0, t1 = bounds
+    t0 = max(0, min(int(t0), int(t_arr.size) - 1))
+    t1 = max(t0 + 1, min(int(t1), int(t_arr.size)))
+    diffs = np.diff(t_arr)
+    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+    if diffs.size:
+        dt = float(np.median(diffs))
+        start = float(t_arr[t0]) - 0.5 * dt
+        end = float(t_arr[t1 - 1]) + 0.5 * dt
+    else:
+        start = float(t_arr[t0])
+        end = float(t_arr[t1 - 1])
+    if end <= start:
+        return None, None
+    return max(0.0, start), max(start, end)
+
+
 def _extract_event_spectrogram_from_parent(
     event_id: str,
     member_items: Sequence[Dict[str, Any]],
@@ -628,7 +683,11 @@ def _extract_event_audio_from_parent(
     parent_audio = _resolve_media_path(input_json, parent_rel)
     if parent_audio is None or not parent_audio.exists():
         return None
-    start_sec, end_sec = _event_time_bounds_seconds(member_items)
+    # Prefer deriving time bounds from parent spectrogram time bins to avoid
+    # unit-mismatch issues when window_time_start/end are stored as bin indices.
+    start_sec, end_sec = _event_time_bounds_from_parent_mat(member_items, input_json)
+    if start_sec is None or end_sec is None or end_sec <= start_sec:
+        start_sec, end_sec = _event_time_bounds_seconds(member_items)
     if start_sec is None or end_sec is None or end_sec <= start_sec:
         return None
 
@@ -641,6 +700,8 @@ def _extract_event_audio_from_parent(
             end_frame = int(max(start_sec, end_sec) * sr)
             start_frame = max(0, min(start_frame, len(f)))
             end_frame = max(start_frame, min(end_frame, len(f)))
+            if end_frame <= start_frame:
+                return None
             f.seek(start_frame)
             wav = f.read(end_frame - start_frame)
     except Exception:

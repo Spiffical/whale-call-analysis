@@ -1550,6 +1550,27 @@ def main():
             parent_freq_bin_end = export_item.get('parent_freq_bin_end')
             parent_time_bin_start = export_item.get('parent_time_bin_start')
             parent_time_bin_end = export_item.get('parent_time_bin_end')
+        else:
+            # Backward-compatibility: dataset meta stores window_time_* in bins.
+            # Convert to seconds for prediction JSON when possible.
+            try:
+                tbin = float(meta.get('time_bin_seconds')) if meta.get('time_bin_seconds') is not None else None
+                ws_bin = int(window_start) if window_start is not None else None
+                crop_t = int(meta.get('crop_time_bins')) if meta.get('crop_time_bins') is not None else None
+                if (
+                    tbin is not None
+                    and tbin > 0
+                    and ws_bin is not None
+                    and window_time_start is not None
+                    and window_time_end is not None
+                ):
+                    wts = float(window_time_start)
+                    wte = float(window_time_end)
+                    if abs(wts - float(ws_bin)) < 1e-6 and (crop_t is None or abs((wte - wts) - float(crop_t)) < 1e-3):
+                        window_time_start = wts * tbin
+                        window_time_end = wte * tbin
+            except (TypeError, ValueError):
+                pass
 
         duration_sec = spec_config.get('context_duration') if spec_config else None
         if duration_sec is None and window_time_start is not None and window_time_end is not None:
@@ -1652,8 +1673,10 @@ def main():
             crop_applied=meta.get('crop_applied'),
             crop_type=meta.get('crop_type'),
             window_start=window_start,
+            window_start_bin=window_start,
             window_time_start=window_time_start,
             window_time_end=window_time_end,
+            time_bin_seconds=meta.get('time_bin_seconds'),
             parent_spectrogram_mat_path=parent_spectrogram_mat_path,
             parent_audio_path=parent_audio_path,
             parent_freq_bin_start=parent_freq_bin_start,
