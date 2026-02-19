@@ -356,6 +356,8 @@ class InferenceDataset(torch.utils.data.Dataset):
             'window_step_requested': self.window_step,
             'window_step_seconds_requested': self.window_step_seconds,
             'windows_per_file': self.windows_per_file,
+            'freq_slice_start': int(freq_slice[0]) if freq_slice is not None else None,
+            'freq_slice_end': int(freq_slice[1]) if freq_slice is not None else None,
         }
 
         # Optional physical frequency pre-slice.
@@ -441,14 +443,15 @@ def _resolve_path(path_value: Optional[str], base_dir: Optional[Path]) -> Option
 def _path_to_json_ref(path_value: Optional[Path], json_base_dir: Path) -> Optional[str]:
     """Serialize a filesystem path for JSON `paths.*` fields.
 
-    Prefers path relative to the predictions JSON directory so the verification
-    app can relocate the whole folder tree.
+    Prefers path relative to the predictions JSON directory (including ../../
+    style paths for siblings) so the verification app can relocate the whole
+    folder tree.
     """
     if path_value is None:
         return None
     try:
-        return str(path_value.relative_to(json_base_dir))
-    except ValueError:
+        return os.path.relpath(str(path_value), str(json_base_dir))
+    except Exception:
         return str(path_value)
 
 
@@ -1239,6 +1242,7 @@ def main():
                 freqs_work = np.asarray(freqs).ravel() if freqs is not None else None
                 times_work = np.asarray(times).ravel() if times is not None else None
                 F_work, T_work = spec_work.shape
+                parent_freq_offset = 0
 
                 # Optional physical frequency pre-slice to match inference dataset.
                 freq_range_meta = meta.get('crop_freq_range_hz')
@@ -1256,6 +1260,7 @@ def main():
                             idx = np.where(mask)[0]
                             spec_work = spec_work[idx[0]:idx[-1] + 1, :]
                             freqs_work = freqs_work[idx[0]:idx[-1] + 1]
+                            parent_freq_offset = int(idx[0])
                             F_work, T_work = spec_work.shape
 
                 # Frequency crop (center)
@@ -1263,6 +1268,11 @@ def main():
                 if F_work > crop_f:
                     f_start = (F_work - crop_f) // 2
                 f_end = f_start + crop_f
+                parent_freq_start = parent_freq_offset + int(f_start)
+                if F_work < crop_f:
+                    parent_freq_end = parent_freq_offset + int(F_work)
+                else:
+                    parent_freq_end = parent_freq_offset + int(min(f_end, F_work))
                 if F_work < crop_f:
                     spec_f = np.pad(spec_work, ((0, crop_f - F_work), (0, 0)), mode='edge')
                     if freqs_work is not None:
@@ -1287,6 +1297,8 @@ def main():
                     continue
                 t_start = max(0, int(start_idx)) if max_start >= 0 else 0
                 t_end = t_start + crop_t
+                parent_time_start = int(t_start)
+                parent_time_end = int(min(t_end, T_work))
                 if T_work < crop_t:
                     spec_crop = np.pad(spec_f, ((0, 0), (0, crop_t - T_work)), mode='edge')
                     if times_work is not None:
@@ -1300,6 +1312,8 @@ def main():
                             times_crop = None
                     else:
                         times_crop = None
+                    parent_time_start = 0
+                    parent_time_end = int(T_work)
                 else:
                     spec_crop = spec_f[:, t_start:t_end]
                     times_crop = times_work[t_start:t_end] if times_work is not None else None
@@ -1349,6 +1363,10 @@ def main():
                     "F": np.asarray(freqs_f) if freqs_f is not None else None,
                     "T": np.asarray(times_crop) if times_crop is not None else None,
                     "PdB_norm": pdB_crop,
+                    "parent_freq_bin_start": np.int32(parent_freq_start),
+                    "parent_freq_bin_end": np.int32(parent_freq_end),
+                    "parent_time_bin_start": np.int32(parent_time_start),
+                    "parent_time_bin_end": np.int32(parent_time_end),
                 }
                 if spec_kind == 'power':
                     mat_payload["P"] = spec_crop
@@ -1388,6 +1406,13 @@ def main():
                     "window_time_start": window_time_start,
                     "window_time_end": window_time_end,
                     "source_audio": source_audio,
+                    "parent_spectrogram_mat_path": _path_to_json_ref(mat_path.resolve(), json_base_dir),
+                    "parent_audio_path": _path_to_json_ref(raw_audio_path.resolve(), json_base_dir) if raw_audio_path else None,
+                    "parent_freq_bin_start": int(parent_freq_start),
+                    "parent_freq_bin_end": int(parent_freq_end),
+                    "parent_time_bin_start": int(parent_time_start),
+                    "parent_time_bin_end": int(parent_time_end),
+                    "parent_original_shape": [int(F_dim), int(T_dim)],
                 }
 
             if group_idx % 10 == 0 or group_idx == total_groups:
@@ -1489,14 +1514,27 @@ def main():
         if png_from_meta is not None:
             spectrogram_png_path = _path_to_json_ref(png_from_meta, json_base_dir)
 
+        source_audio = file_info.get('source_audio') or f"{base_id}.wav"
         audio_from_meta = _resolve_path(file_info.get('audio_path'), metadata_base)
         if audio_from_meta is not None:
             audio_path = _path_to_json_ref(audio_from_meta, json_base_dir)
+        parent_audio_from_meta = _resolve_path(
+            file_info.get('raw_audio_path') or file_info.get('audio_path'),
+            metadata_base,
+        )
+        if parent_audio_from_meta is None and args.raw_audio_dir and source_audio:
+            candidate_parent_audio = Path(args.raw_audio_dir) / source_audio
+            if candidate_parent_audio.exists():
+                parent_audio_from_meta = candidate_parent_audio.resolve()
         # Prefer richer metadata from file_info_map when available (e.g., test windows)
         window_start = meta.get('window_start')
         window_time_start = meta.get('window_time_start')
         window_time_end = meta.get('window_time_end')
         original_shape = meta.get('original_shape')
+        parent_freq_bin_start = None
+        parent_freq_bin_end = None
+        parent_time_bin_start = None
+        parent_time_bin_end = None
         if file_info:
             window_start = file_info.get('window_start', window_start)
             window_time_start = file_info.get('window_time_start', window_time_start)
@@ -1508,6 +1546,10 @@ def main():
         if export_item:
             window_time_start = export_item.get('window_time_start', window_time_start)
             window_time_end = export_item.get('window_time_end', window_time_end)
+            parent_freq_bin_start = export_item.get('parent_freq_bin_start')
+            parent_freq_bin_end = export_item.get('parent_freq_bin_end')
+            parent_time_bin_start = export_item.get('parent_time_bin_start')
+            parent_time_bin_end = export_item.get('parent_time_bin_end')
 
         duration_sec = spec_config.get('context_duration') if spec_config else None
         if duration_sec is None and window_time_start is not None and window_time_end is not None:
@@ -1515,7 +1557,8 @@ def main():
 
         audio_start_time = None
         audio_end_time = None
-        source_audio = file_info.get('source_audio') or f"{base_id}.wav"
+        parent_spectrogram_mat_path = spectrogram_mat_path
+        parent_audio_path = _path_to_json_ref(parent_audio_from_meta, json_base_dir) if parent_audio_from_meta else audio_path
         if export_item:
             if export_item.get('spectrogram_mat_path'):
                 spectrogram_mat_path = export_item.get('spectrogram_mat_path')
@@ -1523,6 +1566,35 @@ def main():
                 audio_path = export_item.get('audio_path')
             audio_start_time = export_item.get('audio_start_time')
             audio_end_time = export_item.get('audio_end_time')
+            parent_spectrogram_mat_path = export_item.get('parent_spectrogram_mat_path', parent_spectrogram_mat_path)
+            parent_audio_path = export_item.get('parent_audio_path', parent_audio_path)
+
+        # Fallback parent crop indices for non-exported windows.
+        if parent_time_bin_start is None or parent_time_bin_end is None:
+            try:
+                ws = int(window_start) if window_start is not None else None
+                crop_t = int(meta.get('crop_time_bins')) if meta.get('crop_time_bins') is not None else None
+                if ws is not None and crop_t is not None:
+                    parent_time_bin_start = ws
+                    parent_time_bin_end = ws + crop_t
+            except (TypeError, ValueError):
+                pass
+        if parent_freq_bin_start is None or parent_freq_bin_end is None:
+            try:
+                crop_f = int(meta.get('crop_freq_bins')) if meta.get('crop_freq_bins') is not None else None
+                orig_f = int(original_shape[0]) if isinstance(original_shape, (list, tuple)) and len(original_shape) >= 1 else None
+                fs0 = int(meta.get('freq_slice_start')) if meta.get('freq_slice_start') is not None else 0
+                fs1 = int(meta.get('freq_slice_end')) if meta.get('freq_slice_end') is not None else orig_f
+                if crop_f is not None:
+                    if fs1 is not None:
+                        span = max(0, int(fs1) - int(fs0))
+                        center_offset = max(0, (span - crop_f) // 2)
+                        parent_freq_bin_start = int(fs0) + int(center_offset)
+                    else:
+                        parent_freq_bin_start = int(fs0)
+                    parent_freq_bin_end = int(parent_freq_bin_start) + int(crop_f)
+            except (TypeError, ValueError):
+                pass
 
         # Compute absolute window timestamps for non-exported windows when possible.
         if audio_start_time is None or audio_end_time is None:
@@ -1582,6 +1654,12 @@ def main():
             window_start=window_start,
             window_time_start=window_time_start,
             window_time_end=window_time_end,
+            parent_spectrogram_mat_path=parent_spectrogram_mat_path,
+            parent_audio_path=parent_audio_path,
+            parent_freq_bin_start=parent_freq_bin_start,
+            parent_freq_bin_end=parent_freq_bin_end,
+            parent_time_bin_start=parent_time_bin_start,
+            parent_time_bin_end=parent_time_bin_end,
             audio_start_time=audio_start_time,
             audio_end_time=audio_end_time,
         )

@@ -552,6 +552,7 @@ def main() -> int:
         raw_audio = clips[i]
 
         # Frequency dimension to square crop.
+        f0_parent = 0
         if power.shape[0] < int(args.crop_size):
             pad_f = int(args.crop_size) - power.shape[0]
             power_f = np.pad(power, ((0, pad_f), (0, 0)), mode="edge")
@@ -560,6 +561,7 @@ def main() -> int:
         elif power.shape[0] > int(args.crop_size):
             f0 = (power.shape[0] - int(args.crop_size)) // 2
             f1 = f0 + int(args.crop_size)
+            f0_parent = int(f0)
             power_f = power[f0:f1, :]
             pdB_f = pdB[f0:f1, :]
             freqs_f = freqs[f0:f1]
@@ -626,6 +628,10 @@ def main() -> int:
                     "T": np.asarray(crop_times, dtype=np.float64),
                     "P": crop_power.astype(np.float32),
                     "PdB_norm": crop_pdB.astype(np.float32),
+                    "parent_freq_bin_start": np.int32(f0_parent),
+                    "parent_freq_bin_end": np.int32(min(f0_parent + int(args.crop_size), power.shape[0])),
+                    "parent_time_bin_start": np.int32(int(start_bin)),
+                    "parent_time_bin_end": np.int32(int(min(start_bin + int(args.crop_size), n_time))),
                 },
             )
 
@@ -663,6 +669,12 @@ def main() -> int:
                 crop_applied=True,
                 original_shape=[int(power_f.shape[0]), int(n_time)],
                 chunk_shape=[int(args.crop_size), int(args.crop_size)],
+                parent_spectrogram_mat_path=str(spec_entry["mat_path"]),
+                parent_audio_path=str((Path("raw_audio") / source_audio).as_posix()),
+                parent_freq_bin_start=int(f0_parent),
+                parent_freq_bin_end=int(min(f0_parent + int(args.crop_size), power.shape[0])),
+                parent_time_bin_start=int(start_bin),
+                parent_time_bin_end=int(min(start_bin + int(args.crop_size), n_time)),
             )
         window_debug.append(
                 {

@@ -67,7 +67,10 @@ def main():
     parser.add_argument('--overlap', type=float, help='Override overlap ratio (0-1)')
     
     # Options
-    parser.add_argument('--save-raw-audio', action='store_true', help='Save original 5-min clips')
+    parser.add_argument('--save-raw-audio', action='store_true',
+                        default=True, help='Save original 5-min clips (default: true)')
+    parser.add_argument('--no-save-raw-audio', dest='save_raw_audio', action='store_false',
+                        help='Disable saving original 5-min clips')
     parser.add_argument('--save-full-spectrogram', action='store_true', help='Save full 5-min spectrograms')
     parser.add_argument('--full-spec-only', action='store_true',
                         help='Generate full-clip spectrograms only (no chunking)')
@@ -152,6 +155,7 @@ def main():
     print(f"Frequency limits: {freq_lims[0]}-{freq_lims[1]} Hz")
     print(f"Window duration: {win_dur}s, Overlap: {overlap}")
     print(f"Color limits: {clim[0]} to {clim[1]} dB")
+    print(f"Save raw audio: {bool(args.save_raw_audio)}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

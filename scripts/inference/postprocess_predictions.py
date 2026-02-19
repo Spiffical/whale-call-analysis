@@ -17,6 +17,7 @@ import csv
 import hashlib
 import json
 import math
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,18 @@ def _safe_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     if not math.isfinite(out):
+        return None
+    return out
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, bool):
+            return None
+        out = int(value)
+    except (TypeError, ValueError):
         return None
     return out
 
@@ -162,7 +175,16 @@ def _resolve_media_path(input_json: Path, path_value: Optional[str]) -> Optional
     p = Path(path_value)
     if p.is_absolute():
         return p
-    return (input_json.parent / p).resolve()
+    # First try JSON-local relative resolution (standard unified schema behavior).
+    candidate = (input_json.parent / p).resolve()
+    if candidate.exists():
+        return candidate
+    # Fallback: some producers store media paths relative to a higher dataset root.
+    for base in input_json.parents:
+        probe = (base / p).resolve()
+        if probe.exists():
+            return probe
+    return candidate
 
 
 def _to_output_rel(path: Optional[Path], output_json: Path) -> Optional[str]:
@@ -400,7 +422,239 @@ def _build_window_metadata(
         out["audio_path"] = audio_rel
     if mat_rel is not None:
         out["spectrogram_mat_path"] = mat_rel
+    parent_mat_rel = item.get("parent_spectrogram_mat_path")
+    parent_audio_rel = item.get("parent_audio_path")
+    if parent_mat_rel is not None:
+        out["parent_spectrogram_mat_path"] = str(parent_mat_rel)
+    if parent_audio_rel is not None:
+        out["parent_audio_path"] = str(parent_audio_rel)
+    for key in (
+        "parent_freq_bin_start",
+        "parent_freq_bin_end",
+        "parent_time_bin_start",
+        "parent_time_bin_end",
+    ):
+        value = item.get(key)
+        if value is not None:
+            out[key] = value
     return out
+
+
+def _common_parent_path(member_items: Sequence[Dict[str, Any]], key: str) -> Optional[str]:
+    values: List[str] = []
+    for item in member_items:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    if not values:
+        return None
+    uniq = sorted(set(values))
+    if len(uniq) != 1:
+        return None
+    return uniq[0]
+
+
+def _crop_time_bins_from_item(item: Dict[str, Any]) -> Optional[int]:
+    crop_size = item.get("crop_size")
+    if isinstance(crop_size, (list, tuple)) and len(crop_size) >= 2:
+        return _safe_int(crop_size[1])
+    if crop_size is not None:
+        return _safe_int(crop_size)
+    return _safe_int(item.get("crop_time_bins"))
+
+
+def _crop_freq_bins_from_item(item: Dict[str, Any]) -> Optional[int]:
+    crop_size = item.get("crop_size")
+    if isinstance(crop_size, (list, tuple)) and len(crop_size) >= 1:
+        return _safe_int(crop_size[0])
+    if crop_size is not None:
+        return _safe_int(crop_size)
+    return _safe_int(item.get("crop_freq_bins"))
+
+
+def _parent_time_bounds(member_items: Sequence[Dict[str, Any]], total_bins: int) -> Optional[Tuple[int, int]]:
+    starts: List[int] = []
+    ends: List[int] = []
+    for item in member_items:
+        start = _safe_int(item.get("parent_time_bin_start"))
+        end = _safe_int(item.get("parent_time_bin_end"))
+        if start is None or end is None:
+            win_start = _safe_int(item.get("window_start"))
+            crop_t = _crop_time_bins_from_item(item)
+            if win_start is not None and crop_t is not None:
+                start = win_start
+                end = win_start + crop_t
+        if start is None or end is None:
+            continue
+        starts.append(int(start))
+        ends.append(int(end))
+    if not starts or not ends:
+        return None
+    t0 = max(0, min(starts))
+    t1 = min(int(total_bins), max(ends))
+    if t1 <= t0:
+        return None
+    return t0, t1
+
+
+def _parent_freq_bounds(member_items: Sequence[Dict[str, Any]], total_bins: int) -> Optional[Tuple[int, int]]:
+    starts: List[int] = []
+    ends: List[int] = []
+    for item in member_items:
+        start = _safe_int(item.get("parent_freq_bin_start"))
+        end = _safe_int(item.get("parent_freq_bin_end"))
+        if start is None or end is None:
+            crop_f = _crop_freq_bins_from_item(item)
+            if crop_f is not None and crop_f > 0:
+                start = max(0, (int(total_bins) - int(crop_f)) // 2)
+                end = start + int(crop_f)
+        if start is None or end is None:
+            continue
+        starts.append(int(start))
+        ends.append(int(end))
+    if starts and ends:
+        f0 = max(0, min(starts))
+        f1 = min(int(total_bins), max(ends))
+        if f1 > f0:
+            return f0, f1
+    if total_bins <= 0:
+        return None
+    return 0, int(total_bins)
+
+
+def _event_time_bounds_seconds(member_items: Sequence[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    starts: List[float] = []
+    ends: List[float] = []
+    for item in member_items:
+        start, end = _infer_window_times(item, 0)
+        if start is not None:
+            starts.append(float(start))
+        if end is not None:
+            ends.append(float(end))
+    if not starts or not ends:
+        return None, None
+    start = float(min(starts))
+    end = float(max(ends))
+    if end <= start:
+        return None, None
+    return start, end
+
+
+def _extract_event_spectrogram_from_parent(
+    event_id: str,
+    member_items: Sequence[Dict[str, Any]],
+    input_json: Path,
+    output_dir: Path,
+    output_json: Path,
+) -> Optional[str]:
+    parent_rel = _common_parent_path(member_items, "parent_spectrogram_mat_path")
+    if parent_rel is None:
+        return None
+    parent_mat = _resolve_media_path(input_json, parent_rel)
+    if parent_mat is None or not parent_mat.exists():
+        return None
+    try:
+        parent_spec, spec_kind, freq, times = _load_mat_spectrogram(parent_mat)
+    except Exception:
+        return None
+
+    f_bins, t_bins = parent_spec.shape
+    time_bounds = _parent_time_bounds(member_items, t_bins)
+    freq_bounds = _parent_freq_bounds(member_items, f_bins)
+    if time_bounds is None or freq_bounds is None:
+        return None
+    t0, t1 = time_bounds
+    f0, f1 = freq_bounds
+
+    spec_slice = parent_spec[f0:f1, t0:t1]
+    if spec_slice.ndim != 2 or spec_slice.shape[1] == 0:
+        return None
+
+    if freq is not None and np.asarray(freq).size == f_bins:
+        freq_slice = np.asarray(freq, dtype=np.float32).ravel()[f0:f1]
+    else:
+        freq_slice = np.arange(f0, f1, dtype=np.float32)
+
+    if times is not None and np.asarray(times).size == t_bins:
+        time_slice = np.asarray(times, dtype=np.float64).ravel()[t0:t1]
+    else:
+        start_sec, end_sec = _event_time_bounds_seconds(member_items)
+        if start_sec is not None and end_sec is not None and t1 > t0:
+            dt = (end_sec - start_sec) / float(max(t1 - t0, 1))
+            dt = max(dt, 1e-6)
+            time_slice = start_sec + np.arange(t1 - t0, dtype=np.float64) * dt
+        else:
+            time_slice = np.arange(t1 - t0, dtype=np.float64)
+
+    if spec_kind == "power":
+        power_slice = np.abs(spec_slice.astype(np.float32))
+        max_power = float(np.max(power_slice)) if power_slice.size else 0.0
+        if max_power > 0:
+            db_slice = 10.0 * np.log10(np.maximum(power_slice / max_power, 1e-10))
+        else:
+            db_slice = np.full_like(power_slice, -100.0, dtype=np.float32)
+    else:
+        power_slice = None
+        db_slice = np.minimum(spec_slice.astype(np.float32), 0.0)
+
+    spec_dir = output_dir / "spectrograms"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    out_path = spec_dir / f"{event_id}.mat"
+    payload: Dict[str, Any] = {
+        "PdB_norm": db_slice.astype(np.float32),
+        "F": np.asarray(freq_slice, dtype=np.float32),
+        "T": np.asarray(time_slice, dtype=np.float64),
+        "parent_freq_bin_start": np.int32(f0),
+        "parent_freq_bin_end": np.int32(f1),
+        "parent_time_bin_start": np.int32(t0),
+        "parent_time_bin_end": np.int32(t1),
+    }
+    if power_slice is not None:
+        payload["P"] = power_slice.astype(np.float32)
+    scipy.io.savemat(str(out_path), payload)
+    return _to_output_rel(out_path, output_json)
+
+
+def _extract_event_audio_from_parent(
+    event_id: str,
+    member_items: Sequence[Dict[str, Any]],
+    input_json: Path,
+    output_dir: Path,
+    output_json: Path,
+) -> Optional[str]:
+    parent_rel = _common_parent_path(member_items, "parent_audio_path")
+    if parent_rel is None:
+        return None
+    parent_audio = _resolve_media_path(input_json, parent_rel)
+    if parent_audio is None or not parent_audio.exists():
+        return None
+    start_sec, end_sec = _event_time_bounds_seconds(member_items)
+    if start_sec is None or end_sec is None or end_sec <= start_sec:
+        return None
+
+    try:
+        with sf.SoundFile(str(parent_audio)) as f:
+            sr = int(f.samplerate)
+            if sr <= 0:
+                return None
+            start_frame = int(max(0.0, start_sec) * sr)
+            end_frame = int(max(start_sec, end_sec) * sr)
+            start_frame = max(0, min(start_frame, len(f)))
+            end_frame = max(start_frame, min(end_frame, len(f)))
+            f.seek(start_frame)
+            wav = f.read(end_frame - start_frame)
+    except Exception:
+        return None
+
+    wav = np.asarray(wav)
+    if wav.ndim > 1:
+        wav = np.mean(wav, axis=1)
+
+    audio_dir = output_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    out_path = audio_dir / f"{event_id}.wav"
+    sf.write(str(out_path), wav.astype(np.float32), sr)
+    return _to_output_rel(out_path, output_json)
 
 
 def _merge_event_spectrogram(
@@ -1053,6 +1307,11 @@ def main() -> int:
         help="Directory for merged event media (default: <output-json stem>_events_media).",
     )
     ap.add_argument(
+        "--clear-event-media-dir",
+        action="store_true",
+        help="Delete existing event-media-dir contents before writing merged media.",
+    )
+    ap.add_argument(
         "--replace-items-with-events",
         action="store_true",
         help="Replace window-level items with one event-level item per kept event.",
@@ -1156,9 +1415,13 @@ def main() -> int:
         if args.event_media_dir
         else output_json.with_name(f"{output_json.stem}_events_media")
     )
+    if args.merge_event_media and args.clear_event_media_dir and event_media_root.exists():
+        shutil.rmtree(event_media_root)
     event_items: List[Dict[str, Any]] = []
     events_payload: List[Dict[str, Any]] = []
     merged_media_count = 0
+    merged_without_audio = 0
+    merged_without_spectrogram = 0
 
     total_events = len(events)
     if args.merge_event_media and total_events > 0:
@@ -1184,20 +1447,38 @@ def main() -> int:
         merged_mat_rel = None
         merged_audio_rel = None
         if args.merge_event_media and media_members:
-            merged_mat_rel = _merge_event_spectrogram(
+            # Prefer direct extraction from parent 5-minute media when available.
+            merged_mat_rel = _extract_event_spectrogram_from_parent(
                 event_id=event.event_id,
                 member_items=media_members,
                 input_json=input_json,
                 output_dir=event_media_root,
                 output_json=output_json,
             )
-            merged_audio_rel = _merge_event_audio(
+            merged_audio_rel = _extract_event_audio_from_parent(
                 event_id=event.event_id,
                 member_items=media_members,
                 input_json=input_json,
                 output_dir=event_media_root,
                 output_json=output_json,
             )
+            # Fallback to window stitching when parent references are unavailable.
+            if merged_mat_rel is None:
+                merged_mat_rel = _merge_event_spectrogram(
+                    event_id=event.event_id,
+                    member_items=media_members,
+                    input_json=input_json,
+                    output_dir=event_media_root,
+                    output_json=output_json,
+                )
+            if merged_audio_rel is None:
+                merged_audio_rel = _merge_event_audio(
+                    event_id=event.event_id,
+                    member_items=media_members,
+                    input_json=input_json,
+                    output_dir=event_media_root,
+                    output_json=output_json,
+                )
             if merged_mat_rel and merged_audio_rel:
                 merged_mat_abs = _resolve_media_path(output_json, merged_mat_rel)
                 merged_audio_abs = _resolve_media_path(output_json, merged_audio_rel)
@@ -1210,6 +1491,10 @@ def main() -> int:
                     _align_audio_to_spectrogram_duration(merged_audio_abs, merged_mat_abs)
             if merged_mat_rel or merged_audio_rel:
                 merged_media_count += 1
+            if merged_mat_rel is None:
+                merged_without_spectrogram += 1
+            if merged_audio_rel is None:
+                merged_without_audio += 1
         if args.merge_event_media and (
             event_idx == 1 or event_idx % 25 == 0 or event_idx == total_events
         ):
@@ -1387,6 +1672,15 @@ def main() -> int:
     print(f"  Events kept: {len(events)}")
     if args.merge_event_media:
         print(f"  Merged event media: {merged_media_count}")
+        if merged_without_audio > 0:
+            print(
+                f"  Warning: {merged_without_audio} events have no merged audio path "
+                "(check parent/window audio availability)."
+            )
+        if merged_without_spectrogram > 0:
+            print(
+                f"  Warning: {merged_without_spectrogram} events have no merged spectrogram path."
+            )
     print(f"  Output JSON: {output_json}")
     print(f"  Events CSV: {events_csv}")
     print(f"  Summary MD: {summary_md}")
