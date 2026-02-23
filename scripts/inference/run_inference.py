@@ -69,6 +69,66 @@ def _infer_time_bin_seconds(times: Optional[np.ndarray]) -> Optional[float]:
     return float(np.median(diffs))
 
 
+def _infer_time_bin_seconds_from_mat(mat_path: Optional[Path]) -> Optional[float]:
+    """Best-effort time-bin inference directly from a MAT file."""
+    if mat_path is None or not mat_path.exists():
+        return None
+    try:
+        data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
+    except Exception:
+        return None
+    tk = _find_key(data, InferenceDataset.TIME_KEYS)
+    if tk not in data:
+        return None
+    return _infer_time_bin_seconds(np.asarray(data[tk]).squeeze())
+
+
+def _maybe_convert_window_times_from_bins(
+    window_time_start: Optional[Any],
+    window_time_end: Optional[Any],
+    window_start_bin: Optional[Any],
+    crop_time_bins: Optional[Any],
+    time_bin_seconds: Optional[Any],
+) -> Tuple[Optional[float], Optional[float]]:
+    """Convert window_time_* from bin units to seconds when values are clearly bin-index based."""
+    try:
+        wts = float(window_time_start) if window_time_start is not None else None
+        wte = float(window_time_end) if window_time_end is not None else None
+    except (TypeError, ValueError):
+        return window_time_start, window_time_end
+    if wts is None or wte is None:
+        return window_time_start, window_time_end
+
+    try:
+        tbin = float(time_bin_seconds) if time_bin_seconds is not None else None
+    except (TypeError, ValueError):
+        tbin = None
+    if tbin is None or tbin <= 0:
+        return wts, wte
+
+    ws = None
+    try:
+        ws = float(window_start_bin) if window_start_bin is not None else None
+    except (TypeError, ValueError):
+        ws = None
+
+    ct = None
+    try:
+        ct = float(crop_time_bins) if crop_time_bins is not None else None
+    except (TypeError, ValueError):
+        ct = None
+
+    looks_like_bins = False
+    if ws is not None and abs(wts - ws) < 1e-6:
+        looks_like_bins = True
+    if ct is not None and abs((wte - wts) - ct) < 1e-3:
+        looks_like_bins = True
+
+    if looks_like_bins:
+        return wts * tbin, wte * tbin
+    return wts, wte
+
+
 class InferenceDataset(torch.utils.data.Dataset):
     """Dataset for inference on MAT spectrograms with optional sliding window.
     
@@ -1193,6 +1253,7 @@ def main():
             if times is None or len(np.atleast_1d(times)) == 0:
                 hop_sec = (win_dur * (1.0 - overlap)) if (win_dur is not None and overlap is not None) else 0.0
                 times = np.arange(T_dim, dtype=np.float32) * hop_sec
+            group_time_bin_seconds = _infer_time_bin_seconds(np.asarray(times) if times is not None else None)
 
             # Resolve raw audio file with robust fallbacks.
             source_audio = file_info.get("source_audio") or f"{base_id}.wav"
@@ -1405,6 +1466,7 @@ def main():
                     "audio_end_time": audio_end_time,
                     "window_time_start": window_time_start,
                     "window_time_end": window_time_end,
+                    "time_bin_seconds": group_time_bin_seconds,
                     "source_audio": source_audio,
                     "parent_spectrogram_mat_path": _path_to_json_ref(mat_path.resolve(), json_base_dir),
                     "parent_audio_path": _path_to_json_ref(raw_audio_path.resolve(), json_base_dir) if raw_audio_path else None,
@@ -1482,6 +1544,7 @@ def main():
     total_tracker_items = len(results_for_tracker)
     print_status(f"Building predictions JSON items ({total_tracker_items})...", "PROGRESS")
     progress_every = 2000 if total_tracker_items >= 10000 else 500
+    time_bin_cache: Dict[str, Optional[float]] = {}
     for idx, result in enumerate(results_for_tracker, start=1):
         file_id = result['file_id']
         base_id = file_id.rsplit('_win', 1)[0] if '_win' in file_id else file_id
@@ -1518,6 +1581,18 @@ def main():
         audio_from_meta = _resolve_path(file_info.get('audio_path'), metadata_base)
         if audio_from_meta is not None:
             audio_path = _path_to_json_ref(audio_from_meta, json_base_dir)
+        time_bin_seconds = meta.get('time_bin_seconds')
+        if time_bin_seconds is None:
+            time_bin_seconds = file_info.get('time_bin_seconds')
+        if time_bin_seconds is None:
+            if base_id not in time_bin_cache:
+                mat_for_tbin = mat_from_meta
+                if mat_for_tbin is None:
+                    fallback_mat = (Path(args.mat_dir) / f"{base_id}.mat").resolve()
+                    if fallback_mat.exists():
+                        mat_for_tbin = fallback_mat
+                time_bin_cache[base_id] = _infer_time_bin_seconds_from_mat(mat_for_tbin)
+            time_bin_seconds = time_bin_cache.get(base_id)
         parent_audio_from_meta = _resolve_path(
             file_info.get('raw_audio_path') or file_info.get('audio_path'),
             metadata_base,
@@ -1546,31 +1621,20 @@ def main():
         if export_item:
             window_time_start = export_item.get('window_time_start', window_time_start)
             window_time_end = export_item.get('window_time_end', window_time_end)
+            time_bin_seconds = export_item.get('time_bin_seconds', time_bin_seconds)
             parent_freq_bin_start = export_item.get('parent_freq_bin_start')
             parent_freq_bin_end = export_item.get('parent_freq_bin_end')
             parent_time_bin_start = export_item.get('parent_time_bin_start')
             parent_time_bin_end = export_item.get('parent_time_bin_end')
-        else:
-            # Backward-compatibility: dataset meta stores window_time_* in bins.
-            # Convert to seconds for prediction JSON when possible.
-            try:
-                tbin = float(meta.get('time_bin_seconds')) if meta.get('time_bin_seconds') is not None else None
-                ws_bin = int(window_start) if window_start is not None else None
-                crop_t = int(meta.get('crop_time_bins')) if meta.get('crop_time_bins') is not None else None
-                if (
-                    tbin is not None
-                    and tbin > 0
-                    and ws_bin is not None
-                    and window_time_start is not None
-                    and window_time_end is not None
-                ):
-                    wts = float(window_time_start)
-                    wte = float(window_time_end)
-                    if abs(wts - float(ws_bin)) < 1e-6 and (crop_t is None or abs((wte - wts) - float(crop_t)) < 1e-3):
-                        window_time_start = wts * tbin
-                        window_time_end = wte * tbin
-            except (TypeError, ValueError):
-                pass
+        # Backward-compatibility: older inference exports can store window_time_*
+        # in bin units. Convert here so downstream JSON stays in seconds.
+        window_time_start, window_time_end = _maybe_convert_window_times_from_bins(
+            window_time_start=window_time_start,
+            window_time_end=window_time_end,
+            window_start_bin=window_start,
+            crop_time_bins=meta.get('crop_time_bins'),
+            time_bin_seconds=time_bin_seconds,
+        )
 
         duration_sec = spec_config.get('context_duration') if spec_config else None
         if duration_sec is None and window_time_start is not None and window_time_end is not None:
@@ -1676,7 +1740,7 @@ def main():
             window_start_bin=window_start,
             window_time_start=window_time_start,
             window_time_end=window_time_end,
-            time_bin_seconds=meta.get('time_bin_seconds'),
+            time_bin_seconds=time_bin_seconds,
             parent_spectrogram_mat_path=parent_spectrogram_mat_path,
             parent_audio_path=parent_audio_path,
             parent_freq_bin_start=parent_freq_bin_start,

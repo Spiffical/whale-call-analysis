@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transform predictions JSON to strict O3 unified schema v2.0.
+"""Transform predictions JSON to strict O3 unified schema v2.1.
 
 This script removes non-schema fields introduced by postprocessing/event aggregation
 and keeps only fields allowed by labeling-verification-app's O3 schema.
@@ -106,19 +106,6 @@ def _clean_spectrogram_config(cfg: Any) -> Optional[Dict[str, Any]]:
     else:
         freq_limits = None
 
-    color_limits = cfg.get("color_limits")
-    if isinstance(color_limits, dict):
-        color_limits = _prune_none(
-            {
-                "min": _as_float(color_limits.get("min")),
-                "max": _as_float(color_limits.get("max")),
-            }
-        )
-        if not color_limits:
-            color_limits = None
-    else:
-        color_limits = None
-
     source = cfg.get("source")
     if isinstance(source, dict):
         source = _prune_none(
@@ -159,9 +146,6 @@ def _clean_spectrogram_config(cfg: Any) -> Optional[Dict[str, Any]]:
             "hop_length": int(cfg.get("hop_length")) if isinstance(cfg.get("hop_length"), (int, float)) else None,
             "overlap": _as_float(cfg.get("overlap")),
             "frequency_limits": freq_limits,
-            "color_limits": color_limits,
-            "colormap": _as_str(cfg.get("colormap")),
-            "y_axis_scale": _as_str(cfg.get("y_axis_scale")),
             "context_duration_sec": _as_float(cfg.get("context_duration_sec") or cfg.get("context_duration")),
             "segment_overlap": _as_float(cfg.get("segment_overlap")),
             "crop_size": int(cfg.get("crop_size")) if isinstance(cfg.get("crop_size"), (int, float)) else None,
@@ -201,9 +185,57 @@ def _clean_model_outputs(model_outputs: Any) -> List[Dict[str, Any]]:
                 "class_hierarchy": cls,
                 "class_id": _as_str(mo.get("class_id")),
                 "score": score,
+                "annotation_extent": _clean_annotation_extent(mo.get("annotation_extent")),
             }
         )
         out.append(rec)
+    return out
+
+
+def _clean_source_audio(source_audio: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(source_audio, dict):
+        file_name = _as_str(source_audio.get("file_name"))
+        if not file_name:
+            return None
+        out = _prune_none(
+            {
+                "file_name": file_name,
+                "format": _as_str(source_audio.get("format")),
+                "uri": _as_str(source_audio.get("uri")),
+                "recording_start_time": _as_str(source_audio.get("recording_start_time")),
+                "recording_end_time": _as_str(source_audio.get("recording_end_time")),
+                "checksum_sha256": _as_str(source_audio.get("checksum_sha256")),
+            }
+        )
+        return out if out else None
+    if isinstance(source_audio, str):
+        source_name = source_audio.strip()
+        if source_name:
+            return {"file_name": Path(source_name).name}
+    return None
+
+
+def _clean_annotation_extent(extent: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(extent, dict):
+        return None
+    extent_type = _as_str(extent.get("type"))
+    if extent_type not in {"clip", "time_range", "freq_range", "time_freq_box"}:
+        return None
+    out = _prune_none(
+        {
+            "type": extent_type,
+            "time_start_sec": _as_float(extent.get("time_start_sec")),
+            "time_end_sec": _as_float(extent.get("time_end_sec")),
+            "freq_min_hz": _as_float(extent.get("freq_min_hz")),
+            "freq_max_hz": _as_float(extent.get("freq_max_hz")),
+        }
+    )
+    if extent_type == "time_range" and not {"time_start_sec", "time_end_sec"}.issubset(out.keys()):
+        return None
+    if extent_type == "time_freq_box" and not {"time_start_sec", "time_end_sec", "freq_min_hz", "freq_max_hz"}.issubset(out.keys()):
+        return None
+    if extent_type == "freq_range" and not {"freq_min_hz", "freq_max_hz"}.issubset(out.keys()):
+        return None
     return out
 
 
@@ -226,6 +258,7 @@ def _clean_label_decisions(label_decisions: Any) -> List[Dict[str, Any]]:
             "label": label,
             "decision": decision,
             "threshold_used": threshold_used,
+            "annotation_extent": _clean_annotation_extent(ld.get("annotation_extent")),
         }
         out.append(rec)
     return out
@@ -311,6 +344,7 @@ def _clean_item(item: Any) -> Optional[Dict[str, Any]]:
             "segment_index": int(item.get("segment_index")) if isinstance(item.get("segment_index"), (int, float)) else None,
             "model_outputs": _clean_model_outputs(item.get("model_outputs")),
             "verifications": _clean_verifications(item.get("verifications")),
+            "source_audio": _clean_source_audio(item.get("source_audio")),
             "paths": _clean_paths(item.get("paths"), item),
         }
     )
@@ -323,7 +357,7 @@ def _clean_item(item: Any) -> Optional[Dict[str, Any]]:
 
 def transform_to_o3(input_data: Dict[str, Any], *, keep_updated_at: bool = True) -> Dict[str, Any]:
     out: Dict[str, Any] = {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "created_at": _as_str(input_data.get("created_at")) or _now_iso(),
         "task_type": _as_str(input_data.get("task_type")) or "whale_detection",
     }

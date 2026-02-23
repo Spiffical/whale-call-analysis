@@ -31,7 +31,7 @@ def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
 class UnifiedPredictionTracker:
     """Manages predictions in the unified JSON schema."""
 
-    VERSION = "2.0"
+    VERSION = "2.1"
 
     def __init__(self, output_path: Union[str, Path]):
         self.output_path = Path(output_path)
@@ -142,6 +142,12 @@ class UnifiedPredictionTracker:
         self.data["pipeline"] = pipeline
 
     def set_task_type(self, task_type: str) -> None:
+        """Set task type.
+
+        Args:
+            task_type: Free-form task identifier (e.g., 'whale_detection',
+                'anomaly_detection', 'classification', or custom values)
+        """
         self.data["task_type"] = task_type
 
     def add_item(
@@ -208,6 +214,15 @@ class UnifiedPredictionTracker:
             paths["audio_path"] = str(audio_path)
         if paths:
             item["paths"] = paths
+
+        source_audio = kwargs.pop("source_audio", None)
+        if source_audio is not None:
+            if isinstance(source_audio, dict):
+                item["source_audio"] = source_audio
+            else:
+                source_name = str(source_audio).strip()
+                if source_name:
+                    item["source_audio"] = {"file_name": Path(source_name).name}
 
         for key, value in kwargs.items():
             if value is not None:
@@ -317,6 +332,11 @@ class UnifiedPredictionTracker:
             # Convert old audio timestamp fields.
             if "audio_start_time" not in item and item.get("audio_timestamp"):
                 item["audio_start_time"] = item.get("audio_timestamp")
+
+            # Normalize legacy string source_audio -> canonical object.
+            source_audio = item.get("source_audio")
+            if isinstance(source_audio, str) and source_audio:
+                item["source_audio"] = {"file_name": Path(source_audio).name}
 
         # Keep canonical ordering for output.
         canonical = {

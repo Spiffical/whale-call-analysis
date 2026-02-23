@@ -121,6 +121,11 @@ def _extract_score(item: Dict[str, Any], class_hierarchy: Optional[str]) -> Opti
 
 
 def _extract_time_bounds(item: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    # Prefer normalized window/segment bounds helper (handles bin->second conversion).
+    start_inferred, end_inferred = _infer_window_times(item, 0)
+    if start_inferred is not None and end_inferred is not None and end_inferred > start_inferred:
+        return start_inferred, end_inferred
+
     start = (
         _safe_float(item.get("window_time_start"))
         if item.get("window_time_start") is not None
@@ -148,6 +153,17 @@ def _extract_time_bounds(item: Dict[str, Any]) -> Tuple[Optional[float], Optiona
     return start, end
 
 
+def _source_audio_file_name(item: Dict[str, Any]) -> Optional[str]:
+    source_audio = item.get("source_audio")
+    if isinstance(source_audio, dict):
+        file_name = source_audio.get("file_name")
+        if isinstance(file_name, str) and file_name:
+            return file_name
+    elif isinstance(source_audio, str) and source_audio:
+        return source_audio
+    return None
+
+
 def _group_key(item: Dict[str, Any], merge_across_source_audio: bool = False) -> str:
     if merge_across_source_audio:
         ds = item.get("data_source_id")
@@ -157,8 +173,8 @@ def _group_key(item: Dict[str, Any], merge_across_source_audio: bool = False) ->
         if isinstance(device, str) and device:
             return device
         return "global_group"
-    source_audio = item.get("source_audio")
-    if isinstance(source_audio, str) and source_audio:
+    source_audio = _source_audio_file_name(item)
+    if source_audio:
         return source_audio
     audio_path_name = _basename(_item_path(item, "audio_path"))
     if audio_path_name:
@@ -349,8 +365,8 @@ def _safe_id_token(value: Optional[str], *, fallback: str, max_len: int = 80) ->
 
 def _extract_device_token(event: "Event", member_items: Sequence[Dict[str, Any]]) -> str:
     for item in member_items:
-        source_audio = item.get("source_audio")
-        if isinstance(source_audio, str) and source_audio:
+        source_audio = _source_audio_file_name(item)
+        if source_audio:
             src_name = Path(source_audio).name
             if "_" in src_name:
                 return _safe_id_token(src_name.split("_", 1)[0], fallback="unknown-device", max_len=32)
@@ -407,6 +423,9 @@ def _build_window_metadata(
 ) -> Dict[str, Any]:
     start_sec = _safe_float(item.get("window_time_start"))
     end_sec = _safe_float(item.get("window_time_end"))
+    start_inferred, end_inferred = _infer_window_times(item, 0)
+    if start_inferred is not None and end_inferred is not None and end_inferred > start_inferred:
+        start_sec, end_sec = start_inferred, end_inferred
     if start_sec is None or end_sec is None:
         start_sec, end_sec = _extract_time_bounds(item)
     score = _extract_score(item, class_hierarchy)
@@ -424,7 +443,7 @@ def _build_window_metadata(
     out: Dict[str, Any] = {
         "window_id": int(window_id),
         "source_item_id": item.get("item_id"),
-        "source_audio": item.get("source_audio"),
+        "source_audio": _source_audio_file_name(item),
         "time_start_sec": start_sec,
         "time_end_sec": end_sec,
         "score": score,
@@ -1567,9 +1586,9 @@ def main() -> int:
         member_ids = [str(m.get("item_id")) for m in member_items if m.get("item_id") is not None]
         parent_source_audio_files = sorted(
             {
-                str(m.get("source_audio"))
-                for m in member_items
-                if m.get("source_audio") is not None
+                src_name
+                for src_name in (_source_audio_file_name(m) for m in member_items)
+                if src_name is not None
             }
         )
         source_segments = [

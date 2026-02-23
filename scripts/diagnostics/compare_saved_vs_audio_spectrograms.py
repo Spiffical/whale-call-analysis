@@ -32,6 +32,7 @@ class CompareMetrics:
     saved_shape: Tuple[int, int]
     recomputed_shape: Tuple[int, int]
     lag_seconds_profile: float
+    lag_reliable: bool
     corr_flat: float
     mae_db: float
     rmse_db: float
@@ -305,6 +306,7 @@ def main() -> int:
             saved_shape=(int(saved.shape[0]), int(saved.shape[1])),
             recomputed_shape=(int(recomp.shape[0]), int(recomp.shape[1])),
             lag_seconds_profile=float(lag),
+            lag_reliable=bool(abs(corr) >= 0.5),
             corr_flat=float(corr),
             mae_db=mae,
             rmse_db=rmse,
@@ -331,6 +333,7 @@ def main() -> int:
                 "saved_shape",
                 "recomputed_shape",
                 "lag_seconds_profile",
+                "lag_reliable",
                 "corr_flat",
                 "mae_db",
                 "rmse_db",
@@ -344,6 +347,7 @@ def main() -> int:
                     f"{m.saved_shape[0]}x{m.saved_shape[1]}",
                     f"{m.recomputed_shape[0]}x{m.recomputed_shape[1]}",
                     f"{m.lag_seconds_profile:.6f}",
+                    str(int(m.lag_reliable)),
                     f"{m.corr_flat:.6f}",
                     f"{m.mae_db:.6f}",
                     f"{m.rmse_db:.6f}",
@@ -381,6 +385,8 @@ def main() -> int:
                 f"corr={m.corr_flat:.6f}, mae={m.mae_db:.6f} dB, rmse={m.rmse_db:.6f} dB, "
                 f"plot=`{plot_ref}`"
             )
+            if not m.lag_reliable:
+                lines.append("  lag_note: low correlation; lag estimate likely unreliable for this item")
     else:
         lines.append("- No comparable items found.")
     md_path.write_text("\n".join(lines) + "\n")
