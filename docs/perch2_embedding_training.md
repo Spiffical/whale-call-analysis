@@ -83,24 +83,41 @@ Notes:
 
 ## DRAC
 
-Build an audio archive once in project storage (recommended for fast node-local
-extract per job):
+### 1) Build a 40s context dataset (positive + negative) from 5-minute audio
+
+```bash
+/home/sbialek/ONC/whale-call-analysis/.venv/bin/python scripts/data/train/create_perch2_context_dataset.py \
+  --excel-files \
+    /home/sbialek/ONC/whale-call-analysis/data/finwhales/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
+    /home/sbialek/ONC/whale-call-analysis/data/finwhales/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
+  --audio-dir /mnt/z/FinWhalesProject/data/audio \
+  --context-seconds 40 \
+  --negatives-per-positive 1 \
+  --output-dir output/perch2_context_dataset \
+  --create-archive \
+  --archive-format tar.zst \
+  --archive-threads 16
+```
+
+The generated dataset contains:
+- `context_window_manifest.csv`
+- `context_audio/*.wav` (40s clips)
+
+### 2) (Optional) Re-archive an existing prepared dataset directory
 
 ```bash
 bash drac/scripts/create_finwhale_audio_archive.sh \
-  --audio-dir /mnt/z/FinWhalesProject/data/audio \
-  --output-path "$PROJECT/whale-call-analysis/data/archives/finwhale_audio_20260303.tar.zst" \
+  --dataset-dir /path/to/perch2_context_dataset_YYYYMMDDTHHMMSSZ \
+  --output-path "$PROJECT/whale-call-analysis/data/archives/perch2_context_dataset_YYYYMMDDTHHMMSSZ.tar.zst" \
   --format tar.zst \
   --threads 16
 ```
 
-Submit one DRAC training job:
+### 3) Submit one DRAC training job from context dataset archive
 
 ```bash
 sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh \
-  --excel-file /path/to/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
-  --excel-file /path/to/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
-  --audio-tar-path "$PROJECT/whale-call-analysis/data/archives/finwhale_audio_20260303.tar.zst" \
+  --context-dataset-tar "$PROJECT/whale-call-analysis/data/archives/perch2_context_dataset_YYYYMMDDTHHMMSSZ.tar.zst" \
   --perch-model perch_v2_gpu \
   --batch-size 16 \
   --context-seconds 40 \
@@ -113,13 +130,11 @@ sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh \
   --seed 42
 ```
 
-Launch a DRAC sweep (with dry-run first):
+### 4) Launch a DRAC sweep (dry-run first)
 
 ```bash
 bash drac/scripts/launch_finwhale_perch2_sweep.sh \
-  --excel-file /path/to/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
-  --excel-file /path/to/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
-  --audio-tar-path "$PROJECT/whale-call-analysis/data/archives/finwhale_audio_20260303.tar.zst" \
+  --context-dataset-tar "$PROJECT/whale-call-analysis/data/archives/perch2_context_dataset_YYYYMMDDTHHMMSSZ.tar.zst" \
   --seeds 42,1337 \
   --logreg-c-list 0.5,1.0,2.0 \
   --center-bias-list 0.25,0.45 \
@@ -129,37 +144,18 @@ bash drac/scripts/launch_finwhale_perch2_sweep.sh \
 
 Then remove `--dry-run` to submit.
 
-Local orchestration smoke test (no `sbatch`):
-
-```bash
-bash drac/scripts/submit_finwhale_perch2_embeddings.sh \
-  --local-test-mode \
-  --excel-file /path/to/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
-  --excel-file /path/to/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
-  --audio-tar-path /path/to/finwhale_audio.tar.zst \
-  --perch-model perch_v2_cpu \
-  --disable-gpu \
-  --max-positives 8 \
-  --skip-save-embeddings \
-  --exp-dir output/perch2_drac_local_test
-```
-
 Notes for DRAC:
 - First-time Perch checkpoint fetch uses Kaggle (`kagglehub`), so configure
   `~/.kaggle/kaggle.json` (or `KAGGLE_CONFIG_DIR`) on the cluster.
 - Job logs write to `$SCRATCH/whale-call-analysis/perch2_training_logs/`.
-- `--audio-tar-path` is preferred over `--copy-audio-to-tmp` for large datasets.
-- Submit script defaults still preserve the `40s` context and train-time
-  de-centering augmentation (`center_bias_sigma_frac`).
+- DRAC training now expects a prebuilt context dataset (`context_window_manifest.csv` + `context_audio/`).
+- Submit script still preserves `40s` context with train-time de-centering
+  (`center_bias_sigma_frac`) when generating 10s train clips.
 
 Augmentation strategy recommendation:
-- For Perch embeddings, generate train augmentations once at job start
-  (current pipeline behavior) and embed them once on GPU.
-- Do not re-sample augmentations every epoch when Perch embedding extraction is
-  in-loop; that multiplies expensive forward passes and usually hurts throughput.
-- If you want more augmentation diversity, increase
-  `--train-pos-augment-copies` / `--train-neg-augment-copies` in one pass, or
-  run multiple seeds/sweeps.
+- Generate the 40s context dataset once and transfer/archive it.
+- In SLURM jobs, generate decentered 10s train subclips once per run and embed once on GPU.
+- Avoid re-sampling augmentations every epoch when embedding in-loop; it multiplies Perch cost.
 
 ## Outputs
 

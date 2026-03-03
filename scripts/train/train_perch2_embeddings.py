@@ -3,8 +3,10 @@
 Train a fin-whale call detector from Perch 2.0 embeddings (no spectrograms).
 
 Pipeline:
-1) Load call annotations from one or more Excel files.
-2) Build base context windows (default 40s) centered on calls.
+1) Either:
+   - load call annotations from Excel and build base context windows, or
+   - load a prebuilt context manifest + context audio directory.
+2) Use base context windows (default 40s).
 3) Split contexts with leakage-safe time separation.
 4) Build train/eval subclips (default 10s) from contexts:
    - train positives: decentered jitter
@@ -54,6 +56,14 @@ def _safe_float(value, default=np.nan) -> float:
         return float(default)
 
 
+def _first_finite_float(*values: object, default: float = np.nan) -> float:
+    for value in values:
+        v = _safe_float(value, default=np.nan)
+        if np.isfinite(v):
+            return float(v)
+    return float(default)
+
+
 def _sample_call_fraction_in_window(
     rng: np.random.Generator,
     center_bias_sigma_frac: float,
@@ -77,11 +87,17 @@ def build_split_indices(
     """Build leakage-safe split indices over already-extracted windows."""
     entries: List[dict] = []
     for idx, row in used_df.iterrows():
+        split_start_s = _first_finite_float(
+            row.get("split_start_s"),
+            row.get("resolved_window_start_s"),
+            row.get("window_start_s"),
+            default=0.0,
+        )
         entries.append(
             {
                 "idx": int(idx),
-                "src": str(row["src"]),
-                "start": _safe_float(row.get("resolved_window_start_s"), default=row.get("window_start_s", 0.0)),
+                "src": str(row.get("split_src", row.get("src", row.get("clip_id", "unknown")))),
+                "start": split_start_s,
                 "dur": _safe_float(row.get("window_duration_s"), default=5.0),
                 "label": int(row["label"]),
             }
@@ -726,8 +742,20 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Train a Perch 2.0 embedding-based fin-whale call detector"
     )
-    ap.add_argument("--excel-files", nargs="+", required=True, help="Excel annotation files")
-    ap.add_argument("--audio-dir", type=str, required=True, help="Directory with full .wav clips")
+    ap.add_argument("--excel-files", nargs="+", default=None, help="Excel annotation files (raw-audio mode)")
+    ap.add_argument("--audio-dir", type=str, default=None, help="Directory with source .wav clips (raw-audio mode)")
+    ap.add_argument(
+        "--context-manifest-csv",
+        type=str,
+        default=None,
+        help="Prebuilt 40s context manifest CSV (prebuilt-context mode)",
+    )
+    ap.add_argument(
+        "--context-audio-dir",
+        type=str,
+        default=None,
+        help="Directory with prebuilt 40s context .wav files (prebuilt-context mode)",
+    )
     ap.add_argument(
         "--output-dir",
         type=str,
@@ -805,6 +833,16 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--train-neg-augment-copies must be >= 0.")
     if args.center_bias_sigma_frac < 0:
         raise SystemExit("--center-bias-sigma-frac must be >= 0.")
+
+    using_prebuilt_context = bool(args.context_manifest_csv)
+    if using_prebuilt_context:
+        if not args.context_audio_dir:
+            raise SystemExit("--context-audio-dir is required when --context-manifest-csv is provided.")
+    else:
+        if not args.excel_files:
+            raise SystemExit("--excel-files is required unless --context-manifest-csv is provided.")
+        if not args.audio_dir:
+            raise SystemExit("--audio-dir is required unless --context-manifest-csv is provided.")
     return args
 
 
@@ -817,17 +855,50 @@ def main() -> None:
     run_dir = Path(args.output_dir) / f"perch2_{run_stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Building context manifest...")
-    context_manifest, context_manifest_summary = build_window_manifest(
-        excel_files=list(args.excel_files),
-        context_duration_s=float(args.context_seconds),
-        negatives_per_positive=int(args.negatives_per_positive),
-        negative_margin_s=float(args.negative_margin_seconds),
-        max_positives=args.max_positives,
-        max_audio_files=args.max_audio_files,
-        seed=int(args.seed),
-        assumed_clip_duration_s=float(args.assumed_clip_duration_seconds),
-    )
+    using_prebuilt_context = bool(args.context_manifest_csv)
+    if using_prebuilt_context:
+        print(f"Loading prebuilt context manifest: {args.context_manifest_csv}")
+        context_manifest = pd.read_csv(args.context_manifest_csv)
+        required_cols = {
+            "example_id",
+            "label",
+            "clip_id",
+            "window_start_s",
+            "window_duration_s",
+        }
+        missing_cols = [c for c in sorted(required_cols) if c not in context_manifest.columns]
+        if missing_cols:
+            raise RuntimeError(
+                "Prebuilt context manifest is missing required columns: "
+                + ", ".join(missing_cols)
+            )
+        if "src" not in context_manifest.columns:
+            context_manifest["src"] = context_manifest["clip_id"].astype(str)
+        if "split_start_s" not in context_manifest.columns:
+            context_manifest["split_start_s"] = context_manifest["window_start_s"]
+        context_manifest_summary = {
+            "mode": "prebuilt_context_manifest",
+            "total_context_windows": int(len(context_manifest)),
+            "positive_context_windows": int((context_manifest["label"].astype(int) == 1).sum()),
+            "negative_context_windows": int((context_manifest["label"].astype(int) == 0).sum()),
+            "unique_clips": int(context_manifest["clip_id"].astype(str).nunique()),
+            "context_duration_s": float(args.context_seconds),
+        }
+        embedding_audio_dir = Path(args.context_audio_dir)
+    else:
+        print("Building context manifest from Excel annotations...")
+        context_manifest, context_manifest_summary = build_window_manifest(
+            excel_files=list(args.excel_files),
+            context_duration_s=float(args.context_seconds),
+            negatives_per_positive=int(args.negatives_per_positive),
+            negative_margin_s=float(args.negative_margin_seconds),
+            max_positives=args.max_positives,
+            max_audio_files=args.max_audio_files,
+            seed=int(args.seed),
+            assumed_clip_duration_s=float(args.assumed_clip_duration_seconds),
+        )
+        embedding_audio_dir = Path(args.audio_dir)
+
     context_manifest_path = run_dir / "context_window_manifest.csv"
     context_manifest.to_csv(context_manifest_path, index=False)
     print(f"Context manifest: {context_manifest_path} | windows={len(context_manifest)}")
@@ -858,7 +929,7 @@ def main() -> None:
 
     x, y, used_df, skipped_df, embedding_details = extract_perch_embeddings(
         manifest=subclip_manifest,
-        audio_dir=Path(args.audio_dir),
+        audio_dir=embedding_audio_dir,
         perch_model_name=args.perch_model,
         batch_size=int(args.batch_size),
         disable_gpu=bool(args.disable_gpu),

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Launch a structured Perch2 embedding sweep.
+# Launch a structured Perch2 embedding sweep on a prebuilt 40s context dataset.
 #
 # Run from login node:
 #   bash drac/scripts/launch_finwhale_perch2_sweep.sh \
-#     --audio-dir /path/to/audio \
+#     --context-dataset-tar /path/to/context_dataset.tar.zst \
 #     --dry-run
 
 set -euo pipefail
@@ -18,19 +18,18 @@ if [[ ! -f "$SUBMIT_SCRIPT" ]]; then
   exit 1
 fi
 
-AUDIO_DIR=""
-AUDIO_TAR_PATH=""
-declare -a EXCEL_FILES=()
+CONTEXT_DATASET_TAR=""
+CONTEXT_DATASET_DIR=""
+CONTEXT_MANIFEST_RELPATH="context_window_manifest.csv"
+CONTEXT_AUDIO_RELDIR="context_audio"
+COPY_CONTEXT_DIR_TO_TMP="true"
+
 PERCH_MODEL="perch_v2_gpu"
+PERCH_MODEL_EXPLICIT="false"
 BATCH_SIZE=16
 CONTEXT_SECONDS="40"
 TRAIN_CLIP_SECONDS="10"
 EVAL_CLIP_SECONDS="10"
-ASSUMED_CLIP_DURATION_SECONDS="300"
-NEGATIVES_PER_POSITIVE=1
-NEGATIVE_MARGIN_SECONDS="2"
-MAX_POSITIVES=""
-MAX_AUDIO_FILES=""
 TRAIN_RATIO="0.8"
 VAL_RATIO="0.1"
 SEEDS_CSV="42"
@@ -42,7 +41,6 @@ TRAIN_NEG_AUGMENT_COPIES=1
 MAX_ITER=3000
 DISABLE_GPU="false"
 SKIP_SAVE_EMBEDDINGS="true"
-COPY_AUDIO_TO_TMP="false"
 INSTALL_PERCH_DEPS="false"
 EXP_ROOT="${SCRATCH:-/scratch/$USER}/whale-call-analysis/perch2_sweeps"
 SWEEP_ID=""
@@ -58,45 +56,38 @@ usage() {
 Usage:
   bash drac/scripts/launch_finwhale_perch2_sweep.sh [options]
 
-Required:
-  One of:
-    --audio-dir PATH
-    --audio-tar-path PATH
+Required (choose one):
+  --context-dataset-tar PATH
+  --context-dataset-dir PATH
 
 Optional:
-  --audio-tar-path PATH           Archive with audio files (.tar/.tar.gz/.tar.zst/.zip)
-  --excel-file PATH               Repeatable. If omitted, submit script defaults are used.
-  --excel-files-csv CSV           Comma-separated Excel paths.
-  --perch-model NAME              (default: perch_v2_gpu)
-  --batch-size N                  (default: 16)
-  --context-seconds SEC           (default: 40)
-  --train-clip-seconds SEC        (default: 10)
-  --eval-clip-seconds SEC         (default: 10)
-  --assumed-clip-duration-seconds SEC   (default: 300)
-  --negatives-per-positive N      (default: 1)
-  --negative-margin-seconds SEC   (default: 2)
-  --max-positives N
-  --max-audio-files N
-  --train-ratio R                 (default: 0.8)
-  --val-ratio R                   (default: 0.1)
-  --seeds CSV                     (default: 42)
-  --logreg-c-list CSV             (default: 1.0)
-  --center-bias-list CSV          (default: 0.25)
-  --min-gap-list CSV              (default: 120)
-  --train-pos-augment-copies N    (default: 1)
-  --train-neg-augment-copies N    (default: 1)
-  --max-iter N                    (default: 3000)
+  --context-manifest-relpath PATH  (default: context_window_manifest.csv)
+  --context-audio-reldir PATH      (default: context_audio)
+  --no-copy-context-dir            In dir mode, do not rsync dataset to SLURM_TMPDIR
+  --perch-model NAME               (default: perch_v2_gpu)
+  --batch-size N                   (default: 16)
+  --context-seconds SEC            (default: 40)
+  --train-clip-seconds SEC         (default: 10)
+  --eval-clip-seconds SEC          (default: 10)
+  --train-ratio R                  (default: 0.8)
+  --val-ratio R                    (default: 0.1)
+  --seeds CSV                      (default: 42)
+  --logreg-c-list CSV              (default: 1.0)
+  --center-bias-list CSV           (default: 0.25)
+  --min-gap-list CSV               (default: 120)
+  --train-pos-augment-copies N     (default: 1)
+  --train-neg-augment-copies N     (default: 1)
+  --max-iter N                     (default: 3000)
   --disable-gpu
-  --no-skip-save-embeddings       Save embeddings.npz in sweep runs.
-  --copy-audio-to-tmp
+  --no-skip-save-embeddings
   --install-perch-deps
-  --exp-root PATH                 (default: $SCRATCH/whale-call-analysis/perch2_sweeps)
-  --sweep-id ID                   (default: UTC timestamp)
-  --run-tag-prefix TAG            (default: perch2)
+  --exp-root PATH                  (default: $SCRATCH/whale-call-analysis/perch2_sweeps)
+  --sweep-id ID                    (default: UTC timestamp)
+  --run-tag-prefix TAG             (default: perch2)
   --note-prefix TEXT
   --project-path PATH
   --venv-path PATH
-  --local-test-mode               Run submit script directly instead of sbatch.
+  --local-test-mode                Run submit script directly instead of sbatch
   --dry-run
   -h, --help
 USAGE
@@ -113,13 +104,6 @@ split_csv() {
   done
 }
 
-append_excel_csv() {
-  local raw="$1"
-  while IFS= read -r v; do
-    EXCEL_FILES+=("$v")
-  done < <(split_csv "$raw")
-}
-
 to_tag() {
   local v="$1"
   v="${v//./p}"
@@ -130,20 +114,16 @@ to_tag() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --audio-dir) AUDIO_DIR="$2"; shift 2 ;;
-    --audio-tar-path) AUDIO_TAR_PATH="$2"; shift 2 ;;
-    --excel-file) EXCEL_FILES+=("$2"); shift 2 ;;
-    --excel-files-csv) append_excel_csv "$2"; shift 2 ;;
-    --perch-model) PERCH_MODEL="$2"; shift 2 ;;
+    --context-dataset-tar) CONTEXT_DATASET_TAR="$2"; shift 2 ;;
+    --context-dataset-dir) CONTEXT_DATASET_DIR="$2"; shift 2 ;;
+    --context-manifest-relpath) CONTEXT_MANIFEST_RELPATH="$2"; shift 2 ;;
+    --context-audio-reldir) CONTEXT_AUDIO_RELDIR="$2"; shift 2 ;;
+    --no-copy-context-dir) COPY_CONTEXT_DIR_TO_TMP="false"; shift ;;
+    --perch-model) PERCH_MODEL="$2"; PERCH_MODEL_EXPLICIT="true"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --context-seconds) CONTEXT_SECONDS="$2"; shift 2 ;;
     --train-clip-seconds) TRAIN_CLIP_SECONDS="$2"; shift 2 ;;
     --eval-clip-seconds) EVAL_CLIP_SECONDS="$2"; shift 2 ;;
-    --assumed-clip-duration-seconds) ASSUMED_CLIP_DURATION_SECONDS="$2"; shift 2 ;;
-    --negatives-per-positive) NEGATIVES_PER_POSITIVE="$2"; shift 2 ;;
-    --negative-margin-seconds) NEGATIVE_MARGIN_SECONDS="$2"; shift 2 ;;
-    --max-positives) MAX_POSITIVES="$2"; shift 2 ;;
-    --max-audio-files) MAX_AUDIO_FILES="$2"; shift 2 ;;
     --train-ratio) TRAIN_RATIO="$2"; shift 2 ;;
     --val-ratio) VAL_RATIO="$2"; shift 2 ;;
     --seeds) SEEDS_CSV="$2"; shift 2 ;;
@@ -155,7 +135,6 @@ while [[ $# -gt 0 ]]; do
     --max-iter) MAX_ITER="$2"; shift 2 ;;
     --disable-gpu) DISABLE_GPU="true"; shift ;;
     --no-skip-save-embeddings) SKIP_SAVE_EMBEDDINGS="false"; shift ;;
-    --copy-audio-to-tmp) COPY_AUDIO_TO_TMP="true"; shift ;;
     --install-perch-deps) INSTALL_PERCH_DEPS="true"; shift ;;
     --exp-root) EXP_ROOT="$2"; shift 2 ;;
     --sweep-id) SWEEP_ID="$2"; shift 2 ;;
@@ -170,21 +149,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$AUDIO_DIR" && -z "$AUDIO_TAR_PATH" ]]; then
-  echo "Error: provide one of --audio-dir or --audio-tar-path"
+if [[ -z "$CONTEXT_DATASET_TAR" && -z "$CONTEXT_DATASET_DIR" ]]; then
+  echo "Error: provide one of --context-dataset-tar or --context-dataset-dir"
   exit 1
 fi
-if [[ -n "$AUDIO_DIR" && -n "$AUDIO_TAR_PATH" ]]; then
-  echo "Error: --audio-dir and --audio-tar-path are mutually exclusive"
+if [[ -n "$CONTEXT_DATASET_TAR" && -n "$CONTEXT_DATASET_DIR" ]]; then
+  echo "Error: --context-dataset-tar and --context-dataset-dir are mutually exclusive"
   exit 1
 fi
-if [[ -n "$AUDIO_DIR" && ! -d "$AUDIO_DIR" ]]; then
-  echo "Error: audio directory does not exist: $AUDIO_DIR"
+if [[ -n "$CONTEXT_DATASET_TAR" && ! -f "$CONTEXT_DATASET_TAR" ]]; then
+  echo "Error: context dataset archive not found: $CONTEXT_DATASET_TAR"
   exit 1
 fi
-if [[ -n "$AUDIO_TAR_PATH" && ! -f "$AUDIO_TAR_PATH" ]]; then
-  echo "Error: audio archive does not exist: $AUDIO_TAR_PATH"
+if [[ -n "$CONTEXT_DATASET_DIR" && ! -d "$CONTEXT_DATASET_DIR" ]]; then
+  echo "Error: context dataset directory not found: $CONTEXT_DATASET_DIR"
   exit 1
+fi
+if [[ "$DISABLE_GPU" == "true" && "$PERCH_MODEL" == "perch_v2_gpu" ]]; then
+  if [[ "$PERCH_MODEL_EXPLICIT" == "true" ]]; then
+    echo "Error: --disable-gpu cannot be combined with --perch-model perch_v2_gpu."
+    echo "       Use --perch-model perch_v2_cpu (recommended) or remove --disable-gpu."
+    exit 1
+  fi
+  echo "Info: --disable-gpu enabled; switching Perch model from perch_v2_gpu to perch_v2_cpu."
+  PERCH_MODEL="perch_v2_cpu"
 fi
 
 if [[ -z "$SWEEP_ID" ]]; then
@@ -241,14 +229,13 @@ for seed in "${SEED_LIST[@]}"; do
         fi
 
         cmd+=(
+          --context-manifest-relpath "$CONTEXT_MANIFEST_RELPATH"
+          --context-audio-reldir "$CONTEXT_AUDIO_RELDIR"
           --perch-model "$PERCH_MODEL"
           --batch-size "$BATCH_SIZE"
           --context-seconds "$CONTEXT_SECONDS"
           --train-clip-seconds "$TRAIN_CLIP_SECONDS"
           --eval-clip-seconds "$EVAL_CLIP_SECONDS"
-          --assumed-clip-duration-seconds "$ASSUMED_CLIP_DURATION_SECONDS"
-          --negatives-per-positive "$NEGATIVES_PER_POSITIVE"
-          --negative-margin-seconds "$NEGATIVE_MARGIN_SECONDS"
           --train-ratio "$TRAIN_RATIO"
           --val-ratio "$VAL_RATIO"
           --min-gap-seconds "$gap"
@@ -263,17 +250,13 @@ for seed in "${SEED_LIST[@]}"; do
           --project-path "$PROJECT_PATH"
           --venv-path "$VENV_PATH"
         )
-        if [[ -n "$AUDIO_TAR_PATH" ]]; then
-          cmd+=( --audio-tar-path "$AUDIO_TAR_PATH" )
+        if [[ -n "$CONTEXT_DATASET_TAR" ]]; then
+          cmd+=( --context-dataset-tar "$CONTEXT_DATASET_TAR" )
         else
-          cmd+=( --audio-dir "$AUDIO_DIR" )
-        fi
-
-        if [[ -n "$MAX_POSITIVES" ]]; then
-          cmd+=( --max-positives "$MAX_POSITIVES" )
-        fi
-        if [[ -n "$MAX_AUDIO_FILES" ]]; then
-          cmd+=( --max-audio-files "$MAX_AUDIO_FILES" )
+          cmd+=( --context-dataset-dir "$CONTEXT_DATASET_DIR" )
+          if [[ "$COPY_CONTEXT_DIR_TO_TMP" == "false" ]]; then
+            cmd+=( --no-copy-context-dir )
+          fi
         fi
         if [[ "$DISABLE_GPU" == "true" ]]; then
           cmd+=( --disable-gpu )
@@ -281,18 +264,12 @@ for seed in "${SEED_LIST[@]}"; do
         if [[ "$SKIP_SAVE_EMBEDDINGS" == "true" ]]; then
           cmd+=( --skip-save-embeddings )
         fi
-        if [[ "$COPY_AUDIO_TO_TMP" == "true" ]]; then
-          cmd+=( --copy-audio-to-tmp )
-        fi
         if [[ "$INSTALL_PERCH_DEPS" == "true" ]]; then
           cmd+=( --install-perch-deps )
         fi
         if [[ -n "$NOTE_PREFIX" ]]; then
           cmd+=( --note "${NOTE_PREFIX}:${run_slug}" )
         fi
-        for excel_path in "${EXCEL_FILES[@]}"; do
-          cmd+=( --excel-file "$excel_path" )
-        done
 
         {
           printf '%q ' "${cmd[@]}"

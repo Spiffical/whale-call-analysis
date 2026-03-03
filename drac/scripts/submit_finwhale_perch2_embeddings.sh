@@ -1,8 +1,8 @@
 #!/bin/bash
-# NOTE: Run with:
-#   sbatch /path/to/whale-call-analysis/drac/scripts/submit_finwhale_perch2_embeddings.sh [args]
+# NOTE:
+#   sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh [args]
 #
-# Local smoke mode (no sbatch, for validation only):
+# Local smoke mode (no sbatch):
 #   bash drac/scripts/submit_finwhale_perch2_embeddings.sh --local-test-mode [args]
 
 #SBATCH --account=def-kmoran
@@ -14,7 +14,6 @@
 
 set -euo pipefail
 
-# Detect repo root.
 if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "$SLURM_SUBMIT_DIR/drac/scripts/submit_finwhale_perch2_embeddings.sh" ]]; then
   REPO_ROOT="$SLURM_SUBMIT_DIR"
 elif [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "$SLURM_SUBMIT_DIR/scripts/train/train_perch2_embeddings.py" ]]; then
@@ -33,19 +32,18 @@ PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 EXP_DIR="${EXP_DIR:-/exp}"
 
-AUDIO_DIR=""
-AUDIO_TAR_PATH=""
-declare -a EXCEL_FILES=()
+CONTEXT_DATASET_TAR=""
+CONTEXT_DATASET_DIR=""
+CONTEXT_MANIFEST_RELPATH="context_window_manifest.csv"
+CONTEXT_AUDIO_RELDIR="context_audio"
+COPY_CONTEXT_DIR_TO_TMP="true"
+
 PERCH_MODEL="perch_v2_gpu"
+PERCH_MODEL_EXPLICIT="false"
 BATCH_SIZE=16
 CONTEXT_SECONDS="40"
 TRAIN_CLIP_SECONDS="10"
 EVAL_CLIP_SECONDS="10"
-ASSUMED_CLIP_DURATION_SECONDS="300"
-NEGATIVES_PER_POSITIVE=1
-NEGATIVE_MARGIN_SECONDS="2"
-MAX_POSITIVES=""
-MAX_AUDIO_FILES=""
 TRAIN_RATIO="0.8"
 VAL_RATIO="0.1"
 MIN_GAP_SECONDS="120"
@@ -57,7 +55,6 @@ CENTER_BIAS_SIGMA_FRAC="0.25"
 SEED=42
 RUN_TAG=""
 NOTE=""
-COPY_AUDIO_TO_TMP="false"
 DISABLE_GPU="false"
 SKIP_SAVE_EMBEDDINGS="false"
 INSTALL_PERCH_DEPS="false"
@@ -71,77 +68,87 @@ Usage:
   sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh [options]
   bash drac/scripts/submit_finwhale_perch2_embeddings.sh --local-test-mode [options]
 
-Required:
-  One of:
-    --audio-dir PATH
-    --audio-tar-path PATH
+Required (choose one):
+  --context-dataset-tar PATH
+  --context-dataset-dir PATH
 
 Optional:
-  --audio-tar-path PATH           Archive with audio files (supports .tar, .tar.gz/.tgz, .tar.zst/.tzst, .zip)
-  --excel-file PATH               Repeatable; required unless repo default files exist.
-  --excel-files-csv CSV           Comma-separated Excel paths.
-  --perch-model NAME              perch_v2 | perch_v2_gpu | perch_v2_cpu (default: perch_v2_gpu)
-  --batch-size N                  (default: 16)
-  --context-seconds SEC           (default: 40)
-  --train-clip-seconds SEC        (default: 10)
-  --eval-clip-seconds SEC         (default: 10)
-  --assumed-clip-duration-seconds SEC   (default: 300)
-  --negatives-per-positive N      (default: 1)
-  --negative-margin-seconds SEC   (default: 2)
-  --max-positives N
-  --max-audio-files N
-  --train-ratio R                 (default: 0.8)
-  --val-ratio R                   (default: 0.1)
-  --min-gap-seconds SEC           (default: 120)
-  --logreg-c VALUE                (default: 1.0)
-  --max-iter N                    (default: 3000)
-  --train-pos-augment-copies N    (default: 1)
-  --train-neg-augment-copies N    (default: 1)
-  --center-bias-sigma-frac VALUE  (default: 0.25)
-  --seed N                        (default: 42)
+  --context-manifest-relpath PATH   Relative path in extracted dataset (default: context_window_manifest.csv)
+  --context-audio-reldir PATH       Relative path in extracted dataset (default: context_audio)
+  --no-copy-context-dir             In dir mode, do not rsync context dataset to SLURM_TMPDIR
+  --perch-model NAME                perch_v2 | perch_v2_gpu | perch_v2_cpu (default: perch_v2_gpu)
+  --batch-size N                    (default: 16)
+  --context-seconds SEC             (default: 40)
+  --train-clip-seconds SEC          (default: 10)
+  --eval-clip-seconds SEC           (default: 10)
+  --train-ratio R                   (default: 0.8)
+  --val-ratio R                     (default: 0.1)
+  --min-gap-seconds SEC             (default: 120)
+  --logreg-c VALUE                  (default: 1.0)
+  --max-iter N                      (default: 3000)
+  --train-pos-augment-copies N      (default: 1)
+  --train-neg-augment-copies N      (default: 1)
+  --center-bias-sigma-frac VALUE    (default: 0.25)
+  --seed N                          (default: 42)
   --run-tag TAG
   --note TEXT
-  --exp-dir PATH                  (default: /exp)
-  --project-path PATH             (default: detected repo root)
-  --venv-path PATH                (default: <repo>/.venv)
-  --copy-audio-to-tmp             Copy full audio dir to node local storage (only with --audio-dir).
-  --disable-gpu                   Pass --disable-gpu to training script.
-  --skip-save-embeddings          Pass --skip-save-embeddings to training script.
-  --install-perch-deps            pip install -r requirements-perch.txt inside job venv.
-  --git-branch NAME               Enforce branch in project-path (default: main)
-  --auto-switch-branch            Auto-checkout required branch in project-path.
-  --local-test-mode               Run directly without SLURM module assumptions.
+  --exp-dir PATH                    (default: /exp)
+  --project-path PATH               (default: detected repo root)
+  --venv-path PATH                  (default: <repo>/.venv)
+  --disable-gpu                     Force CPU mode for TensorFlow
+  --skip-save-embeddings            Do not save embeddings.npz
+  --install-perch-deps              pip install -r requirements-perch.txt in job venv
+  --git-branch NAME                 Enforce branch in project path (default: main)
+  --auto-switch-branch              Auto checkout required branch in project path
+  --local-test-mode                 Run directly without SLURM module assumptions
   -h, --help
 USAGE
 }
 
-split_csv_to_array() {
-  local raw="$1"
-  raw="${raw// /}"
-  IFS=',' read -r -a _parts <<< "$raw"
-  for x in "${_parts[@]}"; do
-    if [[ -n "$x" ]]; then
-      EXCEL_FILES+=("$x")
-    fi
-  done
+resolve_file_in_dataset() {
+  local dataset_root="$1"
+  local relpath="$2"
+  if [[ -f "$dataset_root/$relpath" ]]; then
+    echo "$dataset_root/$relpath"
+    return 0
+  fi
+  local found
+  found="$(find "$dataset_root" -maxdepth 5 -type f -path "*/$relpath" -print -quit)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+  return 1
+}
+
+resolve_dir_in_dataset() {
+  local dataset_root="$1"
+  local reldir="$2"
+  if [[ -d "$dataset_root/$reldir" ]]; then
+    echo "$dataset_root/$reldir"
+    return 0
+  fi
+  local found
+  found="$(find "$dataset_root" -maxdepth 5 -type d -path "*/$reldir" -print -quit)"
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+  return 1
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --audio-dir) AUDIO_DIR="$2"; shift 2 ;;
-    --audio-tar-path) AUDIO_TAR_PATH="$2"; shift 2 ;;
-    --excel-file) EXCEL_FILES+=("$2"); shift 2 ;;
-    --excel-files-csv) split_csv_to_array "$2"; shift 2 ;;
-    --perch-model) PERCH_MODEL="$2"; shift 2 ;;
+    --context-dataset-tar) CONTEXT_DATASET_TAR="$2"; shift 2 ;;
+    --context-dataset-dir) CONTEXT_DATASET_DIR="$2"; shift 2 ;;
+    --context-manifest-relpath) CONTEXT_MANIFEST_RELPATH="$2"; shift 2 ;;
+    --context-audio-reldir) CONTEXT_AUDIO_RELDIR="$2"; shift 2 ;;
+    --no-copy-context-dir) COPY_CONTEXT_DIR_TO_TMP="false"; shift ;;
+    --perch-model) PERCH_MODEL="$2"; PERCH_MODEL_EXPLICIT="true"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --context-seconds) CONTEXT_SECONDS="$2"; shift 2 ;;
     --train-clip-seconds) TRAIN_CLIP_SECONDS="$2"; shift 2 ;;
     --eval-clip-seconds) EVAL_CLIP_SECONDS="$2"; shift 2 ;;
-    --assumed-clip-duration-seconds) ASSUMED_CLIP_DURATION_SECONDS="$2"; shift 2 ;;
-    --negatives-per-positive) NEGATIVES_PER_POSITIVE="$2"; shift 2 ;;
-    --negative-margin-seconds) NEGATIVE_MARGIN_SECONDS="$2"; shift 2 ;;
-    --max-positives) MAX_POSITIVES="$2"; shift 2 ;;
-    --max-audio-files) MAX_AUDIO_FILES="$2"; shift 2 ;;
     --train-ratio) TRAIN_RATIO="$2"; shift 2 ;;
     --val-ratio) VAL_RATIO="$2"; shift 2 ;;
     --min-gap-seconds) MIN_GAP_SECONDS="$2"; shift 2 ;;
@@ -156,7 +163,6 @@ while [[ $# -gt 0 ]]; do
     --exp-dir) EXP_DIR="$2"; shift 2 ;;
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --venv-path) VENV_PATH="$2"; shift 2 ;;
-    --copy-audio-to-tmp) COPY_AUDIO_TO_TMP="true"; shift ;;
     --disable-gpu) DISABLE_GPU="true"; shift ;;
     --skip-save-embeddings) SKIP_SAVE_EMBEDDINGS="true"; shift ;;
     --install-perch-deps) INSTALL_PERCH_DEPS="true"; shift ;;
@@ -168,36 +174,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$AUDIO_DIR" && -z "$AUDIO_TAR_PATH" ]]; then
-  echo "Error: provide one of --audio-dir or --audio-tar-path"
+if [[ -z "$CONTEXT_DATASET_TAR" && -z "$CONTEXT_DATASET_DIR" ]]; then
+  echo "Error: provide one of --context-dataset-tar or --context-dataset-dir"
   exit 1
 fi
-if [[ -n "$AUDIO_DIR" && -n "$AUDIO_TAR_PATH" ]]; then
-  echo "Error: --audio-dir and --audio-tar-path are mutually exclusive"
+if [[ -n "$CONTEXT_DATASET_TAR" && -n "$CONTEXT_DATASET_DIR" ]]; then
+  echo "Error: --context-dataset-tar and --context-dataset-dir are mutually exclusive"
   exit 1
 fi
-if [[ -n "$AUDIO_DIR" && ! -d "$AUDIO_DIR" ]]; then
-  echo "Error: audio directory does not exist: $AUDIO_DIR"
+if [[ -n "$CONTEXT_DATASET_TAR" && ! -f "$CONTEXT_DATASET_TAR" ]]; then
+  echo "Error: context dataset archive not found: $CONTEXT_DATASET_TAR"
   exit 1
 fi
-if [[ -n "$AUDIO_TAR_PATH" && ! -f "$AUDIO_TAR_PATH" ]]; then
-  echo "Error: audio archive does not exist: $AUDIO_TAR_PATH"
+if [[ -n "$CONTEXT_DATASET_DIR" && ! -d "$CONTEXT_DATASET_DIR" ]]; then
+  echo "Error: context dataset directory not found: $CONTEXT_DATASET_DIR"
   exit 1
+fi
+if [[ "$DISABLE_GPU" == "true" && "$PERCH_MODEL" == "perch_v2_gpu" ]]; then
+  if [[ "$PERCH_MODEL_EXPLICIT" == "true" ]]; then
+    echo "Error: --disable-gpu cannot be combined with --perch-model perch_v2_gpu."
+    echo "       Use --perch-model perch_v2_cpu (recommended) or remove --disable-gpu."
+    exit 1
+  fi
+  echo "Info: --disable-gpu enabled; switching Perch model from perch_v2_gpu to perch_v2_cpu."
+  PERCH_MODEL="perch_v2_cpu"
+fi
+if [[ "$LOCAL_TEST_MODE" == "true" && "$EXP_DIR" == "/exp" ]]; then
+  EXP_DIR="$REPO_ROOT/output/drac_local_exp"
 fi
 if [[ "$EXP_DIR" != /* ]]; then
   EXP_DIR="$PROJECT_PATH/$EXP_DIR"
-fi
-
-if [[ "${#EXCEL_FILES[@]}" -eq 0 ]]; then
-  default_excel_1="$PROJECT_PATH/data/finwhales/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx"
-  default_excel_2="$PROJECT_PATH/data/finwhales/Clayoquot_40Hz_Annotations_Rannankari.xlsx"
-  if [[ -f "$default_excel_1" && -f "$default_excel_2" ]]; then
-    EXCEL_FILES=("$default_excel_1" "$default_excel_2")
-  else
-    echo "Error: no Excel annotations provided and repo defaults were not found."
-    echo "Pass --excel-file for each annotation workbook."
-    exit 1
-  fi
 fi
 
 if [[ "$LOCAL_TEST_MODE" == "true" ]]; then
@@ -270,79 +276,64 @@ if [[ "$INSTALL_PERCH_DEPS" == "true" ]]; then
   pip install -r "$SLURM_TMPDIR/whale_project/requirements-perch.txt"
 fi
 
-declare -a RESOLVED_EXCEL_FILES=()
-for excel_path in "${EXCEL_FILES[@]}"; do
-  if [[ "$excel_path" == /* ]]; then
-    resolved="$excel_path"
-  else
-    resolved="$SLURM_TMPDIR/whale_project/$excel_path"
-    if [[ ! -f "$resolved" ]]; then
-      resolved="$PROJECT_PATH/$excel_path"
-    fi
-  fi
-  if [[ ! -f "$resolved" ]]; then
-    echo "Error: Excel file does not exist: $excel_path (resolved: $resolved)"
-    exit 1
-  fi
-  RESOLVED_EXCEL_FILES+=("$resolved")
-done
+CONTEXT_ROOT=""
+if [[ -n "$CONTEXT_DATASET_TAR" ]]; then
+  CONTEXT_ROOT="$SLURM_TMPDIR/perch2_context_dataset"
+  rm -rf "$CONTEXT_ROOT"
+  mkdir -p "$CONTEXT_ROOT"
+  echo "Extracting context dataset archive to $CONTEXT_ROOT ..."
 
-AUDIO_ARG=""
-if [[ -n "$AUDIO_TAR_PATH" ]]; then
-  echo "Extracting audio archive to node-local storage..."
-  AUDIO_EXTRACT_ROOT="$SLURM_TMPDIR/finwhale_audio_archive"
-  rm -rf "$AUDIO_EXTRACT_ROOT"
-  mkdir -p "$AUDIO_EXTRACT_ROOT"
-
-  if [[ "$AUDIO_TAR_PATH" == *.tar.gz || "$AUDIO_TAR_PATH" == *.tgz ]]; then
+  if [[ "$CONTEXT_DATASET_TAR" == *.tar.gz || "$CONTEXT_DATASET_TAR" == *.tgz ]]; then
     if command -v pigz >/dev/null 2>&1; then
-      tar --use-compress-program=pigz -xf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+      tar --use-compress-program=pigz -xf "$CONTEXT_DATASET_TAR" -C "$CONTEXT_ROOT"
     else
-      tar -xzf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+      tar -xzf "$CONTEXT_DATASET_TAR" -C "$CONTEXT_ROOT"
     fi
-  elif [[ "$AUDIO_TAR_PATH" == *.tar.zst || "$AUDIO_TAR_PATH" == *.tzst ]]; then
+  elif [[ "$CONTEXT_DATASET_TAR" == *.tar.zst || "$CONTEXT_DATASET_TAR" == *.tzst ]]; then
     if command -v unzstd >/dev/null 2>&1; then
-      tar --use-compress-program=unzstd -xf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+      tar --use-compress-program=unzstd -xf "$CONTEXT_DATASET_TAR" -C "$CONTEXT_ROOT"
     elif command -v zstd >/dev/null 2>&1; then
-      zstd -dc "$AUDIO_TAR_PATH" | tar -xf - -C "$AUDIO_EXTRACT_ROOT"
+      zstd -dc "$CONTEXT_DATASET_TAR" | tar -xf - -C "$CONTEXT_ROOT"
     else
-      echo "Error: cannot extract $AUDIO_TAR_PATH (need unzstd or zstd on PATH)"
+      echo "Error: cannot extract $CONTEXT_DATASET_TAR (need unzstd or zstd)"
       exit 1
     fi
-  elif [[ "$AUDIO_TAR_PATH" == *.tar ]]; then
-    tar -xf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
-  elif [[ "$AUDIO_TAR_PATH" == *.zip ]]; then
+  elif [[ "$CONTEXT_DATASET_TAR" == *.tar ]]; then
+    tar -xf "$CONTEXT_DATASET_TAR" -C "$CONTEXT_ROOT"
+  elif [[ "$CONTEXT_DATASET_TAR" == *.zip ]]; then
     if command -v unzip >/dev/null 2>&1; then
-      unzip -q "$AUDIO_TAR_PATH" -d "$AUDIO_EXTRACT_ROOT"
+      unzip -q "$CONTEXT_DATASET_TAR" -d "$CONTEXT_ROOT"
     else
       echo "Error: unzip not found on PATH"
       exit 1
     fi
   else
-    echo "Error: unsupported archive format: $AUDIO_TAR_PATH"
+    echo "Error: unsupported context archive format: $CONTEXT_DATASET_TAR"
     exit 1
   fi
-
-  if find "$AUDIO_EXTRACT_ROOT" -maxdepth 1 -type f -iname '*.wav' -print -quit | grep -q .; then
-    AUDIO_ARG="$AUDIO_EXTRACT_ROOT"
-  else
-    first_wav="$(find "$AUDIO_EXTRACT_ROOT" -mindepth 2 -maxdepth 5 -type f -iname '*.wav' -print -quit)"
-    if [[ -z "$first_wav" ]]; then
-      echo "Error: no .wav files found after extraction: $AUDIO_TAR_PATH"
-      exit 1
-    fi
-    AUDIO_ARG="$(dirname "$first_wav")"
-    echo "Warning: wav files were not at archive root; using nested directory:"
-    echo "  $AUDIO_ARG"
-  fi
 else
-  AUDIO_ARG="$AUDIO_DIR"
-  if [[ "$COPY_AUDIO_TO_TMP" == "true" ]]; then
-    echo "Copying audio directory to node-local storage (can be very large)..."
-    mkdir -p "$SLURM_TMPDIR/finwhale_audio"
-    rsync -a "$AUDIO_DIR/" "$SLURM_TMPDIR/finwhale_audio/"
-    AUDIO_ARG="$SLURM_TMPDIR/finwhale_audio"
+  if [[ "$COPY_CONTEXT_DIR_TO_TMP" == "true" ]]; then
+    CONTEXT_ROOT="$SLURM_TMPDIR/perch2_context_dataset"
+    rm -rf "$CONTEXT_ROOT"
+    mkdir -p "$CONTEXT_ROOT"
+    echo "Copying context dataset directory to node-local storage..."
+    rsync -a "$CONTEXT_DATASET_DIR/" "$CONTEXT_ROOT/"
+  else
+    CONTEXT_ROOT="$CONTEXT_DATASET_DIR"
   fi
+fi
+
+CONTEXT_MANIFEST_PATH="$(resolve_file_in_dataset "$CONTEXT_ROOT" "$CONTEXT_MANIFEST_RELPATH" || true)"
+if [[ -z "$CONTEXT_MANIFEST_PATH" || ! -f "$CONTEXT_MANIFEST_PATH" ]]; then
+  echo "Error: context manifest not found in dataset root: $CONTEXT_ROOT"
+  echo "       looked for relpath: $CONTEXT_MANIFEST_RELPATH"
+  exit 1
+fi
+CONTEXT_AUDIO_DIR="$(resolve_dir_in_dataset "$CONTEXT_ROOT" "$CONTEXT_AUDIO_RELDIR" || true)"
+if [[ -z "$CONTEXT_AUDIO_DIR" || ! -d "$CONTEXT_AUDIO_DIR" ]]; then
+  echo "Error: context audio directory not found in dataset root: $CONTEXT_ROOT"
+  echo "       looked for relpath: $CONTEXT_AUDIO_RELDIR"
+  exit 1
 fi
 
 safe_tag() {
@@ -359,7 +350,7 @@ TRCLIP_TAG="$(fmt_num "$TRAIN_CLIP_SECONDS")"
 EVCLIP_TAG="$(fmt_num "$EVAL_CLIP_SECONDS")"
 CBS_TAG="$(fmt_num "$CENTER_BIAS_SIGMA_FRAC")"
 GAP_TAG="$(fmt_num "$MIN_GAP_SECONDS")"
-BASE_FOLDER="finwhale-perch2-${MODEL_TAG}-b${BATCH_SIZE}-ctx${CTX_TAG}-tr${TRCLIP_TAG}-ev${EVCLIP_TAG}-npp${NEGATIVES_PER_POSITIVE}-cbs${CBS_TAG}-gap${GAP_TAG}-seed${SEED}"
+BASE_FOLDER="finwhale-perch2-${MODEL_TAG}-b${BATCH_SIZE}-ctx${CTX_TAG}-tr${TRCLIP_TAG}-ev${EVCLIP_TAG}-cbs${CBS_TAG}-gap${GAP_TAG}-seed${SEED}"
 if [[ -n "$RUN_TAG" ]]; then
   BASE_FOLDER="${BASE_FOLDER}-$(safe_tag "$RUN_TAG")"
 fi
@@ -368,17 +359,14 @@ mkdir -p "$EXP_PATH"
 
 PYTHON_CMD=(
   python -u scripts/train/train_perch2_embeddings.py
-  --excel-files "${RESOLVED_EXCEL_FILES[@]}"
-  --audio-dir "$AUDIO_ARG"
+  --context-manifest-csv "$CONTEXT_MANIFEST_PATH"
+  --context-audio-dir "$CONTEXT_AUDIO_DIR"
   --output-dir "$EXP_PATH"
   --perch-model "$PERCH_MODEL"
   --batch-size "$BATCH_SIZE"
   --context-seconds "$CONTEXT_SECONDS"
   --train-clip-seconds "$TRAIN_CLIP_SECONDS"
   --eval-clip-seconds "$EVAL_CLIP_SECONDS"
-  --assumed-clip-duration-seconds "$ASSUMED_CLIP_DURATION_SECONDS"
-  --negatives-per-positive "$NEGATIVES_PER_POSITIVE"
-  --negative-margin-seconds "$NEGATIVE_MARGIN_SECONDS"
   --train-ratio "$TRAIN_RATIO"
   --val-ratio "$VAL_RATIO"
   --min-gap-seconds "$MIN_GAP_SECONDS"
@@ -390,12 +378,6 @@ PYTHON_CMD=(
   --center-bias-sigma-frac "$CENTER_BIAS_SIGMA_FRAC"
 )
 
-if [[ -n "$MAX_POSITIVES" ]]; then
-  PYTHON_CMD+=( --max-positives "$MAX_POSITIVES" )
-fi
-if [[ -n "$MAX_AUDIO_FILES" ]]; then
-  PYTHON_CMD+=( --max-audio-files "$MAX_AUDIO_FILES" )
-fi
 if [[ "$DISABLE_GPU" == "true" ]]; then
   PYTHON_CMD+=( --disable-gpu )
 fi
@@ -410,12 +392,14 @@ export PYTHONPATH="${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src"
 cd "$SLURM_TMPDIR/whale_project"
 
 echo "Submitting FinWhale Perch2 embedding job"
-if [[ -n "$AUDIO_TAR_PATH" ]]; then
-  echo "  audio-archive: $AUDIO_TAR_PATH"
+if [[ -n "$CONTEXT_DATASET_TAR" ]]; then
+  echo "  context-dataset-archive: $CONTEXT_DATASET_TAR"
 else
-  echo "  audio-dir: $AUDIO_DIR"
+  echo "  context-dataset-dir: $CONTEXT_DATASET_DIR"
 fi
-echo "  resolved-audio-dir: $AUDIO_ARG"
+echo "  resolved-context-root: $CONTEXT_ROOT"
+echo "  resolved-context-manifest: $CONTEXT_MANIFEST_PATH"
+echo "  resolved-context-audio-dir: $CONTEXT_AUDIO_DIR"
 echo "  perch-model: $PERCH_MODEL | batch-size: $BATCH_SIZE"
 echo "  context: $CONTEXT_SECONDS | train-clip: $TRAIN_CLIP_SECONDS | eval-clip: $EVAL_CLIP_SECONDS"
 echo "  train_pos_augment_copies: $TRAIN_POS_AUGMENT_COPIES | train_neg_augment_copies: $TRAIN_NEG_AUGMENT_COPIES"
