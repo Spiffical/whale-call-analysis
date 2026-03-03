@@ -19,6 +19,7 @@ if [[ ! -f "$SUBMIT_SCRIPT" ]]; then
 fi
 
 AUDIO_DIR=""
+AUDIO_TAR_PATH=""
 declare -a EXCEL_FILES=()
 PERCH_MODEL="perch_v2_gpu"
 BATCH_SIZE=16
@@ -43,7 +44,7 @@ DISABLE_GPU="false"
 SKIP_SAVE_EMBEDDINGS="true"
 COPY_AUDIO_TO_TMP="false"
 INSTALL_PERCH_DEPS="false"
-EXP_ROOT="${SCRATCH:-/scratch/$USER}/finwhale_perch2_sweeps"
+EXP_ROOT="${SCRATCH:-/scratch/$USER}/whale-call-analysis/perch2_sweeps"
 SWEEP_ID=""
 RUN_TAG_PREFIX="perch2"
 NOTE_PREFIX=""
@@ -58,9 +59,12 @@ Usage:
   bash drac/scripts/launch_finwhale_perch2_sweep.sh [options]
 
 Required:
-  --audio-dir PATH
+  One of:
+    --audio-dir PATH
+    --audio-tar-path PATH
 
 Optional:
+  --audio-tar-path PATH           Archive with audio files (.tar/.tar.gz/.tar.zst/.zip)
   --excel-file PATH               Repeatable. If omitted, submit script defaults are used.
   --excel-files-csv CSV           Comma-separated Excel paths.
   --perch-model NAME              (default: perch_v2_gpu)
@@ -86,7 +90,7 @@ Optional:
   --no-skip-save-embeddings       Save embeddings.npz in sweep runs.
   --copy-audio-to-tmp
   --install-perch-deps
-  --exp-root PATH                 (default: $SCRATCH/finwhale_perch2_sweeps)
+  --exp-root PATH                 (default: $SCRATCH/whale-call-analysis/perch2_sweeps)
   --sweep-id ID                   (default: UTC timestamp)
   --run-tag-prefix TAG            (default: perch2)
   --note-prefix TEXT
@@ -127,6 +131,7 @@ to_tag() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --audio-dir) AUDIO_DIR="$2"; shift 2 ;;
+    --audio-tar-path) AUDIO_TAR_PATH="$2"; shift 2 ;;
     --excel-file) EXCEL_FILES+=("$2"); shift 2 ;;
     --excel-files-csv) append_excel_csv "$2"; shift 2 ;;
     --perch-model) PERCH_MODEL="$2"; shift 2 ;;
@@ -165,12 +170,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$AUDIO_DIR" ]]; then
-  echo "Error: --audio-dir is required"
+if [[ -z "$AUDIO_DIR" && -z "$AUDIO_TAR_PATH" ]]; then
+  echo "Error: provide one of --audio-dir or --audio-tar-path"
   exit 1
 fi
-if [[ ! -d "$AUDIO_DIR" ]]; then
+if [[ -n "$AUDIO_DIR" && -n "$AUDIO_TAR_PATH" ]]; then
+  echo "Error: --audio-dir and --audio-tar-path are mutually exclusive"
+  exit 1
+fi
+if [[ -n "$AUDIO_DIR" && ! -d "$AUDIO_DIR" ]]; then
   echo "Error: audio directory does not exist: $AUDIO_DIR"
+  exit 1
+fi
+if [[ -n "$AUDIO_TAR_PATH" && ! -f "$AUDIO_TAR_PATH" ]]; then
+  echo "Error: audio archive does not exist: $AUDIO_TAR_PATH"
   exit 1
 fi
 
@@ -228,7 +241,6 @@ for seed in "${SEED_LIST[@]}"; do
         fi
 
         cmd+=(
-          --audio-dir "$AUDIO_DIR"
           --perch-model "$PERCH_MODEL"
           --batch-size "$BATCH_SIZE"
           --context-seconds "$CONTEXT_SECONDS"
@@ -251,6 +263,11 @@ for seed in "${SEED_LIST[@]}"; do
           --project-path "$PROJECT_PATH"
           --venv-path "$VENV_PATH"
         )
+        if [[ -n "$AUDIO_TAR_PATH" ]]; then
+          cmd+=( --audio-tar-path "$AUDIO_TAR_PATH" )
+        else
+          cmd+=( --audio-dir "$AUDIO_DIR" )
+        fi
 
         if [[ -n "$MAX_POSITIVES" ]]; then
           cmd+=( --max-positives "$MAX_POSITIVES" )

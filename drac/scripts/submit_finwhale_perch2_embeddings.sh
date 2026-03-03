@@ -34,6 +34,7 @@ VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 EXP_DIR="${EXP_DIR:-/exp}"
 
 AUDIO_DIR=""
+AUDIO_TAR_PATH=""
 declare -a EXCEL_FILES=()
 PERCH_MODEL="perch_v2_gpu"
 BATCH_SIZE=16
@@ -71,9 +72,12 @@ Usage:
   bash drac/scripts/submit_finwhale_perch2_embeddings.sh --local-test-mode [options]
 
 Required:
-  --audio-dir PATH
+  One of:
+    --audio-dir PATH
+    --audio-tar-path PATH
 
 Optional:
+  --audio-tar-path PATH           Archive with audio files (supports .tar, .tar.gz/.tgz, .tar.zst/.tzst, .zip)
   --excel-file PATH               Repeatable; required unless repo default files exist.
   --excel-files-csv CSV           Comma-separated Excel paths.
   --perch-model NAME              perch_v2 | perch_v2_gpu | perch_v2_cpu (default: perch_v2_gpu)
@@ -100,7 +104,7 @@ Optional:
   --exp-dir PATH                  (default: /exp)
   --project-path PATH             (default: detected repo root)
   --venv-path PATH                (default: <repo>/.venv)
-  --copy-audio-to-tmp             Copy full audio dir to node local storage.
+  --copy-audio-to-tmp             Copy full audio dir to node local storage (only with --audio-dir).
   --disable-gpu                   Pass --disable-gpu to training script.
   --skip-save-embeddings          Pass --skip-save-embeddings to training script.
   --install-perch-deps            pip install -r requirements-perch.txt inside job venv.
@@ -125,6 +129,7 @@ split_csv_to_array() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --audio-dir) AUDIO_DIR="$2"; shift 2 ;;
+    --audio-tar-path) AUDIO_TAR_PATH="$2"; shift 2 ;;
     --excel-file) EXCEL_FILES+=("$2"); shift 2 ;;
     --excel-files-csv) split_csv_to_array "$2"; shift 2 ;;
     --perch-model) PERCH_MODEL="$2"; shift 2 ;;
@@ -163,12 +168,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$AUDIO_DIR" ]]; then
-  echo "Error: --audio-dir is required"
+if [[ -z "$AUDIO_DIR" && -z "$AUDIO_TAR_PATH" ]]; then
+  echo "Error: provide one of --audio-dir or --audio-tar-path"
   exit 1
 fi
-if [[ ! -d "$AUDIO_DIR" ]]; then
+if [[ -n "$AUDIO_DIR" && -n "$AUDIO_TAR_PATH" ]]; then
+  echo "Error: --audio-dir and --audio-tar-path are mutually exclusive"
+  exit 1
+fi
+if [[ -n "$AUDIO_DIR" && ! -d "$AUDIO_DIR" ]]; then
   echo "Error: audio directory does not exist: $AUDIO_DIR"
+  exit 1
+fi
+if [[ -n "$AUDIO_TAR_PATH" && ! -f "$AUDIO_TAR_PATH" ]]; then
+  echo "Error: audio archive does not exist: $AUDIO_TAR_PATH"
   exit 1
 fi
 if [[ "$EXP_DIR" != /* ]]; then
@@ -199,7 +212,7 @@ else
 fi
 
 if [[ -n "${SCRATCH:-}" ]]; then
-  LOG_DIR="$SCRATCH/whale-call-analysis/logs"
+  LOG_DIR="$SCRATCH/whale-call-analysis/perch2_training_logs"
 else
   LOG_DIR="$REPO_ROOT/output/drac_local_logs"
 fi
@@ -210,6 +223,7 @@ echo "Using REPO_ROOT: $REPO_ROOT"
 echo "Using PROJECT_PATH: $PROJECT_PATH"
 echo "Using SLURM_TMPDIR: $SLURM_TMPDIR"
 echo "Using VENV_PATH: $VENV_PATH"
+echo "Using LOG_DIR: $LOG_DIR"
 echo "Local test mode: $LOCAL_TEST_MODE"
 
 if [[ "$LOCAL_TEST_MODE" != "true" ]]; then
@@ -273,12 +287,62 @@ for excel_path in "${EXCEL_FILES[@]}"; do
   RESOLVED_EXCEL_FILES+=("$resolved")
 done
 
-AUDIO_ARG="$AUDIO_DIR"
-if [[ "$COPY_AUDIO_TO_TMP" == "true" ]]; then
-  echo "Copying audio directory to node-local storage (can be very large)..."
-  mkdir -p "$SLURM_TMPDIR/finwhale_audio"
-  rsync -a "$AUDIO_DIR/" "$SLURM_TMPDIR/finwhale_audio/"
-  AUDIO_ARG="$SLURM_TMPDIR/finwhale_audio"
+AUDIO_ARG=""
+if [[ -n "$AUDIO_TAR_PATH" ]]; then
+  echo "Extracting audio archive to node-local storage..."
+  AUDIO_EXTRACT_ROOT="$SLURM_TMPDIR/finwhale_audio_archive"
+  rm -rf "$AUDIO_EXTRACT_ROOT"
+  mkdir -p "$AUDIO_EXTRACT_ROOT"
+
+  if [[ "$AUDIO_TAR_PATH" == *.tar.gz || "$AUDIO_TAR_PATH" == *.tgz ]]; then
+    if command -v pigz >/dev/null 2>&1; then
+      tar --use-compress-program=pigz -xf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+    else
+      tar -xzf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+    fi
+  elif [[ "$AUDIO_TAR_PATH" == *.tar.zst || "$AUDIO_TAR_PATH" == *.tzst ]]; then
+    if command -v unzstd >/dev/null 2>&1; then
+      tar --use-compress-program=unzstd -xf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+    elif command -v zstd >/dev/null 2>&1; then
+      zstd -dc "$AUDIO_TAR_PATH" | tar -xf - -C "$AUDIO_EXTRACT_ROOT"
+    else
+      echo "Error: cannot extract $AUDIO_TAR_PATH (need unzstd or zstd on PATH)"
+      exit 1
+    fi
+  elif [[ "$AUDIO_TAR_PATH" == *.tar ]]; then
+    tar -xf "$AUDIO_TAR_PATH" -C "$AUDIO_EXTRACT_ROOT"
+  elif [[ "$AUDIO_TAR_PATH" == *.zip ]]; then
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -q "$AUDIO_TAR_PATH" -d "$AUDIO_EXTRACT_ROOT"
+    else
+      echo "Error: unzip not found on PATH"
+      exit 1
+    fi
+  else
+    echo "Error: unsupported archive format: $AUDIO_TAR_PATH"
+    exit 1
+  fi
+
+  if find "$AUDIO_EXTRACT_ROOT" -maxdepth 1 -type f -iname '*.wav' -print -quit | grep -q .; then
+    AUDIO_ARG="$AUDIO_EXTRACT_ROOT"
+  else
+    first_wav="$(find "$AUDIO_EXTRACT_ROOT" -mindepth 2 -maxdepth 5 -type f -iname '*.wav' -print -quit)"
+    if [[ -z "$first_wav" ]]; then
+      echo "Error: no .wav files found after extraction: $AUDIO_TAR_PATH"
+      exit 1
+    fi
+    AUDIO_ARG="$(dirname "$first_wav")"
+    echo "Warning: wav files were not at archive root; using nested directory:"
+    echo "  $AUDIO_ARG"
+  fi
+else
+  AUDIO_ARG="$AUDIO_DIR"
+  if [[ "$COPY_AUDIO_TO_TMP" == "true" ]]; then
+    echo "Copying audio directory to node-local storage (can be very large)..."
+    mkdir -p "$SLURM_TMPDIR/finwhale_audio"
+    rsync -a "$AUDIO_DIR/" "$SLURM_TMPDIR/finwhale_audio/"
+    AUDIO_ARG="$SLURM_TMPDIR/finwhale_audio"
+  fi
 fi
 
 safe_tag() {
@@ -346,7 +410,12 @@ export PYTHONPATH="${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src"
 cd "$SLURM_TMPDIR/whale_project"
 
 echo "Submitting FinWhale Perch2 embedding job"
-echo "  audio-dir: $AUDIO_DIR"
+if [[ -n "$AUDIO_TAR_PATH" ]]; then
+  echo "  audio-archive: $AUDIO_TAR_PATH"
+else
+  echo "  audio-dir: $AUDIO_DIR"
+fi
+echo "  resolved-audio-dir: $AUDIO_ARG"
 echo "  perch-model: $PERCH_MODEL | batch-size: $BATCH_SIZE"
 echo "  context: $CONTEXT_SECONDS | train-clip: $TRAIN_CLIP_SECONDS | eval-clip: $EVAL_CLIP_SECONDS"
 echo "  train_pos_augment_copies: $TRAIN_POS_AUGMENT_COPIES | train_neg_augment_copies: $TRAIN_NEG_AUGMENT_COPIES"

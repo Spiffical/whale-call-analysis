@@ -83,13 +83,24 @@ Notes:
 
 ## DRAC
 
+Build an audio archive once in project storage (recommended for fast node-local
+extract per job):
+
+```bash
+bash drac/scripts/create_finwhale_audio_archive.sh \
+  --audio-dir /mnt/z/FinWhalesProject/data/audio \
+  --output-path "$PROJECT/whale-call-analysis/data/archives/finwhale_audio_20260303.tar.zst" \
+  --format tar.zst \
+  --threads 16
+```
+
 Submit one DRAC training job:
 
 ```bash
 sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh \
   --excel-file /path/to/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
   --excel-file /path/to/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
-  --audio-dir /path/to/audio \
+  --audio-tar-path "$PROJECT/whale-call-analysis/data/archives/finwhale_audio_20260303.tar.zst" \
   --perch-model perch_v2_gpu \
   --batch-size 16 \
   --context-seconds 40 \
@@ -108,7 +119,7 @@ Launch a DRAC sweep (with dry-run first):
 bash drac/scripts/launch_finwhale_perch2_sweep.sh \
   --excel-file /path/to/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
   --excel-file /path/to/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
-  --audio-dir /path/to/audio \
+  --audio-tar-path "$PROJECT/whale-call-analysis/data/archives/finwhale_audio_20260303.tar.zst" \
   --seeds 42,1337 \
   --logreg-c-list 0.5,1.0,2.0 \
   --center-bias-list 0.25,0.45 \
@@ -125,7 +136,7 @@ bash drac/scripts/submit_finwhale_perch2_embeddings.sh \
   --local-test-mode \
   --excel-file /path/to/FinWhale20Hz_CallLibrary_Rannankari_patched.xlsx \
   --excel-file /path/to/Clayoquot_40Hz_Annotations_Rannankari.xlsx \
-  --audio-dir /path/to/audio \
+  --audio-tar-path /path/to/finwhale_audio.tar.zst \
   --perch-model perch_v2_cpu \
   --disable-gpu \
   --max-positives 8 \
@@ -136,9 +147,19 @@ bash drac/scripts/submit_finwhale_perch2_embeddings.sh \
 Notes for DRAC:
 - First-time Perch checkpoint fetch uses Kaggle (`kagglehub`), so configure
   `~/.kaggle/kaggle.json` (or `KAGGLE_CONFIG_DIR`) on the cluster.
-- `--copy-audio-to-tmp` can be very expensive for large audio collections.
+- Job logs write to `$SCRATCH/whale-call-analysis/perch2_training_logs/`.
+- `--audio-tar-path` is preferred over `--copy-audio-to-tmp` for large datasets.
 - Submit script defaults still preserve the `40s` context and train-time
   de-centering augmentation (`center_bias_sigma_frac`).
+
+Augmentation strategy recommendation:
+- For Perch embeddings, generate train augmentations once at job start
+  (current pipeline behavior) and embed them once on GPU.
+- Do not re-sample augmentations every epoch when Perch embedding extraction is
+  in-loop; that multiplies expensive forward passes and usually hurts throughput.
+- If you want more augmentation diversity, increase
+  `--train-pos-augment-copies` / `--train-neg-augment-copies` in one pass, or
+  run multiple seeds/sweeps.
 
 ## Outputs
 
