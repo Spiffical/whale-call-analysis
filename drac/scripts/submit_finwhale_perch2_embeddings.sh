@@ -30,7 +30,8 @@ fi
 
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
-EXP_DIR="${EXP_DIR:-/exp}"
+DEFAULT_EXP_DIR="${SCRATCH:-/scratch/$USER}/whale-call-analysis/perch2_training_runs"
+EXP_DIR="${EXP_DIR:-$DEFAULT_EXP_DIR}"
 
 CONTEXT_DATASET_TAR=""
 CONTEXT_DATASET_DIR=""
@@ -92,7 +93,7 @@ Optional:
   --seed N                          (default: 42)
   --run-tag TAG
   --note TEXT
-  --exp-dir PATH                    (default: /exp)
+  --exp-dir PATH                    (default: $SCRATCH/whale-call-analysis/perch2_training_runs)
   --project-path PATH               (default: detected repo root)
   --venv-path PATH                  (default: <repo>/.venv)
   --disable-gpu                     Force CPU mode for TensorFlow
@@ -199,7 +200,7 @@ if [[ "$DISABLE_GPU" == "true" && "$PERCH_MODEL" == "perch_v2_gpu" ]]; then
   echo "Info: --disable-gpu enabled; switching Perch model from perch_v2_gpu to perch_v2_cpu."
   PERCH_MODEL="perch_v2_cpu"
 fi
-if [[ "$LOCAL_TEST_MODE" == "true" && "$EXP_DIR" == "/exp" ]]; then
+if [[ "$LOCAL_TEST_MODE" == "true" && "$EXP_DIR" == "$DEFAULT_EXP_DIR" ]]; then
   EXP_DIR="$REPO_ROOT/output/drac_local_exp"
 fi
 if [[ "$EXP_DIR" != /* ]]; then
@@ -229,6 +230,7 @@ echo "Using REPO_ROOT: $REPO_ROOT"
 echo "Using PROJECT_PATH: $PROJECT_PATH"
 echo "Using SLURM_TMPDIR: $SLURM_TMPDIR"
 echo "Using VENV_PATH: $VENV_PATH"
+echo "Using EXP_DIR: $EXP_DIR"
 echo "Using LOG_DIR: $LOG_DIR"
 echo "Local test mode: $LOCAL_TEST_MODE"
 

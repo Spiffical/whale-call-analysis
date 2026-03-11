@@ -149,6 +149,8 @@ Notes for DRAC:
   `~/.kaggle/kaggle.json` (or `KAGGLE_CONFIG_DIR`) on the cluster.
 - Job logs write to `$SCRATCH/whale-call-analysis/perch2_training_logs/`.
 - DRAC training now expects a prebuilt context dataset (`context_window_manifest.csv` + `context_audio/`).
+- The submit script extracts `--context-dataset-tar` into `$SLURM_TMPDIR/perch2_context_dataset/`.
+- Training outputs default to `$SCRATCH/whale-call-analysis/perch2_training_runs/finwhale/perch2/...`.
 - Submit script still preserves `40s` context with train-time de-centering
   (`center_bias_sigma_frac`) when generating 10s train clips.
 
@@ -161,7 +163,8 @@ Augmentation strategy recommendation:
 
 Each run writes to:
 
-- `output/perch2_embedding_training/perch2_<UTC_TIMESTAMP>/`
+- Direct Python runs: `output/perch2_embedding_training/perch2_<UTC_TIMESTAMP>/`
+- SLURM submit script default: `$SCRATCH/whale-call-analysis/perch2_training_runs/finwhale/perch2/.../perch2_<UTC_TIMESTAMP>/`
 
 Artifacts include:
 
