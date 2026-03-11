@@ -93,19 +93,36 @@ echo "  format: $FORMAT"
 echo "  threads: $THREADS"
 
 tmp_out="$OUTPUT_PATH.tmp"
+file_list="$(mktemp)"
 rm -f "$tmp_out"
 
+cleanup() {
+  rm -f "$tmp_out" "$file_list"
+}
+
+trap cleanup EXIT
+
+(
+  cd "$DATASET_DIR"
+  find . ! -type d -printf '%P\0' | LC_ALL=C sort -z
+) > "$file_list"
+
+if [[ ! -s "$file_list" ]]; then
+  echo "Error: no files found under dataset directory: $DATASET_DIR"
+  exit 1
+fi
+
 if [[ "$FORMAT" == "tar" ]]; then
-  tar -cf "$tmp_out" -C "$DATASET_DIR" .
+  tar -C "$DATASET_DIR" --null -T "$file_list" -cf "$tmp_out"
 elif [[ "$FORMAT" == "tar.gz" ]]; then
   if command -v pigz >/dev/null 2>&1; then
-    tar -I "pigz -p $THREADS -$GZIP_LEVEL" -cf "$tmp_out" -C "$DATASET_DIR" .
+    tar -C "$DATASET_DIR" --null -T "$file_list" -I "pigz -p $THREADS -$GZIP_LEVEL" -cf "$tmp_out"
   else
-    tar -czf "$tmp_out" -C "$DATASET_DIR" .
+    tar -C "$DATASET_DIR" --null -T "$file_list" -czf "$tmp_out"
   fi
 elif [[ "$FORMAT" == "tar.zst" ]]; then
   if command -v zstd >/dev/null 2>&1; then
-    tar -I "zstd -T$THREADS -$ZSTD_LEVEL" -cf "$tmp_out" -C "$DATASET_DIR" .
+    tar -C "$DATASET_DIR" --null -T "$file_list" -I "zstd -T$THREADS -$ZSTD_LEVEL" -cf "$tmp_out"
   else
     echo "Error: zstd is required for --format tar.zst"
     exit 1
@@ -113,6 +130,8 @@ elif [[ "$FORMAT" == "tar.zst" ]]; then
 fi
 
 mv "$tmp_out" "$OUTPUT_PATH"
+rm -f "$file_list"
+trap - EXIT
 
 if command -v du >/dev/null 2>&1; then
   echo "Archive size: $(du -h "$OUTPUT_PATH" | awk '{print $1}')"

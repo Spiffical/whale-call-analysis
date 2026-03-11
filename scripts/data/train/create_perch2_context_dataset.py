@@ -15,6 +15,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -44,6 +45,7 @@ def _create_archive(
     zstd_level: int,
     gzip_level: int,
 ) -> None:
+    members = _list_archive_members(dataset_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         output_path.unlink()
@@ -51,44 +53,66 @@ def _create_archive(
     if tmp_path.exists():
         tmp_path.unlink()
 
-    cmd: List[str]
-    if fmt == "tar":
-        cmd = ["tar", "-cf", str(tmp_path), "-C", str(dataset_dir), "."]
-    elif fmt == "tar.gz":
-        if shutil.which("pigz"):
+    file_list_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f"{output_path.name}.",
+            suffix=".tar-members",
+            delete=False,
+        ) as f:
+            file_list_path = Path(f.name)
+            for member in members:
+                f.write(member.encode("utf-8"))
+                f.write(b"\0")
+
+        cmd: List[str]
+        base_cmd = ["tar", "-C", str(dataset_dir), "--null", "-T", str(file_list_path)]
+        if fmt == "tar":
+            cmd = [*base_cmd, "-cf", str(tmp_path)]
+        elif fmt == "tar.gz":
+            if shutil.which("pigz"):
+                cmd = [
+                    *base_cmd,
+                    "-I",
+                    f"pigz -p {max(1, int(threads))} -{int(gzip_level)}",
+                    "-cf",
+                    str(tmp_path),
+                ]
+            else:
+                cmd = [*base_cmd, "-czf", str(tmp_path)]
+        elif fmt == "tar.zst":
+            if not shutil.which("zstd"):
+                raise RuntimeError("zstd is required for --archive-format tar.zst")
             cmd = [
-                "tar",
+                *base_cmd,
                 "-I",
-                f"pigz -p {max(1, int(threads))} -{int(gzip_level)}",
+                f"zstd -T{max(1, int(threads))} -{int(zstd_level)}",
                 "-cf",
                 str(tmp_path),
-                "-C",
-                str(dataset_dir),
-                ".",
             ]
         else:
-            cmd = ["tar", "-czf", str(tmp_path), "-C", str(dataset_dir), "."]
-    elif fmt == "tar.zst":
-        if not shutil.which("zstd"):
-            raise RuntimeError("zstd is required for --archive-format tar.zst")
-        cmd = [
-            "tar",
-            "-I",
-            f"zstd -T{max(1, int(threads))} -{int(zstd_level)}",
-            "-cf",
-            str(tmp_path),
-            "-C",
-            str(dataset_dir),
-            ".",
-        ]
-    else:
-        raise RuntimeError(f"Unsupported archive format: {fmt}")
+            raise RuntimeError(f"Unsupported archive format: {fmt}")
 
-    print("Creating archive:")
-    print("  " + " ".join(cmd))
-    subprocess.run(cmd, check=True)
-    tmp_path.rename(output_path)
-    print(f"Archive ready: {output_path}")
+        print("Creating archive:")
+        print("  " + " ".join(cmd))
+        subprocess.run(cmd, check=True)
+        tmp_path.rename(output_path)
+        print(f"Archive ready: {output_path}")
+    finally:
+        if file_list_path is not None:
+            file_list_path.unlink(missing_ok=True)
+
+
+def _list_archive_members(dataset_dir: Path) -> List[str]:
+    members = sorted(
+        path.relative_to(dataset_dir).as_posix()
+        for path in dataset_dir.rglob("*")
+        if not path.is_dir()
+    )
+    if not members:
+        raise RuntimeError(f"No files found to archive in dataset directory: {dataset_dir}")
+    return members
 
 
 def _normalize_context_record(
