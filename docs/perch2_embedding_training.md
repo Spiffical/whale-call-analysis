@@ -127,7 +127,10 @@ sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh \
   --train-neg-augment-copies 1 \
   --center-bias-sigma-frac 0.25 \
   --min-gap-seconds 120 \
-  --seed 42
+  --seed 42 \
+  --use-wandb \
+  --wandb-project finwhale_perch2 \
+  --wandb-group finwhale-perch2-manual
 ```
 
 ### 4) Launch a DRAC sweep (dry-run first)
@@ -151,6 +154,7 @@ Notes for DRAC:
 - DRAC training now expects a prebuilt context dataset (`context_window_manifest.csv` + `context_audio/`).
 - The submit script extracts `--context-dataset-tar` into `$SLURM_TMPDIR/perch2_context_dataset/`.
 - Training outputs default to `$SCRATCH/whale-call-analysis/perch2_training_runs/finwhale/perch2/...`.
+- W&B is optional; when enabled, set `WANDB_API_KEY` or create `~/.wandb_api_key` on the cluster.
 - Submit script still preserves `40s` context with train-time de-centering
   (`center_bias_sigma_frac`) when generating 10s train clips.
 

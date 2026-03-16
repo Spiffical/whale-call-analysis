@@ -77,6 +77,100 @@ def _sample_call_fraction_in_window(
     return 0.5
 
 
+def _flatten_numeric_items(payload: object, prefix: str = "") -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            next_prefix = f"{prefix}/{key}" if prefix else str(key)
+            out.update(_flatten_numeric_items(value, next_prefix))
+    elif isinstance(payload, (int, float, np.number)) and not isinstance(payload, bool):
+        scalar = float(payload)
+        if np.isfinite(scalar):
+            out[prefix] = scalar
+    return out
+
+
+def _init_wandb_run(
+    args: argparse.Namespace,
+    run_dir: Path,
+):
+    if not args.use_wandb:
+        return None, None, None
+
+    try:
+        import wandb
+    except Exception as exc:
+        raise SystemExit(
+            "W&B logging was requested, but wandb is not installed. "
+            "Install it in the active environment or rerun with --install-perch-deps.\n"
+            "Expected package: wandb>=0.15.0"
+        ) from exc
+
+    run_name = args.wandb_name or f"{run_dir.parent.name}-{run_dir.name}"
+    config = dict(sorted(vars(args).items()))
+    config["resolved_run_dir"] = str(run_dir)
+    run = wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group,
+        name=run_name,
+        dir=str(run_dir),
+        config=config,
+        job_type="training",
+        tags=["finwhale", "perch2", "embeddings"],
+    )
+    run.summary["resolved_run_dir"] = str(run_dir)
+    run.summary["trainer"] = "train_perch2_embeddings"
+    run_url = None
+    try:
+        run_url = run.url
+    except Exception:
+        run_url = None
+    return run, getattr(run, "id", None), run_url
+
+
+def _log_wandb_results(
+    run,
+    metrics: Dict[str, dict],
+    context_manifest_summary: Dict[str, object],
+    subclip_manifest_summary: Dict[str, int],
+    embedding_details: Dict[str, object],
+    context_split_counts: Dict[str, Dict[str, int]],
+    used_split_counts: Dict[str, Dict[str, int]],
+    run_dir: Path,
+    model_path: Path,
+    summary_path: Path,
+) -> None:
+    if run is None:
+        return
+
+    import wandb
+
+    scalar_payload: Dict[str, float] = {}
+    scalar_payload.update(_flatten_numeric_items(metrics, prefix="metrics"))
+    scalar_payload.update(_flatten_numeric_items(context_manifest_summary, prefix="context_manifest"))
+    scalar_payload.update(_flatten_numeric_items(subclip_manifest_summary, prefix="subclips"))
+    scalar_payload.update(_flatten_numeric_items(embedding_details, prefix="embeddings"))
+    scalar_payload.update(_flatten_numeric_items(context_split_counts, prefix="context_splits"))
+    scalar_payload.update(_flatten_numeric_items(used_split_counts, prefix="used_splits"))
+    if scalar_payload:
+        wandb.log(scalar_payload)
+
+    run.summary["output_dir"] = str(run_dir)
+    run.summary["model_path"] = str(model_path)
+    run.summary["summary_path"] = str(summary_path)
+    run.summary["context_manifest_mode"] = str(context_manifest_summary.get("mode", "built_from_audio"))
+    perch_model_loaded = embedding_details.get("perch_model_loaded")
+    if perch_model_loaded is not None:
+        run.summary["perch_model_loaded"] = str(perch_model_loaded)
+
+    test_metrics = metrics.get("test") or {}
+    for key in ("acc", "precision", "recall", "f1", "auc"):
+        value = test_metrics.get(key)
+        if isinstance(value, (int, float, np.number)) and np.isfinite(float(value)):
+            run.summary[f"test_{key}"] = float(value)
+
+
 def build_split_indices(
     used_df: pd.DataFrame,
     train_ratio: float,
@@ -809,6 +903,11 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--skip-save-embeddings", action="store_true", help="Skip saving embeddings.npz")
     ap.add_argument("--note", type=str, default="", help="Optional note stored in summary.json")
+    ap.add_argument("--use-wandb", action="store_true", help="Enable logging to Weights & Biases")
+    ap.add_argument("--wandb-project", type=str, default="finwhale_perch2", help="W&B project name")
+    ap.add_argument("--wandb-entity", type=str, default=None, help="W&B entity (username or team)")
+    ap.add_argument("--wandb-group", type=str, default=None, help="W&B group name")
+    ap.add_argument("--wandb-name", type=str, default=None, help="Optional W&B run name")
 
     args = ap.parse_args()
     if args.train_ratio <= 0 or args.val_ratio < 0 or args.train_ratio + args.val_ratio >= 1:
@@ -854,179 +953,233 @@ def main() -> None:
     run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = Path(args.output_dir) / f"perch2_{run_stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    wandb_run = None
+    wandb_run_id = None
+    wandb_run_url = None
+    wandb_run_name = None
+    wandb_status = "completed"
 
-    using_prebuilt_context = bool(args.context_manifest_csv)
-    if using_prebuilt_context:
-        print(f"Loading prebuilt context manifest: {args.context_manifest_csv}")
-        context_manifest = pd.read_csv(args.context_manifest_csv)
-        required_cols = {
-            "example_id",
-            "label",
-            "clip_id",
-            "window_start_s",
-            "window_duration_s",
-        }
-        missing_cols = [c for c in sorted(required_cols) if c not in context_manifest.columns]
-        if missing_cols:
-            raise RuntimeError(
-                "Prebuilt context manifest is missing required columns: "
-                + ", ".join(missing_cols)
+    if args.use_wandb:
+        wandb_run, wandb_run_id, wandb_run_url = _init_wandb_run(args=args, run_dir=run_dir)
+        wandb_run_name = getattr(wandb_run, "name", None) if wandb_run is not None else None
+
+    try:
+        using_prebuilt_context = bool(args.context_manifest_csv)
+        if using_prebuilt_context:
+            print(f"Loading prebuilt context manifest: {args.context_manifest_csv}")
+            context_manifest = pd.read_csv(args.context_manifest_csv)
+            required_cols = {
+                "example_id",
+                "label",
+                "clip_id",
+                "window_start_s",
+                "window_duration_s",
+            }
+            missing_cols = [c for c in sorted(required_cols) if c not in context_manifest.columns]
+            if missing_cols:
+                raise RuntimeError(
+                    "Prebuilt context manifest is missing required columns: "
+                    + ", ".join(missing_cols)
+                )
+            if "src" not in context_manifest.columns:
+                context_manifest["src"] = context_manifest["clip_id"].astype(str)
+            if "split_start_s" not in context_manifest.columns:
+                context_manifest["split_start_s"] = context_manifest["window_start_s"]
+            context_manifest_summary = {
+                "mode": "prebuilt_context_manifest",
+                "total_context_windows": int(len(context_manifest)),
+                "positive_context_windows": int((context_manifest["label"].astype(int) == 1).sum()),
+                "negative_context_windows": int((context_manifest["label"].astype(int) == 0).sum()),
+                "unique_clips": int(context_manifest["clip_id"].astype(str).nunique()),
+                "context_duration_s": float(args.context_seconds),
+            }
+            embedding_audio_dir = Path(args.context_audio_dir)
+        else:
+            print("Building context manifest from Excel annotations...")
+            context_manifest, context_manifest_summary = build_window_manifest(
+                excel_files=list(args.excel_files),
+                context_duration_s=float(args.context_seconds),
+                negatives_per_positive=int(args.negatives_per_positive),
+                negative_margin_s=float(args.negative_margin_seconds),
+                max_positives=args.max_positives,
+                max_audio_files=args.max_audio_files,
+                seed=int(args.seed),
+                assumed_clip_duration_s=float(args.assumed_clip_duration_seconds),
             )
-        if "src" not in context_manifest.columns:
-            context_manifest["src"] = context_manifest["clip_id"].astype(str)
-        if "split_start_s" not in context_manifest.columns:
-            context_manifest["split_start_s"] = context_manifest["window_start_s"]
-        context_manifest_summary = {
-            "mode": "prebuilt_context_manifest",
-            "total_context_windows": int(len(context_manifest)),
-            "positive_context_windows": int((context_manifest["label"].astype(int) == 1).sum()),
-            "negative_context_windows": int((context_manifest["label"].astype(int) == 0).sum()),
-            "unique_clips": int(context_manifest["clip_id"].astype(str).nunique()),
-            "context_duration_s": float(args.context_seconds),
-        }
-        embedding_audio_dir = Path(args.context_audio_dir)
-    else:
-        print("Building context manifest from Excel annotations...")
-        context_manifest, context_manifest_summary = build_window_manifest(
-            excel_files=list(args.excel_files),
-            context_duration_s=float(args.context_seconds),
-            negatives_per_positive=int(args.negatives_per_positive),
-            negative_margin_s=float(args.negative_margin_seconds),
-            max_positives=args.max_positives,
-            max_audio_files=args.max_audio_files,
+            embedding_audio_dir = Path(args.audio_dir)
+
+        context_manifest_path = run_dir / "context_window_manifest.csv"
+        context_manifest.to_csv(context_manifest_path, index=False)
+        print(f"Context manifest: {context_manifest_path} | windows={len(context_manifest)}")
+
+        context_index_by_split, context_split_counts = build_split_indices(
+            used_df=context_manifest,
+            train_ratio=float(args.train_ratio),
+            val_ratio=float(args.val_ratio),
+            min_gap_seconds=float(args.min_gap_seconds),
             seed=int(args.seed),
-            assumed_clip_duration_s=float(args.assumed_clip_duration_seconds),
         )
-        embedding_audio_dir = Path(args.audio_dir)
 
-    context_manifest_path = run_dir / "context_window_manifest.csv"
-    context_manifest.to_csv(context_manifest_path, index=False)
-    print(f"Context manifest: {context_manifest_path} | windows={len(context_manifest)}")
-
-    context_index_by_split, context_split_counts = build_split_indices(
-        used_df=context_manifest,
-        train_ratio=float(args.train_ratio),
-        val_ratio=float(args.val_ratio),
-        min_gap_seconds=float(args.min_gap_seconds),
-        seed=int(args.seed),
-    )
-
-    subclip_manifest, subclip_manifest_summary = build_subclip_manifest_from_contexts(
-        context_manifest=context_manifest,
-        context_index_by_split=context_index_by_split,
-        train_clip_seconds=float(args.train_clip_seconds),
-        eval_clip_seconds=float(args.eval_clip_seconds),
-        center_bias_sigma_frac=float(args.center_bias_sigma_frac),
-        train_pos_augment_copies=int(args.train_pos_augment_copies),
-        train_neg_augment_copies=int(args.train_neg_augment_copies),
-        seed=int(args.seed),
-    )
-    if subclip_manifest.empty:
-        raise RuntimeError("Subclip manifest is empty; cannot train.")
-    subclip_manifest_path = run_dir / "subclip_manifest.csv"
-    subclip_manifest.to_csv(subclip_manifest_path, index=False)
-    print(f"Subclip manifest: {subclip_manifest_path} | subclips={len(subclip_manifest)}")
-
-    x, y, used_df, skipped_df, embedding_details = extract_perch_embeddings(
-        manifest=subclip_manifest,
-        audio_dir=embedding_audio_dir,
-        perch_model_name=args.perch_model,
-        batch_size=int(args.batch_size),
-        disable_gpu=bool(args.disable_gpu),
-    )
-
-    used_manifest_path = run_dir / "used_subclips.csv"
-    used_df.to_csv(used_manifest_path, index=False)
-    print(f"Used subclips: {used_manifest_path} | count={len(used_df)}")
-    skipped_path = None
-    if not skipped_df.empty:
-        skipped_path = run_dir / "skipped_subclips.csv"
-        skipped_df.to_csv(skipped_path, index=False)
-        print(f"Skipped subclips: {skipped_path} | count={len(skipped_df)}")
-
-    index_by_split: Dict[str, np.ndarray] = {}
-    for split_name in ("train", "val", "test"):
-        mask = used_df["split"].astype(str).eq(split_name)
-        index_by_split[split_name] = np.where(mask.to_numpy())[0].astype(np.int64)
-
-    used_split_counts: Dict[str, Dict[str, int]] = {}
-    for split_name, split_idx in index_by_split.items():
-        if split_idx.size == 0:
-            used_split_counts[split_name] = {"pos": 0, "neg": 0, "total": 0}
-            continue
-        yy = y[split_idx]
-        pos = int((yy == 1).sum())
-        neg = int((yy == 0).sum())
-        used_split_counts[split_name] = {"pos": pos, "neg": neg, "total": int(len(split_idx))}
-
-    scaler, clf, metrics = train_embedding_classifier(
-        x=x,
-        y=y,
-        index_by_split=index_by_split,
-        seed=int(args.seed),
-        c=float(args.logreg_c),
-        max_iter=int(args.max_iter),
-    )
-
-    model_path = run_dir / "perch2_logreg.joblib"
-    joblib.dump(
-        {
-            "scaler": scaler,
-            "classifier": clf,
-            "perch_model": args.perch_model,
-            "embedding_dim": int(x.shape[1]),
-            "context_seconds": float(args.context_seconds),
-            "train_clip_seconds": float(args.train_clip_seconds),
-            "eval_clip_seconds": float(args.eval_clip_seconds),
-            "train_args": vars(args),
-        },
-        model_path,
-    )
-    print(f"Saved model: {model_path}")
-
-    if not args.skip_save_embeddings:
-        embeddings_path = run_dir / "embeddings.npz"
-        np.savez_compressed(embeddings_path, x=x, y=y)
-        print(f"Saved embeddings: {embeddings_path}")
-
-    for split_name, split_idx in index_by_split.items():
-        split_file = run_dir / f"{split_name}_subclips.csv"
-        used_df.iloc[split_idx].to_csv(split_file, index=False)
-
-    summary = {
-        "run_utc": run_stamp,
-        "args": vars(args),
-        "context_manifest_summary": context_manifest_summary,
-        "subclip_manifest_summary": subclip_manifest_summary,
-        "embedding_details": embedding_details,
-        "context_split_counts": context_split_counts,
-        "used_split_counts": used_split_counts,
-        "metrics": metrics,
-        "artifacts": {
-            "context_window_manifest": str(context_manifest_path),
-            "subclip_manifest": str(subclip_manifest_path),
-            "used_subclips": str(used_manifest_path),
-            "skipped_subclips": str(skipped_path) if skipped_path else None,
-            "model": str(model_path),
-        },
-        "note": args.note,
-    }
-    summary_path = run_dir / "summary.json"
-    with summary_path.open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-    print(f"Summary: {summary_path}")
-
-    test_metrics = metrics.get("test", {})
-    if test_metrics and not test_metrics.get("empty_split"):
-        print(
-            "Test metrics | "
-            f"acc={test_metrics['acc']:.4f} "
-            f"precision={test_metrics['precision']:.4f} "
-            f"recall={test_metrics['recall']:.4f} "
-            f"f1={test_metrics['f1']:.4f} "
-            f"auc={test_metrics['auc']:.4f}"
+        subclip_manifest, subclip_manifest_summary = build_subclip_manifest_from_contexts(
+            context_manifest=context_manifest,
+            context_index_by_split=context_index_by_split,
+            train_clip_seconds=float(args.train_clip_seconds),
+            eval_clip_seconds=float(args.eval_clip_seconds),
+            center_bias_sigma_frac=float(args.center_bias_sigma_frac),
+            train_pos_augment_copies=int(args.train_pos_augment_copies),
+            train_neg_augment_copies=int(args.train_neg_augment_copies),
+            seed=int(args.seed),
         )
-    print(f"Done. Output directory: {run_dir}")
+        if subclip_manifest.empty:
+            raise RuntimeError("Subclip manifest is empty; cannot train.")
+        subclip_manifest_path = run_dir / "subclip_manifest.csv"
+        subclip_manifest.to_csv(subclip_manifest_path, index=False)
+        print(f"Subclip manifest: {subclip_manifest_path} | subclips={len(subclip_manifest)}")
+
+        x, y, used_df, skipped_df, embedding_details = extract_perch_embeddings(
+            manifest=subclip_manifest,
+            audio_dir=embedding_audio_dir,
+            perch_model_name=args.perch_model,
+            batch_size=int(args.batch_size),
+            disable_gpu=bool(args.disable_gpu),
+        )
+
+        used_manifest_path = run_dir / "used_subclips.csv"
+        used_df.to_csv(used_manifest_path, index=False)
+        print(f"Used subclips: {used_manifest_path} | count={len(used_df)}")
+        skipped_path = None
+        if not skipped_df.empty:
+            skipped_path = run_dir / "skipped_subclips.csv"
+            skipped_df.to_csv(skipped_path, index=False)
+            print(f"Skipped subclips: {skipped_path} | count={len(skipped_df)}")
+
+        index_by_split: Dict[str, np.ndarray] = {}
+        for split_name in ("train", "val", "test"):
+            mask = used_df["split"].astype(str).eq(split_name)
+            index_by_split[split_name] = np.where(mask.to_numpy())[0].astype(np.int64)
+
+        used_split_counts: Dict[str, Dict[str, int]] = {}
+        for split_name, split_idx in index_by_split.items():
+            if split_idx.size == 0:
+                used_split_counts[split_name] = {"pos": 0, "neg": 0, "total": 0}
+                continue
+            yy = y[split_idx]
+            pos = int((yy == 1).sum())
+            neg = int((yy == 0).sum())
+            used_split_counts[split_name] = {"pos": pos, "neg": neg, "total": int(len(split_idx))}
+
+        scaler, clf, metrics = train_embedding_classifier(
+            x=x,
+            y=y,
+            index_by_split=index_by_split,
+            seed=int(args.seed),
+            c=float(args.logreg_c),
+            max_iter=int(args.max_iter),
+        )
+
+        model_path = run_dir / "perch2_logreg.joblib"
+        joblib.dump(
+            {
+                "scaler": scaler,
+                "classifier": clf,
+                "perch_model": args.perch_model,
+                "embedding_dim": int(x.shape[1]),
+                "context_seconds": float(args.context_seconds),
+                "train_clip_seconds": float(args.train_clip_seconds),
+                "eval_clip_seconds": float(args.eval_clip_seconds),
+                "train_args": vars(args),
+                "wandb": {
+                    "run_id": wandb_run_id,
+                    "run_url": wandb_run_url,
+                    "project": args.wandb_project if args.use_wandb else None,
+                    "group": args.wandb_group if args.use_wandb else None,
+                    "name": wandb_run_name if args.use_wandb else None,
+                },
+            },
+            model_path,
+        )
+        print(f"Saved model: {model_path}")
+
+        if not args.skip_save_embeddings:
+            embeddings_path = run_dir / "embeddings.npz"
+            np.savez_compressed(embeddings_path, x=x, y=y)
+            print(f"Saved embeddings: {embeddings_path}")
+
+        for split_name, split_idx in index_by_split.items():
+            split_file = run_dir / f"{split_name}_subclips.csv"
+            used_df.iloc[split_idx].to_csv(split_file, index=False)
+
+        summary = {
+            "run_utc": run_stamp,
+            "args": vars(args),
+            "context_manifest_summary": context_manifest_summary,
+            "subclip_manifest_summary": subclip_manifest_summary,
+            "embedding_details": embedding_details,
+            "context_split_counts": context_split_counts,
+            "used_split_counts": used_split_counts,
+            "metrics": metrics,
+            "artifacts": {
+                "context_window_manifest": str(context_manifest_path),
+                "subclip_manifest": str(subclip_manifest_path),
+                "used_subclips": str(used_manifest_path),
+                "skipped_subclips": str(skipped_path) if skipped_path else None,
+                "model": str(model_path),
+            },
+            "wandb": {
+                "run_id": wandb_run_id,
+                "run_url": wandb_run_url,
+                "project": args.wandb_project if args.use_wandb else None,
+                "group": args.wandb_group if args.use_wandb else None,
+                "entity": args.wandb_entity if args.use_wandb else None,
+                "name": wandb_run_name if args.use_wandb else None,
+            },
+            "note": args.note,
+        }
+        summary_path = run_dir / "summary.json"
+        with summary_path.open("w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+        print(f"Summary: {summary_path}")
+
+        if wandb_run is not None:
+            _log_wandb_results(
+                run=wandb_run,
+                metrics=metrics,
+                context_manifest_summary=context_manifest_summary,
+                subclip_manifest_summary=subclip_manifest_summary,
+                embedding_details=embedding_details,
+                context_split_counts=context_split_counts,
+                used_split_counts=used_split_counts,
+                run_dir=run_dir,
+                model_path=model_path,
+                summary_path=summary_path,
+            )
+
+        test_metrics = metrics.get("test", {})
+        if test_metrics and not test_metrics.get("empty_split"):
+            print(
+                "Test metrics | "
+                f"acc={test_metrics['acc']:.4f} "
+                f"precision={test_metrics['precision']:.4f} "
+                f"recall={test_metrics['recall']:.4f} "
+                f"f1={test_metrics['f1']:.4f} "
+                f"auc={test_metrics['auc']:.4f}"
+            )
+        print(f"Done. Output directory: {run_dir}")
+    except Exception:
+        wandb_status = "failed"
+        if wandb_run is not None:
+            try:
+                wandb_run.summary["status"] = "failed"
+            except Exception:
+                pass
+        raise
+    finally:
+        if wandb_run is not None:
+            try:
+                wandb_run.summary["status"] = wandb_status
+                wandb_run.finish()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

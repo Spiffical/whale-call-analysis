@@ -39,6 +39,12 @@ CONTEXT_MANIFEST_RELPATH="context_window_manifest.csv"
 CONTEXT_AUDIO_RELDIR="context_audio"
 COPY_CONTEXT_DIR_TO_TMP="true"
 
+# WandB settings
+USE_WANDB="false"
+WANDB_PROJECT="finwhale_perch2"
+WANDB_GROUP="finwhale_perch2"
+WANDB_ENTITY=""
+
 PERCH_MODEL="perch_v2_gpu"
 PERCH_MODEL_EXPLICIT="false"
 BATCH_SIZE=16
@@ -77,6 +83,10 @@ Optional:
   --context-manifest-relpath PATH   Relative path in extracted dataset (default: context_window_manifest.csv)
   --context-audio-reldir PATH       Relative path in extracted dataset (default: context_audio)
   --no-copy-context-dir             In dir mode, do not rsync context dataset to SLURM_TMPDIR
+  --use-wandb                       Enable Weights & Biases logging
+  --wandb-project NAME              (default: finwhale_perch2)
+  --wandb-group NAME                (default: finwhale_perch2)
+  --wandb-entity NAME
   --perch-model NAME                perch_v2 | perch_v2_gpu | perch_v2_cpu (default: perch_v2_gpu)
   --batch-size N                    (default: 16)
   --context-seconds SEC             (default: 40)
@@ -145,6 +155,10 @@ while [[ $# -gt 0 ]]; do
     --context-manifest-relpath) CONTEXT_MANIFEST_RELPATH="$2"; shift 2 ;;
     --context-audio-reldir) CONTEXT_AUDIO_RELDIR="$2"; shift 2 ;;
     --no-copy-context-dir) COPY_CONTEXT_DIR_TO_TMP="false"; shift ;;
+    --use-wandb) USE_WANDB="true"; shift ;;
+    --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
+    --wandb-group) WANDB_GROUP="$2"; shift 2 ;;
+    --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
     --perch-model) PERCH_MODEL="$2"; PERCH_MODEL_EXPLICIT="true"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --context-seconds) CONTEXT_SECONDS="$2"; shift 2 ;;
@@ -242,6 +256,26 @@ if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
   exit 2
 fi
 source "$VENV_PATH/bin/activate"
+
+if [[ "$USE_WANDB" == "true" && -f "$PROJECT_PATH/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$PROJECT_PATH/.env"
+  set +a
+fi
+
+if [[ "$USE_WANDB" == "true" ]]; then
+  if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    if [[ -f "$HOME/.wandb_api_key" ]]; then
+      export WANDB_API_KEY=$(cat "$HOME/.wandb_api_key")
+      echo "Loaded WANDB_API_KEY from ~/.wandb_api_key"
+    else
+      echo "Warning: WANDB_API_KEY not set. WandB logging may fail."
+      echo "  Set it via: export WANDB_API_KEY=your_key"
+      echo "  Or create: ~/.wandb_api_key with your API key"
+    fi
+  fi
+fi
 
 KAGGLE_ROOT="${KAGGLE_CONFIG_DIR:-$HOME/.kaggle}"
 if [[ ! -f "$KAGGLE_ROOT/kaggle.json" ]]; then
@@ -389,6 +423,12 @@ fi
 if [[ -n "$NOTE" ]]; then
   PYTHON_CMD+=( --note "$NOTE" )
 fi
+if [[ "$USE_WANDB" == "true" ]]; then
+  PYTHON_CMD+=( --use-wandb --wandb-project "$WANDB_PROJECT" --wandb-group "$WANDB_GROUP" --wandb-name "$BASE_FOLDER" )
+  if [[ -n "$WANDB_ENTITY" ]]; then
+    PYTHON_CMD+=( --wandb-entity "$WANDB_ENTITY" )
+  fi
+fi
 
 export PYTHONPATH="${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src"
 cd "$SLURM_TMPDIR/whale_project"
@@ -402,6 +442,11 @@ fi
 echo "  resolved-context-root: $CONTEXT_ROOT"
 echo "  resolved-context-manifest: $CONTEXT_MANIFEST_PATH"
 echo "  resolved-context-audio-dir: $CONTEXT_AUDIO_DIR"
+if [[ "$USE_WANDB" == "true" ]]; then
+  echo "  wandb: enabled | project: $WANDB_PROJECT | group: $WANDB_GROUP | entity: ${WANDB_ENTITY:-<default>}"
+else
+  echo "  wandb: disabled"
+fi
 echo "  perch-model: $PERCH_MODEL | batch-size: $BATCH_SIZE"
 echo "  context: $CONTEXT_SECONDS | train-clip: $TRAIN_CLIP_SECONDS | eval-clip: $EVAL_CLIP_SECONDS"
 echo "  train_pos_augment_copies: $TRAIN_POS_AUGMENT_COPIES | train_neg_augment_copies: $TRAIN_NEG_AUGMENT_COPIES"

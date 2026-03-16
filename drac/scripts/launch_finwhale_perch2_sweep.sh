@@ -24,6 +24,11 @@ CONTEXT_MANIFEST_RELPATH="context_window_manifest.csv"
 CONTEXT_AUDIO_RELDIR="context_audio"
 COPY_CONTEXT_DIR_TO_TMP="true"
 
+USE_WANDB="false"
+WANDB_PROJECT="finwhale_perch2"
+WANDB_GROUP_PREFIX="finwhale-perch2-sweep"
+WANDB_ENTITY=""
+
 PERCH_MODEL="perch_v2_gpu"
 PERCH_MODEL_EXPLICIT="false"
 BATCH_SIZE=16
@@ -64,6 +69,10 @@ Optional:
   --context-manifest-relpath PATH  (default: context_window_manifest.csv)
   --context-audio-reldir PATH      (default: context_audio)
   --no-copy-context-dir            In dir mode, do not rsync dataset to SLURM_TMPDIR
+  --use-wandb
+  --wandb-project NAME             (default: finwhale_perch2)
+  --wandb-group-prefix NAME        (default: finwhale-perch2-sweep)
+  --wandb-entity NAME
   --perch-model NAME               (default: perch_v2_gpu)
   --batch-size N                   (default: 16)
   --context-seconds SEC            (default: 40)
@@ -119,6 +128,10 @@ while [[ $# -gt 0 ]]; do
     --context-manifest-relpath) CONTEXT_MANIFEST_RELPATH="$2"; shift 2 ;;
     --context-audio-reldir) CONTEXT_AUDIO_RELDIR="$2"; shift 2 ;;
     --no-copy-context-dir) COPY_CONTEXT_DIR_TO_TMP="false"; shift ;;
+    --use-wandb) USE_WANDB="true"; shift ;;
+    --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
+    --wandb-group-prefix) WANDB_GROUP_PREFIX="$2"; shift 2 ;;
+    --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
     --perch-model) PERCH_MODEL="$2"; PERCH_MODEL_EXPLICIT="true"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --context-seconds) CONTEXT_SECONDS="$2"; shift 2 ;;
@@ -192,6 +205,7 @@ fi
 SWEEP_DIR="$EXP_ROOT/$SWEEP_ID"
 RUNS_DIR="$SWEEP_DIR/runs"
 mkdir -p "$RUNS_DIR"
+WANDB_GROUP_BASE="${WANDB_GROUP_PREFIX}-${SWEEP_ID}"
 
 PLAN_TSV="$SWEEP_DIR/plan.tsv"
 SUBMITTED_TSV="$SWEEP_DIR/submitted_jobs.tsv"
@@ -260,6 +274,12 @@ for seed in "${SEED_LIST[@]}"; do
         fi
         if [[ "$DISABLE_GPU" == "true" ]]; then
           cmd+=( --disable-gpu )
+        fi
+        if [[ "$USE_WANDB" == "true" ]]; then
+          cmd+=( --use-wandb --wandb-project "$WANDB_PROJECT" --wandb-group "$WANDB_GROUP_BASE" )
+          if [[ -n "$WANDB_ENTITY" ]]; then
+            cmd+=( --wandb-entity "$WANDB_ENTITY" )
+          fi
         fi
         if [[ "$SKIP_SAVE_EMBEDDINGS" == "true" ]]; then
           cmd+=( --skip-save-embeddings )
