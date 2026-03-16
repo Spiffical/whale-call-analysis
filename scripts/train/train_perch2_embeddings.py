@@ -620,7 +620,9 @@ def extract_perch_embeddings(
     except Exception as exc:
         raise SystemExit(
             "Perch dependencies are missing. Install with:\n"
-            "  /home/sbialek/ONC/whale-call-analysis/.venv/bin/pip install \"perch-hoplite[tf]\" kagglehub\n"
+            "  /home/sbialek/ONC/whale-call-analysis/.venv/bin/pip install -r requirements-perch.txt\n"
+            "If you are on Nibi/DRAC, use:\n"
+            "  bash drac/scripts/install_perch_nibi.sh\n"
             f"Import error: {exc}"
         ) from exc
 
