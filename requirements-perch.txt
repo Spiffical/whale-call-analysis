@@ -1,4 +1,6 @@
 # Optional dependencies for Perch 2.0 embedding training
-perch-hoplite[tf]>=1.0.0
+tensorflow>=2.19,<2.20
+tensorflow-hub>=0.16,<1.0
+perch-hoplite>=1.0.0
 kagglehub>=0.3.13
 wandb>=0.15.0

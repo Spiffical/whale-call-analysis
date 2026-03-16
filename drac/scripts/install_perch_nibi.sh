@@ -6,8 +6,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 PIP_BIN="${PIP_BIN:-pip}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-TF_VERSION="${TF_VERSION:-2.20.0}"
-TF_INDEX_URL="${TF_INDEX_URL:-https://pypi.org/simple}"
 
 if ! command -v "$PIP_BIN" >/dev/null 2>&1; then
   echo "Error: pip was not found on PATH. Activate the target venv first."
@@ -33,9 +31,6 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 echo "Building usearch from source (cluster glibc is too old for the published wheel)..."
 git clone --depth 1 --recursive https://github.com/unum-cloud/USearch.git "$TMP_ROOT/USearch"
 "$PIP_BIN" install --no-build-isolation "$TMP_ROOT/USearch"
-
-echo "Installing TensorFlow ${TF_VERSION} from PyPI (not available in the default wheelhouse)..."
-"$PIP_BIN" install --index-url "$TF_INDEX_URL" "tensorflow==${TF_VERSION}"
 
 echo "Installing Perch training dependencies from the repo requirements..."
 "$PIP_BIN" install -r "$REPO_ROOT/requirements-perch.txt"
