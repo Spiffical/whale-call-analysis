@@ -32,6 +32,7 @@ PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 DEFAULT_EXP_DIR="${SCRATCH:-/scratch/$USER}/whale-call-analysis/perch2_training_runs"
 EXP_DIR="${EXP_DIR:-$DEFAULT_EXP_DIR}"
+PYTHON_MODULE=""
 
 CONTEXT_DATASET_TAR=""
 CONTEXT_DATASET_DIR=""
@@ -106,6 +107,7 @@ Optional:
   --exp-dir PATH                    (default: $SCRATCH/whale-call-analysis/perch2_training_runs)
   --project-path PATH               (default: detected repo root)
   --venv-path PATH                  (default: <repo>/.venv)
+  --python-module NAME              Optional module to load before venv activation
   --disable-gpu                     Force CPU mode for TensorFlow
   --skip-save-embeddings            Do not save embeddings.npz
   --install-perch-deps              pip install -r requirements-perch.txt in job venv
@@ -178,6 +180,7 @@ while [[ $# -gt 0 ]]; do
     --exp-dir) EXP_DIR="$2"; shift 2 ;;
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --venv-path) VENV_PATH="$2"; shift 2 ;;
+    --python-module) PYTHON_MODULE="$2"; shift 2 ;;
     --disable-gpu) DISABLE_GPU="true"; shift ;;
     --skip-save-embeddings) SKIP_SAVE_EMBEDDINGS="true"; shift ;;
     --install-perch-deps) INSTALL_PERCH_DEPS="true"; shift ;;
@@ -247,9 +250,10 @@ echo "Using VENV_PATH: $VENV_PATH"
 echo "Using EXP_DIR: $EXP_DIR"
 echo "Using LOG_DIR: $LOG_DIR"
 echo "Local test mode: $LOCAL_TEST_MODE"
+echo "Python module: ${PYTHON_MODULE:-<none>}"
 
-if [[ "$LOCAL_TEST_MODE" != "true" ]]; then
-  module load python/3.10
+if [[ "$LOCAL_TEST_MODE" != "true" && -n "$PYTHON_MODULE" ]]; then
+  module load "$PYTHON_MODULE"
 fi
 if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
   echo "Error: venv not found at $VENV_PATH/bin/activate"

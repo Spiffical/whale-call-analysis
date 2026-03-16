@@ -39,8 +39,9 @@ Notes:
 ### Nibi / DRAC install
 
 The Alliance wheelhouse currently tops out at `tensorflow 2.19.1`, while the
-published `perch-hoplite[tf]` extra asks for a newer TensorFlow. In practice,
-the clean cluster install path is:
+published `perch-hoplite[tf]` extra asks for a newer TensorFlow. The repo does
+not need the optional `pandas[gcp]` dependency chain that `perch-hoplite`
+normally pulls in, so the clean cluster install path is:
 
 ```bash
 source .venv/bin/activate
@@ -52,7 +53,10 @@ What that helper does:
   with the cluster glibc
 - installs `tensorflow 2.19.x` plus `tensorflow-hub` from the Alliance
   wheelhouse
-- installs the repo's Perch requirements and verifies imports
+- installs the Perch runtime dependencies needed by this repo
+- installs `perch-hoplite` without the optional `pandas[gcp]` dependency chain
+  that pulls in the Alliance dummy `pyarrow` wheel
+- verifies `perch_hoplite.zoo.model_configs` imports successfully
 
 Run that once on the login node for your training venv. On Nibi, prefer this
 over `--install-perch-deps` inside the SLURM job.

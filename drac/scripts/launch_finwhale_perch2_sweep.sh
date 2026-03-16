@@ -53,6 +53,7 @@ RUN_TAG_PREFIX="perch2"
 NOTE_PREFIX=""
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
+PYTHON_MODULE=""
 LOCAL_TEST_MODE="false"
 DRY_RUN="false"
 
@@ -96,6 +97,7 @@ Optional:
   --note-prefix TEXT
   --project-path PATH
   --venv-path PATH
+  --python-module NAME
   --local-test-mode                Run submit script directly instead of sbatch
   --dry-run
   -h, --help
@@ -155,6 +157,7 @@ while [[ $# -gt 0 ]]; do
     --note-prefix) NOTE_PREFIX="$2"; shift 2 ;;
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --venv-path) VENV_PATH="$2"; shift 2 ;;
+    --python-module) PYTHON_MODULE="$2"; shift 2 ;;
     --local-test-mode) LOCAL_TEST_MODE="true"; shift ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -264,6 +267,9 @@ for seed in "${SEED_LIST[@]}"; do
           --project-path "$PROJECT_PATH"
           --venv-path "$VENV_PATH"
         )
+        if [[ -n "$PYTHON_MODULE" ]]; then
+          cmd+=( --python-module "$PYTHON_MODULE" )
+        fi
         if [[ -n "$CONTEXT_DATASET_TAR" ]]; then
           cmd+=( --context-dataset-tar "$CONTEXT_DATASET_TAR" )
         else
