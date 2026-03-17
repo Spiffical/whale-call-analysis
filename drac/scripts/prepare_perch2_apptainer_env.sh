@@ -97,6 +97,8 @@ echo "Installing Perch v2 dependencies inside container-backed virtualenv..."
     'etils[epath]>=1.5,<2' \
     'imageio>=2.5,<3' \
     'ipywidgets>=8.1,<9' \
+    'librosa>=0.11,<0.12' \
+    'matplotlib>=3.6.1,<4' \
     'ml-collections>=0.1.1,<0.2' \
     'notebook>=7.4,<8' \
     'kagglehub>=0.3.13' \
