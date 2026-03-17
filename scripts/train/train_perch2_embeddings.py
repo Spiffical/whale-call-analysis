@@ -637,7 +637,8 @@ def extract_perch_embeddings(
         ) from exc
 
     tf_version = str(getattr(tf, "__version__", "0")).split("+", 1)[0]
-    if Version(tf_version) < Version("2.20.0"):
+    requires_tf220 = perch_model_name in {"perch_v2", "perch_v2_gpu", "perch_v2_cpu"}
+    if requires_tf220 and Version(tf_version) < Version("2.20.0"):
         raise SystemExit(
             "Perch v2 runtime requires TensorFlow >= 2.20.0. "
             f"Found TensorFlow {getattr(tf, '__version__', 'unknown')}. "
@@ -882,7 +883,7 @@ def parse_args() -> argparse.Namespace:
         "--perch-model",
         type=str,
         default="perch_v2_cpu",
-        choices=["perch_v2", "perch_v2_gpu", "perch_v2_cpu"],
+        choices=["perch_v2", "perch_v2_gpu", "perch_v2_cpu", "perch_8"],
         help="Perch model preset from perch_hoplite",
     )
     ap.add_argument("--disable-gpu", action="store_true", help="Force TensorFlow CPU mode")

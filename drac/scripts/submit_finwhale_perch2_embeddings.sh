@@ -33,6 +33,9 @@ VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 DEFAULT_EXP_DIR="${SCRATCH:-/scratch/$USER}/whale-call-analysis/perch2_training_runs"
 EXP_DIR="${EXP_DIR:-$DEFAULT_EXP_DIR}"
 PYTHON_MODULE=""
+CONTAINER_IMAGE=""
+CONTAINER_VENV_PATH=""
+APPTAINER_MODULE=""
 
 CONTEXT_DATASET_TAR=""
 CONTEXT_DATASET_DIR=""
@@ -88,7 +91,7 @@ Optional:
   --wandb-project NAME              (default: finwhale_perch2)
   --wandb-group NAME                (default: finwhale_perch2)
   --wandb-entity NAME
-  --perch-model NAME                perch_v2 | perch_v2_gpu | perch_v2_cpu (default: perch_v2_gpu)
+  --perch-model NAME                perch_v2 | perch_v2_gpu | perch_v2_cpu | perch_8 (default: perch_v2_gpu)
   --batch-size N                    (default: 16)
   --context-seconds SEC             (default: 40)
   --train-clip-seconds SEC          (default: 10)
@@ -108,6 +111,9 @@ Optional:
   --project-path PATH               (default: detected repo root)
   --venv-path PATH                  (default: <repo>/.venv)
   --python-module NAME              Optional module to load before venv activation
+  --container-image PATH            Run training inside apptainer image at PATH
+  --container-venv-path PATH        Python virtualenv path to activate inside container
+  --apptainer-module NAME           Module to load before using apptainer
   --disable-gpu                     Force CPU mode for TensorFlow
   --skip-save-embeddings            Do not save embeddings.npz
   --install-perch-deps              pip install -r requirements-perch.txt in job venv
@@ -181,6 +187,9 @@ while [[ $# -gt 0 ]]; do
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --venv-path) VENV_PATH="$2"; shift 2 ;;
     --python-module) PYTHON_MODULE="$2"; shift 2 ;;
+    --container-image) CONTAINER_IMAGE="$2"; shift 2 ;;
+    --container-venv-path) CONTAINER_VENV_PATH="$2"; shift 2 ;;
+    --apptainer-module) APPTAINER_MODULE="$2"; shift 2 ;;
     --disable-gpu) DISABLE_GPU="true"; shift ;;
     --skip-save-embeddings) SKIP_SAVE_EMBEDDINGS="true"; shift ;;
     --install-perch-deps) INSTALL_PERCH_DEPS="true"; shift ;;
@@ -251,15 +260,35 @@ echo "Using EXP_DIR: $EXP_DIR"
 echo "Using LOG_DIR: $LOG_DIR"
 echo "Local test mode: $LOCAL_TEST_MODE"
 echo "Python module: ${PYTHON_MODULE:-<none>}"
+echo "Container image: ${CONTAINER_IMAGE:-<none>}"
+echo "Container venv: ${CONTAINER_VENV_PATH:-<none>}"
 
 if [[ "$LOCAL_TEST_MODE" != "true" && -n "$PYTHON_MODULE" ]]; then
   module load "$PYTHON_MODULE"
 fi
-if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
-  echo "Error: venv not found at $VENV_PATH/bin/activate"
-  exit 2
+if [[ -n "$CONTAINER_IMAGE" ]]; then
+  if [[ -z "$CONTAINER_VENV_PATH" ]]; then
+    echo "Error: --container-image requires --container-venv-path"
+    exit 2
+  fi
+  if [[ ! -f "$CONTAINER_IMAGE" ]]; then
+    echo "Error: container image not found: $CONTAINER_IMAGE"
+    exit 2
+  fi
+  if [[ "$LOCAL_TEST_MODE" != "true" && -n "$APPTAINER_MODULE" ]]; then
+    module load "$APPTAINER_MODULE"
+  fi
+  if ! command -v apptainer >/dev/null 2>&1; then
+    echo "Error: apptainer not found on PATH. Load an apptainer module or pass --apptainer-module."
+    exit 2
+  fi
+else
+  if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
+    echo "Error: venv not found at $VENV_PATH/bin/activate"
+    exit 2
+  fi
+  source "$VENV_PATH/bin/activate"
 fi
-source "$VENV_PATH/bin/activate"
 
 if [[ "$USE_WANDB" == "true" && -f "$PROJECT_PATH/.env" ]]; then
   set -a
@@ -312,6 +341,12 @@ echo "Copying project to node-local storage..."
 rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/whale_project/"
 
 if [[ "$INSTALL_PERCH_DEPS" == "true" ]]; then
+  if [[ -n "$CONTAINER_IMAGE" ]]; then
+    echo "Error: --install-perch-deps is not supported with --container-image."
+    echo "       Prepare the container-backed venv first with:"
+    echo "       bash drac/scripts/prepare_perch2_apptainer_env.sh"
+    exit 1
+  fi
   echo "Installing Perch dependencies in active venv..."
   pip install -r "$SLURM_TMPDIR/whale_project/requirements-perch.txt"
 fi
@@ -456,8 +491,32 @@ echo "  context: $CONTEXT_SECONDS | train-clip: $TRAIN_CLIP_SECONDS | eval-clip:
 echo "  train_pos_augment_copies: $TRAIN_POS_AUGMENT_COPIES | train_neg_augment_copies: $TRAIN_NEG_AUGMENT_COPIES"
 echo "  center_bias_sigma_frac: $CENTER_BIAS_SIGMA_FRAC"
 echo "  output-root: $EXP_PATH"
-echo "Running: ${PYTHON_CMD[*]}"
-"${PYTHON_CMD[@]}"
+if [[ -n "$CONTAINER_IMAGE" ]]; then
+  CONTAINER_BIND_PATHS=("$SLURM_TMPDIR:$SLURM_TMPDIR" "$HOME:$HOME")
+  if [[ -n "${SCRATCH:-}" ]]; then
+    CONTAINER_BIND_PATHS+=("${SCRATCH}:${SCRATCH}")
+  fi
+  if [[ -n "${PROJECT:-}" ]]; then
+    CONTAINER_BIND_PATHS+=("${PROJECT}:${PROJECT}")
+  fi
+  CONTAINER_BIND_ARG="$(IFS=,; echo "${CONTAINER_BIND_PATHS[*]}")"
+  CONTAINER_INNER_CMD="$(printf '%q ' "${PYTHON_CMD[@]}")"
+  APPTAINER_CMD=(apptainer exec)
+  if [[ "$DISABLE_GPU" != "true" ]]; then
+    APPTAINER_CMD+=(--nv)
+  fi
+  APPTAINER_CMD+=(
+    --bind "$CONTAINER_BIND_ARG"
+    "$CONTAINER_IMAGE"
+    bash -lc
+    "set -euo pipefail; source \"$CONTAINER_VENV_PATH/bin/activate\"; export PYTHONPATH=\"\${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src\"; cd \"$SLURM_TMPDIR/whale_project\"; $CONTAINER_INNER_CMD"
+  )
+  echo "Running in apptainer: ${APPTAINER_CMD[*]}"
+  "${APPTAINER_CMD[@]}"
+else
+  echo "Running: ${PYTHON_CMD[*]}"
+  "${PYTHON_CMD[@]}"
+fi
 
 if [[ "$LOCAL_TEST_MODE" == "true" ]]; then
   echo "Local test mode completed. Temporary directory: $SLURM_TMPDIR"

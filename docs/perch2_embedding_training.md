@@ -63,6 +63,59 @@ What that helper does:
   that pulls in the Alliance dummy `pyarrow` wheel
 - verifies `perch_hoplite.zoo.model_configs` imports successfully
 
+If you must stay on the Alliance-provided `tensorflow 2.19.1` stack, Perch v2
+will fail at runtime with:
+
+```text
+XlaCallModuleOp with version 10 is not supported by this build. Must be <= 9
+```
+
+In that case, the practical fallback is to train with `--perch-model perch_8`
+instead of a Perch v2 preset. `perch_8` is an older Perch release with a
+different embedding size, so do not compare those embeddings directly to
+Perch v2 runs.
+
+### Perch v2 on Nibi via Apptainer
+
+For actual Perch v2 runs on Nibi, prefer a containerized TensorFlow `2.20.0`
+runtime instead of the Alliance wheelhouse TensorFlow build.
+
+1. Prepare the container-backed runtime once on the login node:
+
+```bash
+git pull
+bash drac/scripts/prepare_perch2_apptainer_env.sh
+```
+
+That script pulls `docker://tensorflow/tensorflow:2.20.0-gpu`, creates a
+virtualenv inside the container runtime under `$SCRATCH`, installs Perch
+dependencies there, and runs a small `perch_v2_cpu` smoke test.
+
+2. Submit the job using the prepared image + venv:
+
+```bash
+sbatch drac/scripts/submit_finwhale_perch2_embeddings.sh \
+  --context-dataset-tar /project/.../perch2_context_dataset_YYYYMMDDTHHMMSSZ.tar.zst \
+  --container-image "$SCRATCH/whale-call-analysis/containers/tensorflow_2.20.0_gpu.sif" \
+  --container-venv-path "$SCRATCH/whale-call-analysis/venvs/perch2_tf220" \
+  --apptainer-module apptainer \
+  --perch-model perch_v2_gpu \
+  --batch-size 16 \
+  --context-seconds 40 \
+  --train-clip-seconds 10 \
+  --eval-clip-seconds 10 \
+  --train-pos-augment-copies 1 \
+  --train-neg-augment-copies 1 \
+  --center-bias-sigma-frac 0.25 \
+  --min-gap-seconds 120 \
+  --seed 42 \
+  --use-wandb \
+  --wandb-project finwhale_perch2
+```
+
+The submit script still extracts the dataset archive into `$SLURM_TMPDIR` and
+writes run artifacts under `$SCRATCH`; only the Python runtime changes.
+
 Run that once on the login node for your training venv. On Nibi, prefer this
 over `--install-perch-deps` inside the SLURM job.
 

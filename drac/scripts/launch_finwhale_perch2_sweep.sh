@@ -54,6 +54,9 @@ NOTE_PREFIX=""
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
 PYTHON_MODULE=""
+CONTAINER_IMAGE=""
+CONTAINER_VENV_PATH=""
+APPTAINER_MODULE=""
 LOCAL_TEST_MODE="false"
 DRY_RUN="false"
 
@@ -74,7 +77,7 @@ Optional:
   --wandb-project NAME             (default: finwhale_perch2)
   --wandb-group-prefix NAME        (default: finwhale-perch2-sweep)
   --wandb-entity NAME
-  --perch-model NAME               (default: perch_v2_gpu)
+  --perch-model NAME               perch_v2 | perch_v2_gpu | perch_v2_cpu | perch_8 (default: perch_v2_gpu)
   --batch-size N                   (default: 16)
   --context-seconds SEC            (default: 40)
   --train-clip-seconds SEC         (default: 10)
@@ -98,6 +101,9 @@ Optional:
   --project-path PATH
   --venv-path PATH
   --python-module NAME
+  --container-image PATH
+  --container-venv-path PATH
+  --apptainer-module NAME
   --local-test-mode                Run submit script directly instead of sbatch
   --dry-run
   -h, --help
@@ -158,6 +164,9 @@ while [[ $# -gt 0 ]]; do
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --venv-path) VENV_PATH="$2"; shift 2 ;;
     --python-module) PYTHON_MODULE="$2"; shift 2 ;;
+    --container-image) CONTAINER_IMAGE="$2"; shift 2 ;;
+    --container-venv-path) CONTAINER_VENV_PATH="$2"; shift 2 ;;
+    --apptainer-module) APPTAINER_MODULE="$2"; shift 2 ;;
     --local-test-mode) LOCAL_TEST_MODE="true"; shift ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -269,6 +278,15 @@ for seed in "${SEED_LIST[@]}"; do
         )
         if [[ -n "$PYTHON_MODULE" ]]; then
           cmd+=( --python-module "$PYTHON_MODULE" )
+        fi
+        if [[ -n "$CONTAINER_IMAGE" ]]; then
+          cmd+=( --container-image "$CONTAINER_IMAGE" )
+        fi
+        if [[ -n "$CONTAINER_VENV_PATH" ]]; then
+          cmd+=( --container-venv-path "$CONTAINER_VENV_PATH" )
+        fi
+        if [[ -n "$APPTAINER_MODULE" ]]; then
+          cmd+=( --apptainer-module "$APPTAINER_MODULE" )
         fi
         if [[ -n "$CONTEXT_DATASET_TAR" ]]; then
           cmd+=( --context-dataset-tar "$CONTEXT_DATASET_TAR" )
