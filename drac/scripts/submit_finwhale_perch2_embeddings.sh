@@ -266,6 +266,7 @@ echo "Container venv: ${CONTAINER_VENV_PATH:-<none>}"
 if [[ "$LOCAL_TEST_MODE" != "true" && -n "$PYTHON_MODULE" ]]; then
   module load "$PYTHON_MODULE"
 fi
+APPTAINER_ENV_SANITIZE=(env -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE -u PIP_CERT)
 if [[ -n "$CONTAINER_IMAGE" ]]; then
   if [[ -z "$CONTAINER_VENV_PATH" ]]; then
     echo "Error: --container-image requires --container-venv-path"
@@ -512,7 +513,7 @@ if [[ -n "$CONTAINER_IMAGE" ]]; then
     "set -euo pipefail; source \"$CONTAINER_VENV_PATH/bin/activate\"; export PYTHONPATH=\"\${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src\"; cd \"$SLURM_TMPDIR/whale_project\"; $CONTAINER_INNER_CMD"
   )
   echo "Running in apptainer: ${APPTAINER_CMD[*]}"
-  "${APPTAINER_CMD[@]}"
+  "${APPTAINER_ENV_SANITIZE[@]}" "${APPTAINER_CMD[@]}"
 else
   echo "Running: ${PYTHON_CMD[*]}"
   "${PYTHON_CMD[@]}"

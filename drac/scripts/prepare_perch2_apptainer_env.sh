@@ -46,12 +46,14 @@ if ! command -v apptainer >/dev/null 2>&1; then
   exit 1
 fi
 
+APPTAINER_ENV_SANITIZE=(env -u SSL_CERT_FILE -u REQUESTS_CA_BUNDLE -u CURL_CA_BUNDLE -u PIP_CERT)
+
 mkdir -p "$(dirname "$IMAGE_PATH")"
 mkdir -p "$(dirname "$VENV_PATH")"
 
 if [[ ! -f "$IMAGE_PATH" ]]; then
   echo "Pulling container image: $IMAGE_URI"
-  apptainer pull "$IMAGE_PATH" "$IMAGE_URI"
+  "${APPTAINER_ENV_SANITIZE[@]}" apptainer pull "$IMAGE_PATH" "$IMAGE_URI"
 else
   echo "Using existing image: $IMAGE_PATH"
 fi
@@ -74,20 +76,22 @@ BIND_ARG="$(IFS=,; echo "${BIND_PATHS[*]}")"
 
 if [[ ! -x "$VENV_PATH/bin/python" ]]; then
   echo "Creating container-backed virtualenv: $VENV_PATH"
-  apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" python -m venv "$VENV_PATH"
+  "${APPTAINER_ENV_SANITIZE[@]}" apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" python -m venv "$VENV_PATH"
 else
   echo "Using existing container-backed virtualenv: $VENV_PATH"
 fi
 
 echo "Installing Perch v2 dependencies inside container-backed virtualenv..."
-apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" bash -lc "
+"${APPTAINER_ENV_SANITIZE[@]}" apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" bash -lc "
   set -euo pipefail
+  export PIP_CONFIG_FILE=/dev/null
+  export PIP_DISABLE_PIP_VERSION_CHECK=1
   source \"$VENV_PATH/bin/activate\"
-  python -m pip install --upgrade pip wheel cmake ninja scikit-build-core pybind11
-  python -m pip install --upgrade --force-reinstall --no-deps --index-url https://pypi.org/simple 'setuptools<81'
-  python -m pip install --upgrade --force-reinstall --no-deps --no-binary simsimd 'simsimd>=6.5,<7'
-  python -m pip install --no-build-isolation --no-deps \"$USearch_SRC\"
-  python -m pip install \
+  python -m pip install --isolated --upgrade pip wheel cmake ninja scikit-build-core pybind11
+  python -m pip install --isolated --upgrade --force-reinstall --no-deps --index-url https://pypi.org/simple 'setuptools<81'
+  python -m pip install --isolated --upgrade --force-reinstall --no-deps --no-binary simsimd 'simsimd>=6.5,<7'
+  python -m pip install --isolated --no-build-isolation --no-deps \"$USearch_SRC\"
+  python -m pip install --isolated \
     'tensorflow-hub>=0.16,<1.0' \
     'absl-py>=1.4,<2' \
     'etils[epath]>=1.5,<2' \
@@ -98,11 +102,11 @@ apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" bash -lc "
     'kagglehub>=0.3.13' \
     'wandb>=0.15.0' \
     'packaging>=24,<26'
-  python -m pip install --no-deps 'perch-hoplite>=1.0.0'
+  python -m pip install --isolated --no-deps 'perch-hoplite>=1.0.0'
 "
 
 echo "Running a Perch v2 import smoke test inside the container..."
-apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" bash -lc "
+"${APPTAINER_ENV_SANITIZE[@]}" apptainer exec --bind "$BIND_ARG" "$IMAGE_PATH" bash -lc "
   set -euo pipefail
   source \"$VENV_PATH/bin/activate\"
   python - <<'PY'
