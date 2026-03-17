@@ -38,10 +38,10 @@ Notes:
 
 ### Nibi / DRAC install
 
-The Alliance wheelhouse currently tops out at `tensorflow 2.19.1`, while the
-published `perch-hoplite[tf]` extra asks for a newer TensorFlow. The repo does
-not need the optional `pandas[gcp]` dependency chain that `perch-hoplite`
-normally pulls in, so the clean cluster install path is:
+The Alliance wheelhouse currently tops out at `tensorflow 2.19.1`, but Perch
+v2 runtime needs `tensorflow >= 2.20.0`. The repo also does not need the
+optional `pandas[gcp]` dependency chain that `perch-hoplite` normally pulls
+in, so the clean cluster install path is:
 
 ```bash
 source .venv/bin/activate
@@ -49,10 +49,15 @@ bash drac/scripts/install_perch_nibi.sh
 ```
 
 What that helper does:
+- replaces the Alliance `setuptools` build with upstream `setuptools<81` so
+  `pkg_resources` is available for `tensorflow_hub`
+- installs `simsimd` from source so `usearch` can link against a compatible
+  shared library
 - builds `usearch` from source because the published wheel is not compatible
   with the cluster glibc
-- installs `tensorflow 2.19.x` plus `tensorflow-hub` from the Alliance
-  wheelhouse
+- installs upstream `tensorflow==2.20.0` with isolated pip so the Perch v2
+  XLA runtime ops are available
+- installs `tensorflow-hub` and the remaining runtime dependencies
 - installs the Perch runtime dependencies needed by this repo
 - installs `perch-hoplite` without the optional `pandas[gcp]` dependency chain
   that pulls in the Alliance dummy `pyarrow` wheel

@@ -36,6 +36,7 @@ import librosa
 import numpy as np
 import pandas as pd
 import soundfile as sf
+from packaging.version import Version
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -625,6 +626,24 @@ def extract_perch_embeddings(
             "  bash drac/scripts/install_perch_nibi.sh\n"
             f"Import error: {exc}"
         ) from exc
+
+    try:
+        import tensorflow as tf
+    except Exception as exc:
+        raise SystemExit(
+            "TensorFlow could not be imported after perch_hoplite loaded. "
+            "Ensure the active environment has a working TensorFlow runtime.\n"
+            f"Import error: {exc}"
+        ) from exc
+
+    tf_version = str(getattr(tf, "__version__", "0")).split("+", 1)[0]
+    if Version(tf_version) < Version("2.20.0"):
+        raise SystemExit(
+            "Perch v2 runtime requires TensorFlow >= 2.20.0. "
+            f"Found TensorFlow {getattr(tf, '__version__', 'unknown')}. "
+            "With older builds, Perch fails at runtime with "
+            "'XlaCallModuleOp with version 10 is not supported'."
+        )
 
     print(f"Loading Perch model preset: {perch_model_name}")
     selected_model_name = perch_model_name

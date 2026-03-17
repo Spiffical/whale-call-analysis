@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 PIP_BIN="${PIP_BIN:-pip}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+TF_VERSION="${TF_VERSION:-2.20.0}"
 
 if ! command -v "$PIP_BIN" >/dev/null 2>&1; then
   echo "Error: pip was not found on PATH. Activate the target venv first."
@@ -23,24 +24,32 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 echo "Installing build prerequisites into the active environment..."
-"$PIP_BIN" install --upgrade pip setuptools wheel cmake ninja scikit-build-core pybind11
+"$PIP_BIN" install --upgrade pip wheel cmake ninja scikit-build-core pybind11
+
+echo "Installing upstream setuptools so pkg_resources is available for tensorflow_hub..."
+"$PIP_BIN" install --upgrade --force-reinstall --no-deps --index-url https://pypi.org/simple "setuptools<81"
 
 if ! "$PYTHON_BIN" -c "import pkg_resources" >/dev/null 2>&1; then
   echo "Error: setuptools did not provide pkg_resources in the active environment."
-  echo "Try: pip install --upgrade --force-reinstall setuptools"
+  echo "Try: pip install --upgrade --force-reinstall --no-deps --index-url https://pypi.org/simple 'setuptools<81'"
   exit 1
 fi
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+echo "Installing SimSIMD from source so USearch links against a compatible build..."
+"$PIP_BIN" install --upgrade --force-reinstall --no-deps --no-binary simsimd "simsimd>=6.5,<7"
+
 echo "Building usearch from source (cluster glibc is too old for the published wheel)..."
 git clone --depth 1 --recursive https://github.com/unum-cloud/USearch.git "$TMP_ROOT/USearch"
 "$PIP_BIN" install --no-build-isolation "$TMP_ROOT/USearch"
 
-echo "Installing TensorFlow and runtime dependencies needed for Perch inference..."
+echo "Installing TensorFlow ${TF_VERSION} from upstream PyPI so Perch v2 runtime ops are available..."
+"$PIP_BIN" --isolated install --upgrade --force-reinstall --no-deps "tensorflow==${TF_VERSION}"
+
+echo "Installing runtime dependencies needed for Perch inference..."
 "$PIP_BIN" install \
-  "tensorflow>=2.19,<2.20" \
   "tensorflow-hub>=0.16,<1.0" \
   "absl-py>=1.4,<2" \
   "etils[epath]>=1.5,<2" \
@@ -65,6 +74,11 @@ for name in modules:
     versions[name] = getattr(module, "__version__", "unknown")
 
 from perch_hoplite.zoo import model_configs
+from packaging.version import Version
+
+tf_version = str(versions["tensorflow"]).split("+", 1)[0]
+if Version(tf_version) < Version("2.20.0"):
+    raise SystemExit(f"TensorFlow {versions['tensorflow']} is too old for Perch v2 runtime")
 
 print("Perch dependencies ready:")
 for name in modules:
