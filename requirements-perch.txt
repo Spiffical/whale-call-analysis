@@ -2,5 +2,5 @@
 tensorflow>=2.19,<2.20
 tensorflow-hub>=0.16,<1.0
 perch-hoplite>=1.0.0
-kagglehub>=0.3.13
+kagglehub>=0.3.13,<0.4
 wandb>=0.15.0

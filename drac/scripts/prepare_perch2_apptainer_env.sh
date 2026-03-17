@@ -101,7 +101,7 @@ echo "Installing Perch v2 dependencies inside container-backed virtualenv..."
     'matplotlib>=3.6.1,<4' \
     'ml-collections>=0.1.1,<0.2' \
     'notebook>=7.4,<8' \
-    'kagglehub>=0.3.13' \
+    'kagglehub>=0.3.13,<0.4' \
     'wandb>=0.15.0' \
     'packaging>=24,<26'
   python -m pip install --isolated --no-deps 'perch-hoplite>=1.0.0'

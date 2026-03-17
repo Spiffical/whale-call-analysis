@@ -57,7 +57,7 @@ echo "Installing runtime dependencies needed for Perch inference..."
   "ipywidgets>=8.1,<9" \
   "ml-collections>=0.1.1,<0.2" \
   "notebook>=7.4,<8" \
-  "kagglehub>=0.3.13" \
+  "kagglehub>=0.3.13,<0.4" \
   "wandb>=0.15.0"
 
 echo "Installing perch-hoplite without optional pandas[gcp] dependency extras..."
