@@ -24,6 +24,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from dotenv import load_dotenv
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -220,6 +222,9 @@ def _create_archive(bundle_dir: Path, archive_path: Path) -> None:
 
 
 def main() -> None:
+    load_dotenv(REPO_ROOT / ".env")
+    load_dotenv()
+
     ap = argparse.ArgumentParser(description="Prepare the VM-side Part 2 bundle for Nibi")
     ap.add_argument(
         "--workbook",
