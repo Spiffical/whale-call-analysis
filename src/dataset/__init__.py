@@ -1,9 +1,21 @@
 # Dataset creation utilities for whale call analysis
 # Used by scripts/data/train/create_training_dataset.py
 
-from .call_catalog import load_whale_data, sample_calls
-from .negative_sampler import sample_negative_windows_for_file
-from .reporting import print_status, print_header, create_analysis_report
+try:
+    from .call_catalog import load_whale_data, sample_calls  # noqa: F401
+except Exception:
+    load_whale_data = None
+    sample_calls = None
+
+from .negative_sampler import sample_negative_windows_for_file  # noqa: F401
+from .part2_annotations import build_part2_manifests, write_part2_manifests  # noqa: F401
+
+try:
+    from .reporting import print_status, print_header, create_analysis_report  # noqa: F401
+except Exception:
+    print_status = None
+    print_header = None
+    create_analysis_report = None
 
 # Optional: ONC-backed audio helpers are not required for prebuilt-context
 # workflows and should not block imports in cluster training environments.

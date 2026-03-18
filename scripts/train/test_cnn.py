@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import csv
+import json
 import os
 import sys
 from pathlib import Path
@@ -100,6 +102,66 @@ def save_png(x: torch.Tensor, out_path: Path, overlay_text: str = "", scale: int
             font = None
         draw.text((5, 5), overlay_text, fill=(255, 255, 255), font=font)
     img.save(str(out_path))
+
+
+def save_confusion_matrix_png(out_path: Path, tp: int, fp: int, fn: int, tn: int, title: str) -> None:
+    fig, ax = plt.subplots(figsize=(4, 4))
+    matrix = np.array([[tn, fp], [fn, tp]], dtype=np.int32)
+    ax.imshow(matrix, cmap='Blues')
+    labels = [['TN', 'FP'], ['FN', 'TP']]
+    for i in range(2):
+        for j in range(2):
+            ax.text(j, i, f"{labels[i][j]}\n{matrix[i, j]}", ha='center', va='center')
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(['Pred -', 'Pred +'])
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(['Actual -', 'Actual +'])
+    ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def write_predictions_csv(
+    out_path: Path,
+    paths: List[str],
+    y_true: np.ndarray,
+    probs_pos: np.ndarray,
+    metas: List[dict],
+) -> None:
+    fieldnames = [
+        'path',
+        'truth',
+        'pred',
+        'prob_pos',
+        'outcome',
+        'dist_from_center_frac',
+        'crop_start',
+        'crop_size',
+        'full_T',
+    ]
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for idx, path_str in enumerate(paths):
+            prob = float(probs_pos[idx])
+            truth = int(y_true[idx])
+            pred = int(prob >= 0.5)
+            meta = metas[idx] if idx < len(metas) and isinstance(metas[idx], dict) else {}
+            outcome = 'tp' if (pred == 1 and truth == 1) else \
+                      'tn' if (pred == 0 and truth == 0) else \
+                      'fp' if (pred == 1 and truth == 0) else 'fn'
+            writer.writerow({
+                'path': path_str,
+                'truth': truth,
+                'pred': pred,
+                'prob_pos': f"{prob:.6f}",
+                'outcome': outcome,
+                'dist_from_center_frac': meta.get('dist_from_center_frac', ''),
+                'crop_start': meta.get('crop_start', ''),
+                'crop_size': meta.get('crop_size', ''),
+                'full_T': meta.get('full_T', ''),
+            })
 
 
 def main():
@@ -395,10 +457,34 @@ def main():
         with open(model_dir / 'report.txt', 'w') as f:
             for k, v in metrics.items():
                 f.write(f"{k}: {v}\n")
+        with open(model_dir / 'metrics.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
 
         # Collect for combined plots
         probs_pos = torch.softmax(logits_cat, dim=1)[:, 1].numpy()
         y_true = labels_cat.numpy().astype(np.int32)
+        write_predictions_csv(model_dir / 'predictions.csv', all_paths, y_true, probs_pos, all_meta)
+        with open(model_dir / 'confusion_matrix.csv', 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['tn', 'fp', 'fn', 'tp', 'precision', 'recall', 'f1', 'accuracy'])
+            writer.writeheader()
+            writer.writerow({
+                'tn': int(metrics['tn']),
+                'fp': int(metrics['fp']),
+                'fn': int(metrics['fn']),
+                'tp': int(metrics['tp']),
+                'precision': f"{float(metrics['precision']):.6f}",
+                'recall': f"{float(metrics['recall']):.6f}",
+                'f1': f"{float(metrics['f1']):.6f}",
+                'accuracy': f"{float(metrics['acc']):.6f}",
+            })
+        save_confusion_matrix_png(
+            model_dir / 'confusion_matrix.png',
+            tp=int(metrics['tp']),
+            fp=int(metrics['fp']),
+            fn=int(metrics['fn']),
+            tn=int(metrics['tn']),
+            title=f'Confusion Matrix: {label}',
+        )
         all_results[label] = {
             'probs': probs_pos,
             'y_true': y_true,
