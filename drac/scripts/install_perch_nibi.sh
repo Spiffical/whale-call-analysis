@@ -55,8 +55,11 @@ echo "Installing runtime dependencies needed for Perch inference..."
   "etils[epath]>=1.5,<2" \
   "imageio>=2.5,<3" \
   "ipywidgets>=8.1,<9" \
+  "librosa>=0.11,<0.12" \
+  "matplotlib>=3.6.1,<4" \
   "ml-collections>=0.1.1,<0.2" \
   "notebook>=7.4,<8" \
+  "pandas>=2.1.1,<3" \
   "kagglehub>=0.3.13,<0.4" \
   "wandb>=0.15.0"
 
@@ -66,6 +69,9 @@ echo "Installing perch-hoplite without optional pandas[gcp] dependency extras...
 echo "Verifying imports..."
 "$PYTHON_BIN" - <<'PY'
 import importlib
+import joblib
+import pandas as pd
+import soundfile as sf
 
 modules = ["tensorflow", "usearch", "perch_hoplite", "wandb"]
 versions = {}
@@ -75,6 +81,7 @@ for name in modules:
 
 from perch_hoplite.zoo import model_configs
 from packaging.version import Version
+from sklearn.linear_model import LogisticRegression
 
 tf_version = str(versions["tensorflow"]).split("+", 1)[0]
 if Version(tf_version) < Version("2.20.0"):
@@ -83,5 +90,6 @@ if Version(tf_version) < Version("2.20.0"):
 print("Perch dependencies ready:")
 for name in modules:
     print(f"  {name}: {versions[name]}")
+print(f"  pandas: {pd.__version__}")
 print("  perch_hoplite.zoo.model_configs: ok")
 PY

@@ -101,6 +101,7 @@ echo "Installing Perch v2 dependencies inside container-backed virtualenv..."
     'matplotlib>=3.6.1,<4' \
     'ml-collections>=0.1.1,<0.2' \
     'notebook>=7.4,<8' \
+    'pandas>=2.1.1,<3' \
     'kagglehub>=0.3.13,<0.4' \
     'wandb>=0.15.0' \
     'packaging>=24,<26'
@@ -112,14 +113,20 @@ echo "Running a Perch v2 import smoke test inside the container..."
   set -euo pipefail
   source \"$VENV_PATH/bin/activate\"
   python - <<'PY'
+import joblib
 import numpy as np
+import pandas as pd
+import soundfile as sf
 import tensorflow as tf
+from packaging.version import Version
+from sklearn.linear_model import LogisticRegression
 from perch_hoplite.zoo import model_configs
 
 model = model_configs.load_model_by_name('perch_v2_cpu')
 audio = np.zeros((1, int(round(model.sample_rate * model.window_size_s))), dtype=np.float32)
 model.batch_embed(audio)
-print('Perch v2 smoke ok', tf.__version__, model.sample_rate, model.window_size_s)
+assert Version(tf.__version__) >= Version('2.20.0')
+print('Perch v2 + trainer deps smoke ok', tf.__version__, model.sample_rate, model.window_size_s, pd.__version__)
 PY
 "
 
