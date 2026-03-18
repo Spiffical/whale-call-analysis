@@ -20,11 +20,15 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv as _dotenv_load
+except Exception:
+    _dotenv_load = None
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -38,16 +42,101 @@ from src.dataset.part2_annotations import (
 )
 
 
+_TQDM = None
+try:
+    from tqdm import tqdm as _TQDM
+except Exception:
+    _TQDM = None
+
+
+def _log(message: str, status: str = "INFO") -> None:
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{stamp}] [{status}] {message}", flush=True)
+
+
+def _print_header(title: str) -> None:
+    line = "=" * 88
+    _log(line, "PHASE")
+    _log(title, "PHASE")
+    _log(line, "PHASE")
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    minutes, sec = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}h {minutes:02d}m {sec:02d}s"
+    if minutes:
+        return f"{minutes:d}m {sec:02d}s"
+    return f"{seconds:.1f}s"
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    if _dotenv_load is not None:
+        _dotenv_load(path)
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _progress_iter(
+    items: Sequence[str],
+    *,
+    desc: str,
+) -> Iterable[Tuple[int, str]]:
+    total = len(items)
+    if _TQDM is not None:
+        for idx, item in enumerate(_TQDM(items, desc=desc, unit="clip"), start=1):
+            yield idx, item
+        return
+
+    started = time.monotonic()
+    last_report = 0
+    for idx, item in enumerate(items, start=1):
+        if idx == 1 or idx == total or idx - last_report >= max(1, min(100, total // 20 or 1)):
+            pct = (100.0 * idx / total) if total else 100.0
+            _log(f"{desc}: {idx}/{total} ({pct:.1f}%) after {_format_duration(time.monotonic() - started)}", "PROGRESS")
+            last_report = idx
+        yield idx, item
+
+
 def _audio_candidates(audio_root: Path) -> Iterable[Path]:
-    for path in sorted(audio_root.rglob("*")):
-        if path.is_file() and path.suffix.lower() in {".wav", ".flac"}:
-            yield path
+    for dirpath, dirnames, filenames in os.walk(audio_root):
+        dirnames.sort()
+        for filename in sorted(filenames):
+            path = Path(dirpath) / filename
+            if path.suffix.lower() in {".wav", ".flac"}:
+                yield path
 
 
 def _index_audio(audio_root: Path) -> Dict[str, Path]:
+    _log(f"Indexing audio cache under {audio_root} ...", "PROGRESS")
     index: Dict[str, Path] = {}
-    for path in _audio_candidates(audio_root):
+    started = time.monotonic()
+    last_report = 0
+    for scanned, path in enumerate(_audio_candidates(audio_root), start=1):
         index.setdefault(path.name, path)
+        if scanned == 1 or scanned - last_report >= 1000:
+            _log(
+                f"Indexed {scanned:,} audio files so far "
+                f"({len(index):,} unique names) in {_format_duration(time.monotonic() - started)}",
+                "PROGRESS",
+            )
+            last_report = scanned
+    _log(
+        f"Completed audio index: {len(index):,} unique files found in {_format_duration(time.monotonic() - started)}",
+        "SUCCESS",
+    )
     return index
 
 
@@ -55,12 +144,19 @@ def _copy_selected_audio(
     clip_names: Sequence[str],
     audio_root: Path,
     staged_audio_dir: Path,
-) -> Tuple[List[str], List[str]]:
+) -> Tuple[List[str], List[str], int]:
     staged_audio_dir.mkdir(parents=True, exist_ok=True)
     index = _index_audio(audio_root)
     copied: List[str] = []
     missing: List[str] = []
-    for clip_name in sorted(set(clip_names)):
+    reused_existing = 0
+    unique_names = sorted(set(clip_names))
+    _log(
+        f"Staging {len(unique_names):,} requested clips into {staged_audio_dir} "
+        f"from cache {audio_root}",
+        "PROGRESS",
+    )
+    for _, clip_name in _progress_iter(unique_names, desc="Stage audio"):
         source = index.get(clip_name)
         if source is None:
             missing.append(clip_name)
@@ -68,8 +164,15 @@ def _copy_selected_audio(
         target = staged_audio_dir / clip_name
         if not target.exists():
             shutil.copy2(source, target)
+        else:
+            reused_existing += 1
         copied.append(clip_name)
-    return copied, missing
+    _log(
+        f"Audio staging finished: {len(copied):,} available, {len(missing):,} missing, "
+        f"{reused_existing:,} already present at destination",
+        "SUCCESS",
+    )
+    return copied, missing, reused_existing
 
 
 def _download_missing_audio(
@@ -95,20 +198,38 @@ def _download_missing_audio(
 
     downloaded: List[str] = []
     failed: List[str] = []
-    for clip_name in sorted(set(clip_names)):
+    unique_names = sorted(set(clip_names))
+    _log(
+        f"Downloading {len(unique_names):,} missing clips from ONC into {target_dir}",
+        "PROGRESS",
+    )
+    started = time.monotonic()
+    for idx, clip_name in _progress_iter(unique_names, desc="Download audio"):
         target_path = target_dir / clip_name
         if target_path.exists() and target_path.stat().st_size > 0:
             downloaded.append(clip_name)
             continue
         try:
             client.getFile(clip_name)
-        except Exception:
+        except Exception as exc:
+            _log(f"Download failed for {clip_name}: {exc}", "WARNING")
             failed.append(clip_name)
             continue
         if target_path.exists() and target_path.stat().st_size > 0:
             downloaded.append(clip_name)
         else:
             failed.append(clip_name)
+        if idx % 25 == 0:
+            _log(
+                f"Download checkpoint: {len(downloaded):,} ready, {len(failed):,} failed, "
+                f"elapsed {_format_duration(time.monotonic() - started)}",
+                "PROGRESS",
+            )
+    _log(
+        f"Download step finished: {len(downloaded):,} ready, {len(failed):,} failed in "
+        f"{_format_duration(time.monotonic() - started)}",
+        "SUCCESS" if not failed else "WARNING",
+    )
     return downloaded, failed
 
 
@@ -142,7 +263,11 @@ def _run_prepare_trainstyle_windows(
         "--spec-backend",
         str(spec_backend),
     ]
-    subprocess.run(cmd, check=True)
+    _log("Launching train-style MAT generation:", "PROGRESS")
+    _log(" ".join(cmd), "INFO")
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    subprocess.run(cmd, check=True, env=env)
 
 
 def _metadata_rows_from_mats(
@@ -152,7 +277,11 @@ def _metadata_rows_from_mats(
     rows: List[Dict[str, object]] = []
     min_dt = None
     max_dt = None
-    for mat_path in sorted(mat_dir.glob("*.mat")):
+    mat_paths = sorted(mat_dir.glob("*.mat"))
+    if mat_paths:
+        _log(f"Scanning {len(mat_paths):,} MAT files to build metadata", "PROGRESS")
+    for _, mat_path in _progress_iter([str(path) for path in mat_paths], desc="Scan MAT metadata"):
+        mat_path = Path(mat_path)
         parsed = parse_window_mat_stem(mat_path.stem)
         if parsed is None:
             continue
@@ -218,12 +347,13 @@ def _create_archive(bundle_dir: Path, archive_path: Path) -> None:
         str(archive_path),
         "--overwrite",
     ]
+    _log(f"Creating archive at {archive_path}", "PROGRESS")
+    _log(" ".join(cmd), "INFO")
     subprocess.run(cmd, check=True)
 
 
 def main() -> None:
-    load_dotenv(REPO_ROOT / ".env")
-    load_dotenv()
+    _load_env_file(REPO_ROOT / ".env")
 
     ap = argparse.ArgumentParser(description="Prepare the VM-side Part 2 bundle for Nibi")
     ap.add_argument(
@@ -290,6 +420,22 @@ def main() -> None:
     raw_audio_dir = bundle_dir / "raw_audio"
     mat_dir = bundle_dir / "mat_files"
 
+    _print_header("PART 2 VM PREP START")
+    _log(f"Workbook: {workbook}", "INFO")
+    _log(f"Audio cache dir: {audio_dir}", "INFO")
+    _log(f"Dataset doc: {dataset_doc}", "INFO")
+    _log(f"Output bundle: {bundle_dir}", "INFO")
+    _log(f"Adjacent boundary seconds: {float(args.adjacent_boundary_seconds):.1f}", "INFO")
+    _log(f"Include adjacent clips in prep windows: {bool(args.include_adjacent_in_prep)}", "INFO")
+    _log(f"Stage selected audio into bundle: {bool(args.stage_selected_audio)}", "INFO")
+    _log(f"Download missing audio: {bool(args.download_missing_audio)}", "INFO")
+    if args.download_missing_audio:
+        onc_token_present = bool(os.getenv(args.onc_token_env, "").strip())
+        _log(f"{args.onc_token_env} loaded from environment/.env: {onc_token_present}", "INFO")
+
+    _print_header("PHASE 1: BUILD MANIFESTS")
+    manifest_started = time.monotonic()
+    _log("Parsing workbook and normalizing Part 2 manifests. This is usually quick.", "PROGRESS")
     manifests = build_part2_manifests(
         workbook,
         adjacent_boundary_seconds=max(0.0, float(args.adjacent_boundary_seconds)),
@@ -297,6 +443,16 @@ def main() -> None:
         seed=int(args.seed),
     )
     write_part2_manifests(manifests_dir, manifests)
+    summary = manifests["summary"]
+    _log(
+        "Manifest summary: "
+        f"candidate={summary['candidate_clip_count']:,}, "
+        f"adjacent_context={summary['adjacent_context_clip_count']:,}, "
+        f"download={summary['download_clip_count']:,}, "
+        f"prep={summary['prep_clip_count']:,}",
+        "SUCCESS",
+    )
+    _log(f"Manifest phase finished in {_format_duration(time.monotonic() - manifest_started)}", "SUCCESS")
     candidate_clip_names = [row["filename"] for row in manifests["candidate_clips"]]
     adjacent_clip_names = [row["filename"] for row in manifests.get("adjacent_context_clips", [])]
     download_clip_names = [row["filename"] for row in manifests.get("download_clips", manifests["candidate_clips"])]
@@ -306,13 +462,29 @@ def main() -> None:
     copied_audio: List[str] = []
     downloaded_audio: List[str] = []
     download_failures: List[str] = []
+    reused_existing_audio = 0
     prep_audio_dir = raw_audio_dir if args.stage_selected_audio else audio_dir
     staging_target_dir = raw_audio_dir if args.stage_selected_audio else audio_dir
+
+    _print_header("PHASE 2: RESOLVE RAW AUDIO")
     if args.stage_selected_audio:
-        copied_audio, missing_before_download = _copy_selected_audio(download_clip_names, audio_dir, raw_audio_dir)
+        copied_audio, missing_before_download, reused_existing_audio = _copy_selected_audio(
+            download_clip_names,
+            audio_dir,
+            raw_audio_dir,
+        )
     else:
+        _log(
+            f"Using audio in place from {audio_dir}; checking {len(download_clip_names):,} required clips",
+            "PROGRESS",
+        )
         indexed_audio = _index_audio(audio_dir)
         missing_before_download = [name for name in download_clip_names if name not in indexed_audio]
+        _log(
+            f"In-place audio check finished: {len(download_clip_names) - len(missing_before_download):,} present, "
+            f"{len(missing_before_download):,} missing",
+            "SUCCESS" if not missing_before_download else "WARNING",
+        )
 
     missing_audio = list(missing_before_download)
     if missing_before_download and args.download_missing_audio:
@@ -329,8 +501,14 @@ def main() -> None:
         )
         downloaded_set = set(downloaded_audio)
         missing_audio = [name for name in missing_before_download if name not in downloaded_set]
+    elif missing_before_download:
+        _log(
+            f"{len(missing_before_download):,} clips are missing locally and downloads are disabled.",
+            "WARNING",
+        )
 
     missing_path = bundle_dir / "missing_audio.txt"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
     with open(missing_path, "w", encoding="utf-8") as handle:
         for clip_name in missing_audio:
             handle.write(f"{clip_name}\n")
@@ -345,6 +523,15 @@ def main() -> None:
         for clip_name in download_failures:
             handle.write(f"{clip_name}\n")
 
+    _log(
+        f"Audio resolution summary: copied_or_found={len(copied_audio):,}, reused_existing={reused_existing_audio:,}, "
+        f"downloaded={len(downloaded_audio):,}, still_missing={len(missing_audio):,}",
+        "SUCCESS" if not missing_audio else "WARNING",
+    )
+    _log(f"Missing list: {missing_path}", "INFO")
+    _log(f"Downloaded list: {downloaded_path}", "INFO")
+    _log(f"Failed downloads list: {failed_downloads_path}", "INFO")
+
     if missing_audio:
         raise SystemExit(
             f"Missing {len(missing_audio)} required audio clips. "
@@ -352,6 +539,7 @@ def main() -> None:
         )
 
     if not args.skip_prep:
+        _print_header("PHASE 3: GENERATE MAT WINDOWS")
         mat_dir.mkdir(parents=True, exist_ok=True)
         _run_prepare_trainstyle_windows(
             clip_list_path=prep_clip_list,
@@ -362,7 +550,10 @@ def main() -> None:
             step_s=float(args.step_s),
             spec_backend=str(args.spec_backend),
         )
+    else:
+        _log("Skipping MAT generation because --skip-prep was provided.", "WARNING")
 
+    _print_header("PHASE 4: WRITE METADATA")
     metadata_rows, date_from, date_to = _metadata_rows_from_mats(mat_dir, bundle_dir)
     data_source = _infer_data_source(prep_clip_names)
     if date_from:
@@ -397,6 +588,7 @@ def main() -> None:
             "download_clip_count": len(download_clip_names),
             "prep_clip_count": len(prep_clip_names),
             "copied_audio_count": len(copied_audio),
+            "reused_existing_audio_count": reused_existing_audio,
             "downloaded_audio_count": len(downloaded_audio),
             "staged_audio_count": len(copied_audio) + len(downloaded_audio) if args.stage_selected_audio else len(download_clip_names) - len(missing_audio),
             "mat_count": len(metadata_rows),
@@ -415,6 +607,7 @@ def main() -> None:
         "download_clip_count": len(download_clip_names),
         "prep_clip_count": len(prep_clip_names),
         "copied_audio_count": len(copied_audio),
+        "reused_existing_audio_count": reused_existing_audio,
         "downloaded_audio_count": len(downloaded_audio),
         "download_failure_count": len(download_failures),
         "staged_audio_count": len(copied_audio) + len(downloaded_audio) if args.stage_selected_audio else len(download_clip_names) - len(missing_audio),
@@ -427,23 +620,26 @@ def main() -> None:
     }
     with open(bundle_dir / "prep_summary.json", "w", encoding="utf-8") as handle:
         json.dump(prep_summary, handle, indent=2, sort_keys=True)
+    _log(f"Wrote metadata: {metadata_path}", "SUCCESS")
+    _log(f"Wrote prep summary: {bundle_dir / 'prep_summary.json'}", "SUCCESS")
 
     if args.archive_path:
+        _print_header("PHASE 5: CREATE ARCHIVE")
         _create_archive(bundle_dir, Path(args.archive_path))
 
-    print("Prepared Part 2 VM bundle:")
-    print(f"  bundle_dir: {bundle_dir}")
-    print(f"  manifests: {manifests_dir}")
-    print(f"  raw_audio: {prep_audio_dir}")
-    print(f"  candidate_clips: {len(candidate_clip_names)}")
-    print(f"  adjacent_context_clips: {len(adjacent_clip_names)}")
-    print(f"  prep_clips: {len(prep_clip_names)}")
-    print(f"  copied_audio: {len(copied_audio)}")
-    print(f"  downloaded_audio: {len(downloaded_audio)}")
-    print(f"  mat_files: {mat_dir}")
-    print(f"  metadata: {metadata_path}")
+    _print_header("PART 2 VM PREP COMPLETE")
+    _log(f"bundle_dir: {bundle_dir}", "SUCCESS")
+    _log(f"manifests: {manifests_dir}", "SUCCESS")
+    _log(f"raw_audio: {prep_audio_dir}", "SUCCESS")
+    _log(f"candidate_clips: {len(candidate_clip_names)}", "SUCCESS")
+    _log(f"adjacent_context_clips: {len(adjacent_clip_names)}", "SUCCESS")
+    _log(f"prep_clips: {len(prep_clip_names)}", "SUCCESS")
+    _log(f"copied_audio: {len(copied_audio)}", "SUCCESS")
+    _log(f"downloaded_audio: {len(downloaded_audio)}", "SUCCESS")
+    _log(f"mat_files: {mat_dir}", "SUCCESS")
+    _log(f"metadata: {metadata_path}", "SUCCESS")
     if args.archive_path:
-        print(f"  archive: {args.archive_path}")
+        _log(f"archive: {args.archive_path}", "SUCCESS")
 
 
 if __name__ == "__main__":
