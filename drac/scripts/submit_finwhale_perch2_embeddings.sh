@@ -258,10 +258,18 @@ echo "Using SLURM_TMPDIR: $SLURM_TMPDIR"
 echo "Using VENV_PATH: $VENV_PATH"
 echo "Using EXP_DIR: $EXP_DIR"
 echo "Using LOG_DIR: $LOG_DIR"
+echo "Host: $(hostname)"
+echo "UTC start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "SLURM_JOB_ID: ${SLURM_JOB_ID:-<none>}"
+echo "SLURM_JOB_NODELIST: ${SLURM_JOB_NODELIST:-<none>}"
 echo "Local test mode: $LOCAL_TEST_MODE"
 echo "Python module: ${PYTHON_MODULE:-<none>}"
 echo "Container image: ${CONTAINER_IMAGE:-<none>}"
 echo "Container venv: ${CONTAINER_VENV_PATH:-<none>}"
+if command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi -L:"
+  nvidia-smi -L || true
+fi
 
 if [[ "$LOCAL_TEST_MODE" != "true" && -n "$PYTHON_MODULE" ]]; then
   module load "$PYTHON_MODULE"

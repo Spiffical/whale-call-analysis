@@ -18,10 +18,14 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
 import random
+import signal
 import sys
+import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -586,6 +590,7 @@ def extract_perch_embeddings(
     perch_model_name: str,
     batch_size: int,
     disable_gpu: bool,
+    progress_path: Optional[Path] = None,
 ) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame, pd.DataFrame, dict]:
     """Extract embeddings for each manifest row."""
     clip_ids = manifest["clip_id"].astype(str).unique().tolist()
@@ -646,6 +651,13 @@ def extract_perch_embeddings(
             "'XlaCallModuleOp with version 10 is not supported'."
         )
 
+    warnings.filterwarnings(
+        "ignore",
+        message=r"'where' used without 'out', expect unitialized memory in output.*",
+        category=UserWarning,
+        module=r"perch_hoplite\.zoo\.zoo_interface",
+    )
+
     print(f"Loading Perch model preset: {perch_model_name}")
     selected_model_name = perch_model_name
     try:
@@ -667,6 +679,19 @@ def extract_perch_embeddings(
     model_window_s = float(getattr(model, "window_size_s", 5.0))
     target_samples = int(round(model_window_s * model_sample_rate))
     print(f"Perch model ready | sample_rate={model_sample_rate} | window={model_window_s:.2f}s")
+    tf_gpu_devices = [d.name for d in tf.config.list_physical_devices("GPU")]
+    print(
+        "TensorFlow devices | "
+        f"gpu_count={len(tf_gpu_devices)} "
+        f"gpu_names={tf_gpu_devices if tf_gpu_devices else '[]'}",
+        flush=True,
+    )
+    if selected_model_name == "perch_v2_gpu" and not tf_gpu_devices:
+        raise RuntimeError(
+            "perch_v2_gpu was requested, but TensorFlow reports no visible GPU devices. "
+            "This job would run extremely slowly on CPU. Check apptainer --nv, CUDA visibility, "
+            "and the SLURM GPU allocation before retrying."
+        )
 
     embeddings: List[np.ndarray] = []
     labels: List[int] = []
@@ -677,11 +702,68 @@ def extract_perch_embeddings(
     batch_meta: List[dict] = []
     total_rows = len(manifest)
     processed_rows = 0
+    start_monotonic = time.monotonic()
+    current_clip_id: Optional[str] = None
+    current_audio_path: Optional[str] = None
+    current_batch_started_at: Optional[float] = None
+
+    def _progress_payload(reason: str) -> dict:
+        elapsed_s = max(0.0, time.monotonic() - start_monotonic)
+        rate_rows_per_s = (processed_rows / elapsed_s) if elapsed_s > 0 else 0.0
+        remaining_rows = max(0, total_rows - processed_rows)
+        eta_s = (remaining_rows / rate_rows_per_s) if rate_rows_per_s > 0 else None
+        payload = {
+            "reason": reason,
+            "processed_rows": int(processed_rows),
+            "total_rows": int(total_rows),
+            "pct_complete": (100.0 * processed_rows / total_rows) if total_rows else 0.0,
+            "elapsed_s": elapsed_s,
+            "rows_per_s": rate_rows_per_s,
+            "rows_per_hour": rate_rows_per_s * 3600.0,
+            "eta_s": eta_s,
+            "eta_hours": (eta_s / 3600.0) if eta_s is not None else None,
+            "current_clip_id": current_clip_id,
+            "current_audio_path": current_audio_path,
+            "batch_size_ready": int(len(batch_audio)),
+            "selected_model_name": selected_model_name,
+            "tensorflow_version": str(getattr(tf, "__version__", "unknown")),
+            "tf_gpu_devices": tf_gpu_devices,
+        }
+        if current_batch_started_at is not None:
+            payload["batch_elapsed_s"] = max(0.0, time.monotonic() - current_batch_started_at)
+        return payload
+
+    def _write_progress(reason: str) -> None:
+        payload = _progress_payload(reason)
+        eta_hours = payload["eta_hours"]
+        eta_str = f"{eta_hours:.2f}h" if isinstance(eta_hours, (int, float)) and np.isfinite(eta_hours) else "unknown"
+        print(
+            "Embedding progress | "
+            f"reason={reason} "
+            f"processed={payload['processed_rows']}/{payload['total_rows']} "
+            f"({payload['pct_complete']:.2f}%) "
+            f"elapsed={payload['elapsed_s'] / 3600.0:.2f}h "
+            f"rate={payload['rows_per_hour']:.1f} windows/hour "
+            f"eta={eta_str} "
+            f"clip={payload['current_clip_id'] or '<none>'}",
+            flush=True,
+        )
+        if progress_path is not None:
+            progress_path.write_text(json.dumps(payload, indent=2))
+
+    def _handle_sigterm(signum, frame) -> None:
+        _write_progress(reason=f"signal_{signum}")
+        raise SystemExit(143)
+
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    faulthandler.dump_traceback_later(900, repeat=True)
 
     def flush_batch() -> None:
-        nonlocal batch_audio, batch_meta
+        nonlocal batch_audio, batch_meta, current_batch_started_at
         if not batch_audio:
             return
+        current_batch_started_at = time.monotonic()
         audio_batch = np.stack(batch_audio, axis=0).astype(np.float32)
         outputs = model.batch_embed(audio_batch)
         pooled = outputs.pooled_embeddings(time_pooling="mean", channel_pooling="squeeze")
@@ -693,62 +775,70 @@ def extract_perch_embeddings(
             used_records.append(meta)
         batch_audio = []
         batch_meta = []
+        current_batch_started_at = None
 
-    for clip_id, clip_rows in manifest.groupby("clip_id", sort=False):
-        audio_path = resolved_audio_by_clip.get(str(clip_id))
-        row_records = clip_rows.to_dict("records")
-        if audio_path is None:
-            for rec in row_records:
-                bad = dict(rec)
-                bad["skip_reason"] = "missing_audio"
-                skipped_records.append(bad)
-                processed_rows += 1
-            continue
-
-        try:
-            with sf.SoundFile(audio_path) as af:
-                clip_sr = int(af.samplerate)
-                clip_duration_s = len(af) / max(1, clip_sr)
+    try:
+        for clip_id, clip_rows in manifest.groupby("clip_id", sort=False):
+            audio_path = resolved_audio_by_clip.get(str(clip_id))
+            current_clip_id = str(clip_id)
+            current_audio_path = str(audio_path) if audio_path is not None else None
+            row_records = clip_rows.to_dict("records")
+            if audio_path is None:
                 for rec in row_records:
-                    start_s = _safe_float(rec["window_start_s"], default=0.0)
-                    req_window_s = _safe_float(rec["window_duration_s"], default=model_window_s)
-                    max_start = max(0.0, clip_duration_s - req_window_s)
-                    start_s = min(max(0.0, start_s), max_start)
-                    audio, sr = _read_audio_window(af, start_s=start_s, window_size_s=req_window_s)
-                    if audio.size == 0:
-                        bad = dict(rec)
-                        bad["skip_reason"] = "empty_audio"
-                        skipped_records.append(bad)
-                        processed_rows += 1
-                        continue
-
-                    audio = _resample_fixed_length(
-                        audio=audio,
-                        original_sr=sr,
-                        target_sr=model_sample_rate,
-                        target_length=target_samples,
-                    )
-                    meta = dict(rec)
-                    meta["resolved_window_start_s"] = float(start_s)
-                    meta["audio_sample_rate"] = int(sr)
-                    meta["audio_duration_s"] = float(clip_duration_s)
-                    batch_audio.append(audio)
-                    batch_meta.append(meta)
-                    if len(batch_audio) >= max(1, batch_size):
-                        flush_batch()
+                    bad = dict(rec)
+                    bad["skip_reason"] = "missing_audio"
+                    skipped_records.append(bad)
                     processed_rows += 1
-        except Exception as exc:
-            for rec in row_records:
-                bad = dict(rec)
-                bad["skip_reason"] = f"audio_read_error:{type(exc).__name__}"
-                bad["skip_error"] = str(exc)
-                skipped_records.append(bad)
-                processed_rows += 1
+                continue
 
-        if processed_rows % 250 == 0 or processed_rows == total_rows:
-            print(f"Embedding progress: {processed_rows}/{total_rows} windows")
+            try:
+                with sf.SoundFile(audio_path) as af:
+                    clip_sr = int(af.samplerate)
+                    clip_duration_s = len(af) / max(1, clip_sr)
+                    for rec in row_records:
+                        start_s = _safe_float(rec["window_start_s"], default=0.0)
+                        req_window_s = _safe_float(rec["window_duration_s"], default=model_window_s)
+                        max_start = max(0.0, clip_duration_s - req_window_s)
+                        start_s = min(max(0.0, start_s), max_start)
+                        audio, sr = _read_audio_window(af, start_s=start_s, window_size_s=req_window_s)
+                        if audio.size == 0:
+                            bad = dict(rec)
+                            bad["skip_reason"] = "empty_audio"
+                            skipped_records.append(bad)
+                            processed_rows += 1
+                            continue
 
-    flush_batch()
+                        audio = _resample_fixed_length(
+                            audio=audio,
+                            original_sr=sr,
+                            target_sr=model_sample_rate,
+                            target_length=target_samples,
+                        )
+                        meta = dict(rec)
+                        meta["resolved_window_start_s"] = float(start_s)
+                        meta["audio_sample_rate"] = int(sr)
+                        meta["audio_duration_s"] = float(clip_duration_s)
+                        batch_audio.append(audio)
+                        batch_meta.append(meta)
+                        if len(batch_audio) >= max(1, batch_size):
+                            flush_batch()
+                        processed_rows += 1
+            except Exception as exc:
+                for rec in row_records:
+                    bad = dict(rec)
+                    bad["skip_reason"] = f"audio_read_error:{type(exc).__name__}"
+                    bad["skip_error"] = str(exc)
+                    skipped_records.append(bad)
+                    processed_rows += 1
+
+            if processed_rows % 250 == 0 or processed_rows == total_rows:
+                _write_progress(reason="interval")
+
+        flush_batch()
+        _write_progress(reason="completed")
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        faulthandler.cancel_dump_traceback_later()
 
     if not embeddings:
         raise RuntimeError("No embeddings were extracted. Check audio paths and manifest filters.")
@@ -1064,6 +1154,7 @@ def main() -> None:
             perch_model_name=args.perch_model,
             batch_size=int(args.batch_size),
             disable_gpu=bool(args.disable_gpu),
+            progress_path=run_dir / "embedding_progress.json",
         )
 
         used_manifest_path = run_dir / "used_subclips.csv"
