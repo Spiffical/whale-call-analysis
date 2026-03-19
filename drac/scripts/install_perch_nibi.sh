@@ -45,8 +45,8 @@ echo "Building usearch from source (cluster glibc is too old for the published w
 git clone --depth 1 --recursive https://github.com/unum-cloud/USearch.git "$TMP_ROOT/USearch"
 "$PIP_BIN" install --no-build-isolation "$TMP_ROOT/USearch"
 
-echo "Installing TensorFlow ${TF_VERSION} from upstream PyPI so Perch v2 runtime ops are available..."
-"$PIP_BIN" --isolated install --upgrade --force-reinstall --no-deps "tensorflow==${TF_VERSION}"
+echo "Installing TensorFlow ${TF_VERSION} with CUDA-enabled pip dependencies from upstream PyPI..."
+"$PIP_BIN" --isolated install --upgrade --force-reinstall "tensorflow[and-cuda]==${TF_VERSION}"
 
 echo "Installing runtime dependencies needed for Perch inference..."
 "$PIP_BIN" install \

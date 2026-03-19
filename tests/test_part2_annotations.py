@@ -13,6 +13,7 @@ from src.dataset.part2_annotations import (
     FIN_BUCKET_OTHER,
     adjacent_clip_filename,
     build_part2_manifests,
+    normalize_audio_filename,
 )
 
 
@@ -76,7 +77,7 @@ def _write_minimal_workbook(path: Path) -> None:
             ],
             ["note row", "", "", "", "", "", ""],
             [
-                "ICLISTENHF6016_20250105T000000.000Z.flac",
+                "ICLISTENHF6016_20250105T000000.000Z.flac\t2025-01-05\t12:00:00 AM",
                 7.5,
                 8.0,
                 "Bp",
@@ -225,6 +226,12 @@ class TestPart2Annotations(unittest.TestCase):
         self.assertEqual(
             adjacent_clip_filename("ICLISTENHF6016_20250105T000000.000Z.wav", clip_delta=1),
             "ICLISTENHF6016_20250105T000500.000Z.wav",
+        )
+
+    def test_normalize_audio_filename_extracts_embedded_filename(self):
+        self.assertEqual(
+            normalize_audio_filename("ICLISTENHF6016_20251105T020000.000Z.flac\t2025-11-05\t2:00:00 AM"),
+            "ICLISTENHF6016_20251105T020000.000Z.flac",
         )
 
 

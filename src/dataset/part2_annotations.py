@@ -45,6 +45,10 @@ DEFAULT_ADJACENT_BOUNDARY_SECONDS = 20.0
 _CELL_REF_RE = re.compile(r"([A-Z]+)(\d+)")
 _WHITESPACE_RE = re.compile(r"\s+")
 _FILENAME_TS_RE = re.compile(r"(\d{8}T\d{6})(?:\.(\d{3}))?Z")
+_AUDIO_FILENAME_RE = re.compile(
+    r"([A-Za-z0-9_-]+_\d{8}T\d{6}(?:\.\d{3})?Z\.(?:wav|flac))",
+    re.IGNORECASE,
+)
 _FILE_WINDOW_RE = re.compile(
     r"^(?P<source>.+)_(?P<start>-?\d+(?:\.\d+)?)s_(?P<end>-?\d+(?:\.\d+)?)s_window$"
 )
@@ -210,6 +214,16 @@ def _normalize_call_type_raw(value: str) -> str:
     return text
 
 
+def normalize_audio_filename(value: str) -> str:
+    raw_text = str(value or "").strip()
+    if not raw_text:
+        return ""
+    match = _AUDIO_FILENAME_RE.search(raw_text)
+    if match:
+        return match.group(1)
+    return _clean_text(raw_text)
+
+
 def bucket_fin_call_type(raw_value: str, species_code: str) -> str:
     normalized = re.sub(r"\s+", "", _normalize_call_type_raw(raw_value).lower())
     if normalized == "20hz":
@@ -278,7 +292,7 @@ def _build_annotation_row(sheet_name: str, row_index: int, row: Dict[str, str]) 
     if not _is_annotation_row(row):
         return None
 
-    filename = _clean_text(row.get("filename", ""))
+    filename = normalize_audio_filename(row.get("filename", ""))
     species = _normalize_species(row.get("species", ""))
     call_type_raw = _normalize_call_type_raw(row.get("call_type", ""))
     begin_time_s = _as_float(row.get("begin_time"))
@@ -324,7 +338,7 @@ def _clip_inventory_rows(sheet: WorkbookSheet) -> List[Dict[str, str]]:
     seen = set()
     rows: List[Dict[str, str]] = []
     for row in sheet.rows:
-        filename = _clean_text(row.get("filename", ""))
+        filename = normalize_audio_filename(row.get("filename", ""))
         if not filename or filename in seen:
             continue
         seen.add(filename)

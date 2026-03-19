@@ -8,6 +8,7 @@ IMAGE_URI="docker://tensorflow/tensorflow:2.20.0-gpu"
 IMAGE_PATH="${IMAGE_PATH:-${SCRATCH:-$HOME}/whale-call-analysis/containers/tensorflow_2.20.0_gpu.sif}"
 VENV_PATH="${VENV_PATH:-${SCRATCH:-$HOME}/whale-call-analysis/venvs/perch2_tf220}"
 APPTAINER_MODULE="${APPTAINER_MODULE:-apptainer}"
+TF_VERSION="${TF_VERSION:-2.20.0}"
 FORCE_REBUILD="false"
 
 usage() {
@@ -20,6 +21,7 @@ Options:
   --image-path PATH           Target .sif path (default: $SCRATCH/whale-call-analysis/containers/tensorflow_2.20.0_gpu.sif)
   --venv-path PATH            Virtualenv created inside container runtime (default: $SCRATCH/whale-call-analysis/venvs/perch2_tf220)
   --apptainer-module NAME     Module to load before calling apptainer (default: apptainer)
+  --tf-version VERSION        TensorFlow version for the container venv (default: 2.20.0)
   --force-rebuild             Recreate the venv even if it already exists
   -h, --help
 USAGE
@@ -31,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --image-path) IMAGE_PATH="$2"; shift 2 ;;
     --venv-path) VENV_PATH="$2"; shift 2 ;;
     --apptainer-module) APPTAINER_MODULE="$2"; shift 2 ;;
+    --tf-version) TF_VERSION="$2"; shift 2 ;;
     --force-rebuild) FORCE_REBUILD="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
@@ -88,6 +91,7 @@ echo "Installing Perch v2 dependencies inside container-backed virtualenv..."
   export PIP_DISABLE_PIP_VERSION_CHECK=1
   source \"$VENV_PATH/bin/activate\"
   python -m pip install --isolated --upgrade pip wheel cmake ninja scikit-build-core pybind11
+  python -m pip install --isolated --upgrade --force-reinstall 'tensorflow[and-cuda]==$TF_VERSION'
   python -m pip install --isolated --upgrade --force-reinstall --no-deps --index-url https://pypi.org/simple 'setuptools<81'
   python -m pip install --isolated --upgrade --force-reinstall --no-deps --no-binary simsimd 'simsimd>=6.5,<7'
   python -m pip install --isolated --no-build-isolation --no-deps \"$USearch_SRC\"

@@ -157,15 +157,16 @@ def _copy_selected_audio(
         "PROGRESS",
     )
     for _, clip_name in _progress_iter(unique_names, desc="Stage audio"):
+        target = staged_audio_dir / clip_name
+        if target.exists() and target.stat().st_size > 0:
+            reused_existing += 1
+            copied.append(clip_name)
+            continue
         source = index.get(clip_name)
         if source is None:
             missing.append(clip_name)
             continue
-        target = staged_audio_dir / clip_name
-        if not target.exists():
-            shutil.copy2(source, target)
-        else:
-            reused_existing += 1
+        shutil.copy2(source, target)
         copied.append(clip_name)
     _log(
         f"Audio staging finished: {len(copied):,} available, {len(missing):,} missing, "
@@ -458,6 +459,8 @@ def main() -> None:
     download_clip_names = [row["filename"] for row in manifests.get("download_clips", manifests["candidate_clips"])]
     prep_clip_names = [row["filename"] for row in manifests.get("prep_clips", manifests["candidate_clips"])]
     prep_clip_list = manifests_dir / "prep_clips.txt"
+    required_audio_names = set(prep_clip_names)
+    optional_audio_names = set(download_clip_names) - required_audio_names
 
     copied_audio: List[str] = []
     downloaded_audio: List[str] = []
@@ -513,6 +516,17 @@ def main() -> None:
         for clip_name in missing_audio:
             handle.write(f"{clip_name}\n")
 
+    missing_required_audio = [clip_name for clip_name in missing_audio if clip_name in required_audio_names]
+    missing_optional_audio = [clip_name for clip_name in missing_audio if clip_name in optional_audio_names]
+    missing_required_path = bundle_dir / "missing_required_audio.txt"
+    with open(missing_required_path, "w", encoding="utf-8") as handle:
+        for clip_name in missing_required_audio:
+            handle.write(f"{clip_name}\n")
+    missing_optional_path = bundle_dir / "missing_optional_adjacent_audio.txt"
+    with open(missing_optional_path, "w", encoding="utf-8") as handle:
+        for clip_name in missing_optional_audio:
+            handle.write(f"{clip_name}\n")
+
     downloaded_path = bundle_dir / "downloaded_audio.txt"
     with open(downloaded_path, "w", encoding="utf-8") as handle:
         for clip_name in downloaded_audio:
@@ -525,17 +539,27 @@ def main() -> None:
 
     _log(
         f"Audio resolution summary: copied_or_found={len(copied_audio):,}, reused_existing={reused_existing_audio:,}, "
-        f"downloaded={len(downloaded_audio):,}, still_missing={len(missing_audio):,}",
-        "SUCCESS" if not missing_audio else "WARNING",
+        f"downloaded={len(downloaded_audio):,}, still_missing={len(missing_audio):,} "
+        f"(required={len(missing_required_audio):,}, optional_adjacent={len(missing_optional_audio):,})",
+        "SUCCESS" if not missing_required_audio else "WARNING",
     )
     _log(f"Missing list: {missing_path}", "INFO")
+    _log(f"Missing required list: {missing_required_path}", "INFO")
+    _log(f"Missing optional adjacent list: {missing_optional_path}", "INFO")
     _log(f"Downloaded list: {downloaded_path}", "INFO")
     _log(f"Failed downloads list: {failed_downloads_path}", "INFO")
 
-    if missing_audio:
+    if missing_required_audio:
         raise SystemExit(
-            f"Missing {len(missing_audio)} required audio clips. "
-            f"See {missing_path} before running the heavy prep step."
+            f"Missing {len(missing_required_audio)} required prep clips. "
+            f"See {missing_required_path} before running the heavy prep step."
+        )
+    if missing_optional_audio:
+        _log(
+            f"{len(missing_optional_audio):,} adjacent-context clips are still missing. "
+            "Prep will continue; boundary windows that need those clips will fall back to "
+            "the existing zero-padding behavior.",
+            "WARNING",
         )
 
     if not args.skip_prep:
@@ -594,6 +618,8 @@ def main() -> None:
             "mat_count": len(metadata_rows),
             "window_s": float(args.window_s),
             "step_s": float(args.step_s),
+            "missing_required_audio_count": len(missing_required_audio),
+            "missing_optional_adjacent_audio_count": len(missing_optional_audio),
         },
     }
     metadata_path = bundle_dir / "metadata.json"
@@ -613,6 +639,8 @@ def main() -> None:
         "staged_audio_count": len(copied_audio) + len(downloaded_audio) if args.stage_selected_audio else len(download_clip_names) - len(missing_audio),
         "mat_count": len(metadata_rows),
         "missing_audio_count": len(missing_audio),
+        "missing_required_audio_count": len(missing_required_audio),
+        "missing_optional_adjacent_audio_count": len(missing_optional_audio),
         "download_missing_audio": bool(args.download_missing_audio),
         "include_adjacent_in_prep": bool(args.include_adjacent_in_prep),
         "adjacent_boundary_seconds": float(args.adjacent_boundary_seconds),
