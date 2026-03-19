@@ -234,6 +234,43 @@ def _download_missing_audio(
     return downloaded, failed
 
 
+def _trainstyle_helper_script() -> Path:
+    return REPO_ROOT / "scripts" / "data" / "test" / "prepare_trainstyle_windows.py"
+
+
+def _preflight_or_die(
+    *,
+    workbook: Path,
+    audio_dir: Path,
+    dataset_doc: Path,
+    bundle_dir: Path,
+    archive_path: Optional[Path],
+) -> None:
+    problems: List[str] = []
+    if not workbook.exists():
+        problems.append(f"Workbook not found: {workbook}")
+    if not dataset_doc.exists():
+        problems.append(f"dataset_documentation.json not found: {dataset_doc}")
+    if not audio_dir.exists():
+        problems.append(f"Audio directory does not exist yet: {audio_dir}")
+    helper_script = _trainstyle_helper_script()
+    if not helper_script.exists():
+        problems.append(
+            "Required helper script is missing from this repo checkout: "
+            f"{helper_script}. Sync the latest repo to the VM before rerunning."
+        )
+    if archive_path is not None and not archive_path.parent.exists():
+        problems.append(f"Archive parent directory does not exist: {archive_path.parent}")
+
+    if problems:
+        for problem in problems:
+            _log(problem, "ERROR")
+        raise SystemExit("Preflight checks failed; fix the issues above and rerun.")
+
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    _log(f"Preflight checks passed. Helper script found at {helper_script}", "SUCCESS")
+
+
 def _run_prepare_trainstyle_windows(
     *,
     clip_list_path: Path,
@@ -244,7 +281,12 @@ def _run_prepare_trainstyle_windows(
     step_s: float,
     spec_backend: str,
 ) -> None:
-    script = REPO_ROOT / "scripts" / "data" / "test" / "prepare_trainstyle_windows.py"
+    script = _trainstyle_helper_script()
+    if not script.exists():
+        raise SystemExit(
+            "Required helper script is missing: "
+            f"{script}. Sync the latest repo to this machine before rerunning."
+        )
     cmd = [
         sys.executable,
         str(script),
@@ -433,6 +475,15 @@ def main() -> None:
     if args.download_missing_audio:
         onc_token_present = bool(os.getenv(args.onc_token_env, "").strip())
         _log(f"{args.onc_token_env} loaded from environment/.env: {onc_token_present}", "INFO")
+
+    _print_header("PHASE 0: PREFLIGHT CHECKS")
+    _preflight_or_die(
+        workbook=workbook,
+        audio_dir=audio_dir,
+        dataset_doc=dataset_doc,
+        bundle_dir=bundle_dir,
+        archive_path=Path(args.archive_path) if args.archive_path else None,
+    )
 
     _print_header("PHASE 1: BUILD MANIFESTS")
     manifest_started = time.monotonic()
