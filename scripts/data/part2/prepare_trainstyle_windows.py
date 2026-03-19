@@ -13,7 +13,7 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -34,18 +34,152 @@ if ONC_REPO.exists() and str(ONC_REPO) not in sys.path:
     sys.path.insert(0, str(ONC_REPO))
 
 from onc_hydrophone_data.audio.spectrogram_generator import SpectrogramGenerator
-from scripts.diagnostics.compare_train_newprep import (
-    CallRow,
-    _find_adjacent_file_with_index,
-    _find_audio_file_with_index,
-    build_audio_index,
-    center_crop_with_pad,
-    load_training_power,
-    normalize_db_to_unit,
-    parse_clip_ts,
-    power_to_db_norm,
-)
 from src.data.sequential_prep import crop_to_freq_lims, get_processing_params, load_dataset_documentation
+
+
+@dataclass
+class CallRow:
+    clip: str
+    begin_s: float
+    end_s: float
+    call_dt: datetime
+    mat_path: Optional[Path] = None
+
+
+def parse_clip_ts(clip: str) -> Optional[datetime]:
+    match = re.search(r"_(\d{8}T\d{6})", str(clip))
+    if not match:
+        return None
+    ts = datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
+    return ts.replace(tzinfo=timezone.utc)
+
+
+def build_audio_index(audio_dir: Path) -> Tuple[Dict[str, Path], Dict[str, Path]]:
+    by_stem: Dict[str, Path] = {}
+    by_second: Dict[str, Path] = {}
+    pattern = re.compile(r"^(?P<device>[^_]+)_(?P<ts>\d{8}T\d{6})")
+    for path in audio_dir.rglob("*"):
+        try:
+            if not path.is_file() or path.suffix.lower() not in (".flac", ".wav"):
+                continue
+            stem = path.stem
+            by_stem.setdefault(stem, path)
+            match = pattern.match(stem)
+            if match:
+                key = f"{match.group('device')}_{match.group('ts')}"
+                by_second.setdefault(key, path)
+        except FileNotFoundError:
+            continue
+    return by_stem, by_second
+
+
+def _find_audio_file_with_index(
+    audio_dir: Path,
+    clip_name: str,
+    audio_index: Optional[Dict[str, Path]],
+    audio_index_by_second: Optional[Dict[str, Path]],
+) -> Optional[Path]:
+    if audio_index is not None:
+        stem = Path(clip_name).stem if clip_name.endswith((".flac", ".wav")) else clip_name
+        if stem in audio_index:
+            return audio_index[stem]
+    if audio_index_by_second is not None:
+        match = re.search(r"^(?P<device>[^_]+)_(?P<ts>\d{8}T\d{6})", clip_name)
+        if match:
+            key = f"{match.group('device')}_{match.group('ts')}"
+            if key in audio_index_by_second:
+                return audio_index_by_second[key]
+    if clip_name.endswith((".flac", ".wav")):
+        direct = audio_dir / clip_name
+        if direct.exists():
+            return direct
+    for ext in (".flac", ".wav"):
+        direct = audio_dir / f"{clip_name}{ext}"
+        if direct.exists():
+            return direct
+    stem = clip_name.replace(".wav", "")
+    matches = list(audio_dir.rglob(f"{stem}*.flac")) + list(audio_dir.rglob(f"{stem}*.wav"))
+    return matches[0] if matches else None
+
+
+def _find_adjacent_file_with_index(
+    audio_dir: Path,
+    device: str,
+    ts: datetime,
+    audio_index_by_second: Optional[Dict[str, Path]],
+) -> Optional[Path]:
+    stamp = ts.strftime("%Y%m%dT%H%M%S")
+    if audio_index_by_second is not None:
+        key = f"{device}_{stamp}"
+        if key in audio_index_by_second:
+            return audio_index_by_second[key]
+    for ext in (".flac", ".wav"):
+        matches = list(audio_dir.rglob(f"{device}_{stamp}*{ext}"))
+        if matches:
+            return matches[0]
+    return None
+
+
+def power_to_db_norm(power: np.ndarray) -> np.ndarray:
+    power = np.abs(power.astype(np.float32))
+    max_power = float(np.max(power)) if power.size else 0.0
+    if max_power > 0:
+        normalized = power / max_power
+        normalized = np.maximum(normalized, 1e-10)
+        return 10.0 * np.log10(normalized)
+    return np.full_like(power, -100.0, dtype=np.float32)
+
+
+def normalize_db_to_unit(db: np.ndarray, min_db: float, max_db: float) -> np.ndarray:
+    db = db.astype(np.float32)
+    db = np.clip(db, min_db, max_db)
+    return (db - min_db) / (max_db - min_db)
+
+
+def center_crop_with_pad(spec: np.ndarray, target_f: int, target_t: int, center_t: Optional[int] = None) -> np.ndarray:
+    freq_bins, time_bins = spec.shape
+    if freq_bins < target_f:
+        spec = np.pad(spec, ((0, target_f - freq_bins), (0, 0)), mode="edge")
+        freq_bins = target_f
+    elif freq_bins > target_f:
+        start_f = (freq_bins - target_f) // 2
+        spec = spec[start_f : start_f + target_f, :]
+        freq_bins = target_f
+
+    if center_t is None:
+        center_t = time_bins // 2
+    start_t = int(center_t - target_t // 2)
+    end_t = start_t + target_t
+    pad_left = max(0, -start_t)
+    pad_right = max(0, end_t - time_bins)
+    if pad_left or pad_right:
+        spec = np.pad(spec, ((0, 0), (pad_left, pad_right)), mode="edge")
+        start_t += pad_left
+        end_t += pad_left
+    return spec[:, start_t:end_t]
+
+
+def load_training_power(mat_path: Path) -> np.ndarray:
+    data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
+    for key in ("P", "Sxx", "PSD", "psd", "power_spectrogram"):
+        if key in data:
+            spec = np.asarray(data[key])
+            break
+    else:
+        for key in ("PdB_norm", "power_db_norm", "PdB", "P_db", "spectrogram"):
+            if key in data:
+                return np.asarray(data[key])
+        raise KeyError(f"No spectrogram-like key found in {mat_path.name}")
+
+    freq_key = next((key for key in ("F", "freqs", "frequencies") if key in data), None)
+    time_key = next((key for key in ("T", "times", "time") if key in data), None)
+    if freq_key and time_key:
+        freq_len = int(np.asarray(data[freq_key]).ravel().shape[0])
+        time_len = int(np.asarray(data[time_key]).ravel().shape[0])
+        rows, cols = spec.shape[:2]
+        if (rows, cols) == (time_len, freq_len):
+            spec = spec.T
+    return spec
 
 
 @dataclass

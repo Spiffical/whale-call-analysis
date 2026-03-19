@@ -78,7 +78,6 @@ diagnostics/compare_train_newprep.py
 mat_list.txt    
 neg_mat_list.txt
 scripts/data/test/prepare_test_windows.py
-scripts/data/test/prepare_trainstyle_windows.py
 scripts/diagnostics/compare_newtrain_newtest.py
 .gitignore
 scripts/diagnostics/compare_train_test_pipeline.py
