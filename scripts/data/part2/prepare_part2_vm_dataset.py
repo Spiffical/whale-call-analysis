@@ -235,7 +235,7 @@ def _download_missing_audio(
 
 
 def _trainstyle_helper_script() -> Path:
-    return REPO_ROOT / "scripts" / "data" / "test" / "prepare_trainstyle_windows.py"
+    return REPO_ROOT / "scripts" / "data" / "part2" / "prepare_trainstyle_windows.py"
 
 
 def _preflight_or_die(
@@ -252,7 +252,8 @@ def _preflight_or_die(
     if not dataset_doc.exists():
         problems.append(f"dataset_documentation.json not found: {dataset_doc}")
     if not audio_dir.exists():
-        problems.append(f"Audio directory does not exist yet: {audio_dir}")
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        _log(f"Created audio cache directory: {audio_dir}", "INFO")
     helper_script = _trainstyle_helper_script()
     if not helper_script.exists():
         problems.append(
