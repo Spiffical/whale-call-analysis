@@ -6,7 +6,7 @@ It performs the heavy data-preparation steps:
 
 1. Normalize the workbook into stable manifests.
 2. Stage or download the exact candidate audio files near the output bundle.
-3. Generate train-style 40s MAT windows for the union of fin-positive and
+3. Generate full-clip spectrogram MATs for the union of fin-positive and
    annotated non-fin clips.
 4. Emit a metadata.json compatible with run_inference.py.
 5. Optionally create a deterministic archive for transfer to Nibi.
@@ -280,6 +280,7 @@ def _run_prepare_trainstyle_windows(
     out_dir: Path,
     window_s: float,
     step_s: float,
+    edge_context_s: float,
     spec_backend: str,
 ) -> None:
     script = _trainstyle_helper_script()
@@ -288,6 +289,16 @@ def _run_prepare_trainstyle_windows(
             "Required helper script is missing: "
             f"{script}. Sync the latest repo to this machine before rerunning."
         )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stale_mats = sorted(out_dir.glob("*.mat"))
+    stale_aux = [path for path in (out_dir / "report.csv",) if path.exists()]
+    if stale_mats or stale_aux:
+        _log(
+            f"Clearing {len(stale_mats):,} existing MAT files and {len(stale_aux):,} auxiliary files from {out_dir}",
+            "WARNING",
+        )
+        for path in stale_mats + stale_aux:
+            path.unlink()
     cmd = [
         sys.executable,
         str(script),
@@ -304,6 +315,8 @@ def _run_prepare_trainstyle_windows(
         str(window_s),
         "--step-s",
         str(step_s),
+        "--edge-context-s",
+        str(edge_context_s),
         "--spec-backend",
         str(spec_backend),
     ]
@@ -414,8 +427,9 @@ def main() -> None:
     )
     ap.add_argument("--dataset-doc", type=str, required=True, help="dataset_documentation.json for train-style prep")
     ap.add_argument("--output-dir", type=str, required=True, help="Bundle output directory on the mounted drive")
-    ap.add_argument("--window-s", type=float, default=40.0)
-    ap.add_argument("--step-s", type=float, default=40.0)
+    ap.add_argument("--window-s", type=float, default=300.0, help="MAT duration in seconds. Default: one full 5-minute clip per MAT.")
+    ap.add_argument("--step-s", type=float, default=300.0, help="Step between MATs in seconds. Default matches --window-s for one MAT per clip.")
+    ap.add_argument("--edge-context-s", type=float, default=2.0, help="Extra audio on both sides before spectrogram generation for FFT edge stability.")
     ap.add_argument("--spec-backend", type=str, default="auto", choices=["auto", "scipy", "torch"])
     ap.add_argument(
         "--adjacent-boundary-seconds",
@@ -624,6 +638,7 @@ def main() -> None:
             out_dir=mat_dir,
             window_s=float(args.window_s),
             step_s=float(args.step_s),
+            edge_context_s=float(args.edge_context_s),
             spec_backend=str(args.spec_backend),
         )
     else:
@@ -631,6 +646,11 @@ def main() -> None:
 
     _print_header("PHASE 4: WRITE METADATA")
     metadata_rows, date_from, date_to = _metadata_rows_from_mats(mat_dir, bundle_dir)
+    if not metadata_rows:
+        raise SystemExit(
+            "Phase 3 completed without producing any MAT files. "
+            "This bundle is not usable for Nibi inference; inspect the Phase 3 logs and rerun."
+        )
     data_source = _infer_data_source(prep_clip_names)
     if date_from:
         data_source["date_from"] = date_from
@@ -646,12 +666,12 @@ def main() -> None:
             "context_duration": float(args.window_s),
             "window_duration": "",
             "overlap": "",
-            "source": {
-                "type": "computed",
-                "pipeline": "prepare_trainstyle_windows.slide",
-                "dataset_doc": str(dataset_doc),
+                "source": {
+                    "type": "computed",
+                    "pipeline": "prepare_part2_vm_dataset.full_clip_spectrograms",
+                    "dataset_doc": str(dataset_doc),
+                },
             },
-        },
         "files": metadata_rows,
         "part2_summary": summary,
         "bundle": {
@@ -670,6 +690,7 @@ def main() -> None:
             "mat_count": len(metadata_rows),
             "window_s": float(args.window_s),
             "step_s": float(args.step_s),
+            "edge_context_s": float(args.edge_context_s),
             "missing_required_audio_count": len(missing_required_audio),
             "missing_optional_adjacent_audio_count": len(missing_optional_audio),
         },
@@ -696,6 +717,9 @@ def main() -> None:
         "download_missing_audio": bool(args.download_missing_audio),
         "include_adjacent_in_prep": bool(args.include_adjacent_in_prep),
         "adjacent_boundary_seconds": float(args.adjacent_boundary_seconds),
+        "window_s": float(args.window_s),
+        "step_s": float(args.step_s),
+        "edge_context_s": float(args.edge_context_s),
         "archive_path": args.archive_path or "",
     }
     with open(bundle_dir / "prep_summary.json", "w", encoding="utf-8") as handle:

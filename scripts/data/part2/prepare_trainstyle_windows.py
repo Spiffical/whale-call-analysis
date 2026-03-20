@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Prepare train-style spectrograms for comparison against existing training MATs.
+Prepare spectrogram MATs for train-style comparison or Part 2 full-clip inference.
 
 - Call-centered mode: 40s context around annotated calls (training pipeline)
-- Sliding-window mode: 40s windows across a clip (no call info)
+- Sliding-window mode: fixed-duration MATs across a clip (used by Part 2 VM prep)
 
 Outputs MATs and an optional comparison report vs an existing MAT directory.
 """
@@ -238,15 +238,26 @@ def _parse_clip_list(clip_list: Path, window_s: float, step_s: float) -> List[Wo
             clip = line.strip()
             if not clip:
                 continue
+            clip_duration_s = 300.0
+            max_start = max(0.0, clip_duration_s - window_s)
+            if step_s <= 0:
+                raise ValueError("--step-s must be > 0")
+            starts: List[float] = []
             start = 0.0
-            while start + window_s <= 300.0 + 1e-6:
-                end = start + window_s
+            while start <= max_start + 1e-6:
+                starts.append(float(start))
+                start += step_s
+            if not starts:
+                starts = [0.0]
+            if starts[-1] < max_start - 1e-6:
+                starts.append(float(max_start))
+            for start in starts:
+                end = min(start + window_s, clip_duration_s)
                 clip_dt = parse_clip_ts(clip)
                 call_dt = clip_dt + timedelta(seconds=start) if clip_dt else pd.NaT
                 call = CallRow(clip, start, end, call_dt, None)
                 out_name = f"{clip}_{start:.1f}s_{end:.1f}s_window.mat"
                 rows.append(WorkItem(call, out_name))
-                start += step_s
     return rows
 
 
@@ -344,6 +355,31 @@ def _save_db_image(db: np.ndarray, path: Path, vmin: float, vmax: float, cmap: s
     plt.close(fig)
 
 
+def _trim_edge_context(
+    times: np.ndarray,
+    power: np.ndarray,
+    db: np.ndarray,
+    edge_context_s: float,
+    segment_duration_s: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if edge_context_s <= 0:
+        return times, power, db
+
+    trim_start = float(edge_context_s)
+    trim_end = trim_start + float(segment_duration_s)
+    mask = (times >= trim_start) & (times <= trim_end)
+
+    if not np.any(mask):
+        start_idx = int(np.searchsorted(times, trim_start, side="left"))
+        end_idx = int(np.searchsorted(times, trim_end, side="right"))
+        start_idx = max(0, min(start_idx, max(0, len(times) - 1)))
+        end_idx = max(start_idx + 1, min(end_idx, len(times)))
+        mask = np.zeros_like(times, dtype=bool)
+        mask[start_idx:end_idx] = True
+
+    return times[mask] - trim_start, power[:, mask], db[:, mask]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Create train-style MATs for testing")
     ap.add_argument("--mat-list", type=str, default=None, help="List of existing MAT filenames (call-centered)")
@@ -355,10 +391,11 @@ def main() -> None:
     ap.add_argument("--out-dir", type=str, required=True)
     ap.add_argument("--compare-dir", type=str, default=None, help="Existing training MAT dir for comparison")
     ap.add_argument("--n", type=int, default=None)
-    ap.add_argument("--device", type=str, default="ICLISTENHF1353")
+    ap.add_argument("--device", type=str, default=None, help="Optional substring filter for clip names")
     ap.add_argument("--spec-backend", type=str, default="auto", choices=["auto", "scipy", "torch"])
     ap.add_argument("--window-s", type=float, default=40.0)
     ap.add_argument("--step-s", type=float, default=40.0)
+    ap.add_argument("--edge-context-s", type=float, default=2.0, help="Seconds of extra audio on both sides before spectrogram generation")
     ap.add_argument("--save-images", action="store_true")
     args = ap.parse_args()
 
@@ -407,20 +444,24 @@ def main() -> None:
     if args.n:
         items = items[:args.n]
 
+    if not items:
+        raise RuntimeError("No work items matched the requested inputs. Check --clip-list/--device filtering.")
+
     audio_index, audio_index_by_second = build_audio_index(audio_dir)
 
     rows = []
     for it in tqdm(items, desc="Generating", unit="mat"):
         call = it.call
+        desired_duration = float(call.end_s - call.begin_s)
         if args.slide:
-            start_s = call.begin_s
-            end_s = call.end_s
-            context_s = args.window_s
+            start_s = call.begin_s - float(args.edge_context_s)
+            end_s = call.end_s + float(args.edge_context_s)
+            context_s = desired_duration + (2.0 * float(args.edge_context_s))
         else:
             padding = (args.window_s - (call.end_s - call.begin_s)) / 2.0
-            start_s = call.begin_s - padding
-            end_s = call.end_s + padding
-            context_s = args.window_s
+            start_s = call.begin_s - padding - float(args.edge_context_s)
+            end_s = call.end_s + padding + float(args.edge_context_s)
+            context_s = args.window_s + (2.0 * float(args.edge_context_s))
 
         audio_seg, fs = _load_context_audio(
             audio_dir, call.clip, start_s, end_s, context_s, audio_index, audio_index_by_second
@@ -429,18 +470,26 @@ def main() -> None:
         freqs, times, sxx, pdb = spec_gen.compute_spectrogram(audio_seg, fs)
         freqs_c, pdb_c = crop_to_freq_lims(freqs, pdb, freq_min, freq_max)
         _, sxx_c = crop_to_freq_lims(freqs, sxx, freq_min, freq_max)
+        times_c, sxx_c, pdb_c = _trim_edge_context(
+            times,
+            sxx_c,
+            pdb_c,
+            float(args.edge_context_s),
+            desired_duration if args.slide else float(args.window_s),
+        )
 
         out_path = out_dir / it.out_name
         scipy.io.savemat(
             str(out_path),
             {
                 "F": freqs_c,
-                "T": times,
+                "T": times_c,
                 "P": sxx_c,
                 "PdB_norm": pdb_c,
                 "freq_min": freq_min,
                 "freq_max": freq_max,
-                "window_s": context_s,
+                "window_s": desired_duration if args.slide else float(args.window_s),
+                "edge_context_s": float(args.edge_context_s),
                 "backend": args.spec_backend,
             },
         )
@@ -494,6 +543,9 @@ def main() -> None:
                 row["abs_diff_max"] = None
 
         rows.append(row)
+
+    if not rows:
+        raise RuntimeError("Generated 0 MAT files. Aborting because this would produce an unusable bundle.")
 
     csv_path = out_dir / "report.csv"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
