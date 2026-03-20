@@ -124,6 +124,12 @@ def _init_wandb_run(
         job_type="training",
         tags=["finwhale", "perch2", "embeddings"],
     )
+    try:
+        run.define_metric("trainer/epoch")
+        run.define_metric("metrics/*", step_metric="trainer/epoch")
+        run.define_metric("final_metrics/*")
+    except Exception:
+        pass
     run.summary["resolved_run_dir"] = str(run_dir)
     run.summary["trainer"] = "train_perch2_embeddings"
     run_url = None
@@ -152,7 +158,7 @@ def _log_wandb_results(
     import wandb
 
     scalar_payload: Dict[str, float] = {}
-    scalar_payload.update(_flatten_numeric_items(metrics, prefix="metrics"))
+    scalar_payload.update(_flatten_numeric_items(metrics, prefix="final_metrics"))
     scalar_payload.update(_flatten_numeric_items(context_manifest_summary, prefix="context_manifest"))
     scalar_payload.update(_flatten_numeric_items(subclip_manifest_summary, prefix="subclips"))
     scalar_payload.update(_flatten_numeric_items(embedding_details, prefix="embeddings"))
@@ -1028,6 +1034,7 @@ def train_embedding_mlp(
     )
 
     callbacks: List[Any] = []
+    epoch_metric_history: Dict[str, List[float]] = {}
     if early_stopping_patience > 0:
         if val_idx.size:
             callbacks.append(
@@ -1052,15 +1059,54 @@ def train_embedding_mlp(
         import wandb
 
         class _WandbEpochLogger(tf.keras.callbacks.Callback):
+            def _append_history(self, key: str, value: float) -> None:
+                epoch_metric_history.setdefault(key, []).append(float(value))
+
             def on_epoch_end(self, epoch, logs=None):
                 logs = logs or {}
-                payload = {
-                    f"epoch/{key}": float(value)
-                    for key, value in logs.items()
-                    if isinstance(value, (int, float, np.floating))
-                }
-                payload["epoch"] = int(epoch + 1)
-                wandb.log(payload, step=int(epoch + 1))
+                step = int(epoch + 1)
+                payload: Dict[str, float] = {"trainer/epoch": float(step)}
+
+                train_prob = self.model.predict(
+                    x_train_scaled,
+                    batch_size=int(mlp_batch_size),
+                    verbose=0,
+                ).reshape(-1)
+                train_metrics = compute_binary_metrics(
+                    y_true=y_train.astype(np.int64),
+                    y_prob=train_prob,
+                    threshold=0.5,
+                )
+                if isinstance(logs.get("loss"), (int, float, np.floating)):
+                    train_metrics["loss"] = float(logs["loss"])
+
+                split_metrics = {"train": train_metrics}
+                if val_idx.size and x_val_scaled is not None:
+                    val_prob = self.model.predict(
+                        x_val_scaled,
+                        batch_size=int(mlp_batch_size),
+                        verbose=0,
+                    ).reshape(-1)
+                    val_metrics = compute_binary_metrics(
+                        y_true=y_val.astype(np.int64),
+                        y_prob=val_prob,
+                        threshold=0.5,
+                    )
+                    if isinstance(logs.get("val_loss"), (int, float, np.floating)):
+                        val_metrics["loss"] = float(logs["val_loss"])
+                    split_metrics["val"] = val_metrics
+
+                for split_name, metric_map in split_metrics.items():
+                    for key, value in metric_map.items():
+                        if isinstance(value, (int, float, np.floating)):
+                            scalar = float(value)
+                            if np.isfinite(scalar):
+                                metric_key = f"metrics/{split_name}/{key}"
+                                payload[metric_key] = scalar
+                                self._append_history(metric_key, scalar)
+
+                self._append_history("trainer/epoch", float(step))
+                wandb.log(payload, step=step)
 
         callbacks.append(_WandbEpochLogger())
 
@@ -1096,6 +1142,7 @@ def train_embedding_mlp(
         key: [float(v) for v in values]
         for key, values in (history.history or {}).items()
     }
+    history_dict.update(epoch_metric_history)
     return scaler, model, metrics, history_dict
 
 
