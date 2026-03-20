@@ -395,7 +395,7 @@ def main() -> None:
     ap.add_argument("--spec-backend", type=str, default="auto", choices=["auto", "scipy", "torch"])
     ap.add_argument("--window-s", type=float, default=40.0)
     ap.add_argument("--step-s", type=float, default=40.0)
-    ap.add_argument("--edge-context-s", type=float, default=2.0, help="Seconds of extra audio on both sides before spectrogram generation")
+    ap.add_argument("--edge-context-s", type=float, default=None, help="Seconds of extra audio on both sides before spectrogram generation. Default: infer from crop duration.")
     ap.add_argument("--save-images", action="store_true")
     args = ap.parse_args()
 
@@ -404,11 +404,15 @@ def main() -> None:
 
     dataset_doc = load_dataset_documentation(args.dataset_doc)
     proc = get_processing_params(dataset_doc=dataset_doc, model_path=None)
+    crop_size = int(proc["crop_size"]) if proc.get("crop_size") is not None else 96
     freq_min, freq_max = proc["freq_lims"]
     win_dur = proc["win_dur"]
     overlap = proc["overlap"]
     clim_min, clim_max = proc["clim"]
     min_db, max_db = -80.0, 0.0
+    hop_s = float(win_dur) * max(0.0, 1.0 - float(overlap))
+    inferred_edge_context_s = float(win_dur) + max(0, crop_size - 1) * hop_s
+    edge_context_s = float(args.edge_context_s) if args.edge_context_s is not None else inferred_edge_context_s
 
     spec_gen = SpectrogramGenerator(
         win_dur=win_dur,
@@ -454,14 +458,14 @@ def main() -> None:
         call = it.call
         desired_duration = float(call.end_s - call.begin_s)
         if args.slide:
-            start_s = call.begin_s - float(args.edge_context_s)
-            end_s = call.end_s + float(args.edge_context_s)
-            context_s = desired_duration + (2.0 * float(args.edge_context_s))
+            start_s = call.begin_s - edge_context_s
+            end_s = call.end_s + edge_context_s
+            context_s = desired_duration + (2.0 * edge_context_s)
         else:
             padding = (args.window_s - (call.end_s - call.begin_s)) / 2.0
-            start_s = call.begin_s - padding - float(args.edge_context_s)
-            end_s = call.end_s + padding + float(args.edge_context_s)
-            context_s = args.window_s + (2.0 * float(args.edge_context_s))
+            start_s = call.begin_s - padding - edge_context_s
+            end_s = call.end_s + padding + edge_context_s
+            context_s = args.window_s + (2.0 * edge_context_s)
 
         audio_seg, fs = _load_context_audio(
             audio_dir, call.clip, start_s, end_s, context_s, audio_index, audio_index_by_second
@@ -470,13 +474,17 @@ def main() -> None:
         freqs, times, sxx, pdb = spec_gen.compute_spectrogram(audio_seg, fs)
         freqs_c, pdb_c = crop_to_freq_lims(freqs, pdb, freq_min, freq_max)
         _, sxx_c = crop_to_freq_lims(freqs, sxx, freq_min, freq_max)
-        times_c, sxx_c, pdb_c = _trim_edge_context(
-            times,
-            sxx_c,
-            pdb_c,
-            float(args.edge_context_s),
-            desired_duration if args.slide else float(args.window_s),
-        )
+        times_shifted = np.asarray(times, dtype=np.float32) + float(start_s)
+        if args.slide:
+            times_c = times_shifted
+        else:
+            times_c, sxx_c, pdb_c = _trim_edge_context(
+                times,
+                sxx_c,
+                pdb_c,
+                edge_context_s,
+                float(args.window_s),
+            )
 
         out_path = out_dir / it.out_name
         scipy.io.savemat(
@@ -489,7 +497,7 @@ def main() -> None:
                 "freq_min": freq_min,
                 "freq_max": freq_max,
                 "window_s": desired_duration if args.slide else float(args.window_s),
-                "edge_context_s": float(args.edge_context_s),
+                "edge_context_s": edge_context_s,
                 "backend": args.spec_backend,
             },
         )
@@ -500,6 +508,7 @@ def main() -> None:
             "end_s": call.end_s,
             "out_mat": str(out_path),
             "backend": args.spec_backend,
+            "edge_context_s": edge_context_s,
         }
 
         if compare_dir and not args.slide:

@@ -35,11 +35,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.dataset.part2_annotations import (
+    adjacent_clip_filename,
     build_part2_manifests,
     parse_filename_timestamp,
     parse_window_mat_stem,
     write_part2_manifests,
 )
+from src.data.sequential_prep import get_processing_params, load_dataset_documentation
 
 
 _TQDM = None
@@ -70,6 +72,32 @@ def _format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes:d}m {sec:02d}s"
     return f"{seconds:.1f}s"
+
+
+def _resolve_edge_context_seconds(dataset_doc_path: Path, explicit_value: Optional[float]) -> float:
+    if explicit_value is not None:
+        return max(0.0, float(explicit_value))
+    dataset_doc = load_dataset_documentation(str(dataset_doc_path))
+    proc = get_processing_params(dataset_doc=dataset_doc, model_path=None)
+    crop_size = int(proc.get("crop_size") or 96)
+    win_dur = float(proc.get("win_dur") or 1.0)
+    overlap = float(proc.get("overlap") or 0.9)
+    hop_s = win_dur * max(0.0, 1.0 - overlap)
+    return max(0.0, win_dur + max(0, crop_size - 1) * hop_s)
+
+
+def _adjacent_context_for_prep_clips(
+    clip_names: Sequence[str],
+    inventory_names: Sequence[str],
+) -> List[str]:
+    available = set(inventory_names)
+    adjacent: set[str] = set()
+    for clip_name in clip_names:
+        for clip_delta in (-1, 1):
+            neighbor = adjacent_clip_filename(clip_name, clip_delta=clip_delta)
+            if neighbor and neighbor in available:
+                adjacent.add(neighbor)
+    return sorted(adjacent)
 
 
 def _load_env_file(path: Path) -> None:
@@ -363,13 +391,8 @@ def _metadata_rows_from_mats(
                 "mat_path": str(mat_path.relative_to(bundle_dir)),
                 "source_audio": source_audio,
                 "raw_audio_path": raw_audio_rel,
-                "segment_index": "",
                 "segment_start_sec": start_s,
                 "segment_end_sec": end_s,
-                "window_index": "",
-                "window_start": "",
-                "window_time_start": start_s,
-                "window_time_end": end_s,
                 "audio_timestamp": audio_timestamp or "",
             }
         )
@@ -429,7 +452,7 @@ def main() -> None:
     ap.add_argument("--output-dir", type=str, required=True, help="Bundle output directory on the mounted drive")
     ap.add_argument("--window-s", type=float, default=300.0, help="MAT duration in seconds. Default: one full 5-minute clip per MAT.")
     ap.add_argument("--step-s", type=float, default=300.0, help="Step between MATs in seconds. Default matches --window-s for one MAT per clip.")
-    ap.add_argument("--edge-context-s", type=float, default=2.0, help="Extra audio on both sides before spectrogram generation for FFT edge stability.")
+    ap.add_argument("--edge-context-s", type=float, default=None, help="Extra audio on both sides before spectrogram generation. Default: infer from model crop duration.")
     ap.add_argument("--spec-backend", type=str, default="auto", choices=["auto", "scipy", "torch"])
     ap.add_argument(
         "--adjacent-boundary-seconds",
@@ -477,6 +500,7 @@ def main() -> None:
     manifests_dir = bundle_dir / "manifests"
     raw_audio_dir = bundle_dir / "raw_audio"
     mat_dir = bundle_dir / "mat_files"
+    effective_edge_context_s = _resolve_edge_context_seconds(dataset_doc, args.edge_context_s)
 
     _print_header("PART 2 VM PREP START")
     _log(f"Workbook: {workbook}", "INFO")
@@ -484,6 +508,7 @@ def main() -> None:
     _log(f"Dataset doc: {dataset_doc}", "INFO")
     _log(f"Output bundle: {bundle_dir}", "INFO")
     _log(f"Adjacent boundary seconds: {float(args.adjacent_boundary_seconds):.1f}", "INFO")
+    _log(f"Effective edge context seconds: {effective_edge_context_s:.2f}", "INFO")
     _log(f"Include adjacent clips in prep windows: {bool(args.include_adjacent_in_prep)}", "INFO")
     _log(f"Stage selected audio into bundle: {bool(args.stage_selected_audio)}", "INFO")
     _log(f"Download missing audio: {bool(args.download_missing_audio)}", "INFO")
@@ -521,10 +546,28 @@ def main() -> None:
     )
     _log(f"Manifest phase finished in {_format_duration(time.monotonic() - manifest_started)}", "SUCCESS")
     candidate_clip_names = [row["filename"] for row in manifests["candidate_clips"]]
+    inventory_clip_names = [row["filename"] for row in manifests.get("clip_inventory", [])]
     adjacent_clip_names = [row["filename"] for row in manifests.get("adjacent_context_clips", [])]
-    download_clip_names = [row["filename"] for row in manifests.get("download_clips", manifests["candidate_clips"])]
     prep_clip_names = [row["filename"] for row in manifests.get("prep_clips", manifests["candidate_clips"])]
+    inference_context_clip_names = (
+        _adjacent_context_for_prep_clips(prep_clip_names, inventory_clip_names)
+        if effective_edge_context_s > 0
+        else []
+    )
+    download_clip_names = sorted(
+        set(row["filename"] for row in manifests.get("download_clips", manifests["candidate_clips"]))
+        | set(inference_context_clip_names)
+    )
     prep_clip_list = manifests_dir / "prep_clips.txt"
+    inference_context_path = manifests_dir / "inference_context_clips.txt"
+    with open(inference_context_path, "w", encoding="utf-8") as handle:
+        for clip_name in inference_context_clip_names:
+            handle.write(f"{clip_name}\n")
+    _log(
+        f"Inference context clips reserved for boundary windows: {len(inference_context_clip_names):,}",
+        "INFO",
+    )
+    _log(f"Inference context list: {inference_context_path}", "INFO")
     required_audio_names = set(prep_clip_names)
     optional_audio_names = set(download_clip_names) - required_audio_names
 
@@ -638,7 +681,7 @@ def main() -> None:
             out_dir=mat_dir,
             window_s=float(args.window_s),
             step_s=float(args.step_s),
-            edge_context_s=float(args.edge_context_s),
+            edge_context_s=float(effective_edge_context_s),
             spec_backend=str(args.spec_backend),
         )
     else:
@@ -666,9 +709,10 @@ def main() -> None:
             "context_duration": float(args.window_s),
             "window_duration": "",
             "overlap": "",
-                "source": {
-                    "type": "computed",
-                    "pipeline": "prepare_part2_vm_dataset.full_clip_spectrograms",
+            "edge_context": float(effective_edge_context_s),
+            "source": {
+                "type": "computed",
+                "pipeline": "prepare_part2_vm_dataset.full_clip_spectrograms",
                     "dataset_doc": str(dataset_doc),
                 },
             },
@@ -681,6 +725,7 @@ def main() -> None:
             "adjacent_boundary_seconds": float(args.adjacent_boundary_seconds),
             "candidate_clip_count": len(candidate_clip_names),
             "adjacent_context_clip_count": len(adjacent_clip_names),
+            "inference_context_clip_count": len(inference_context_clip_names),
             "download_clip_count": len(download_clip_names),
             "prep_clip_count": len(prep_clip_names),
             "copied_audio_count": len(copied_audio),
@@ -690,7 +735,7 @@ def main() -> None:
             "mat_count": len(metadata_rows),
             "window_s": float(args.window_s),
             "step_s": float(args.step_s),
-            "edge_context_s": float(args.edge_context_s),
+            "edge_context_s": float(effective_edge_context_s),
             "missing_required_audio_count": len(missing_required_audio),
             "missing_optional_adjacent_audio_count": len(missing_optional_audio),
         },
@@ -703,6 +748,7 @@ def main() -> None:
         "bundle_dir": str(bundle_dir),
         "candidate_clip_count": len(candidate_clip_names),
         "adjacent_context_clip_count": len(adjacent_clip_names),
+        "inference_context_clip_count": len(inference_context_clip_names),
         "download_clip_count": len(download_clip_names),
         "prep_clip_count": len(prep_clip_names),
         "copied_audio_count": len(copied_audio),
@@ -719,7 +765,7 @@ def main() -> None:
         "adjacent_boundary_seconds": float(args.adjacent_boundary_seconds),
         "window_s": float(args.window_s),
         "step_s": float(args.step_s),
-        "edge_context_s": float(args.edge_context_s),
+        "edge_context_s": float(effective_edge_context_s),
         "archive_path": args.archive_path or "",
     }
     with open(bundle_dir / "prep_summary.json", "w", encoding="utf-8") as handle:
@@ -737,6 +783,7 @@ def main() -> None:
     _log(f"raw_audio: {prep_audio_dir}", "SUCCESS")
     _log(f"candidate_clips: {len(candidate_clip_names)}", "SUCCESS")
     _log(f"adjacent_context_clips: {len(adjacent_clip_names)}", "SUCCESS")
+    _log(f"inference_context_clips: {len(inference_context_clip_names)}", "SUCCESS")
     _log(f"prep_clips: {len(prep_clip_names)}", "SUCCESS")
     _log(f"copied_audio: {len(copied_audio)}", "SUCCESS")
     _log(f"downloaded_audio: {len(downloaded_audio)}", "SUCCESS")
