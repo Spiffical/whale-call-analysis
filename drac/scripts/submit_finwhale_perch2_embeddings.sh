@@ -58,8 +58,15 @@ EVAL_CLIP_SECONDS="10"
 TRAIN_RATIO="0.8"
 VAL_RATIO="0.1"
 MIN_GAP_SECONDS="120"
+CLASSIFIER_HEAD="logreg"
 LOGREG_C="1.0"
 MAX_ITER=3000
+EPOCHS=25
+MLP_BATCH_SIZE=256
+MLP_HIDDEN_DIMS="512,128"
+MLP_DROPOUT="0.2"
+MLP_LEARNING_RATE="0.001"
+EARLY_STOPPING_PATIENCE=5
 TRAIN_POS_AUGMENT_COPIES=1
 TRAIN_NEG_AUGMENT_COPIES=1
 CENTER_BIAS_SIGMA_FRAC="0.25"
@@ -99,8 +106,15 @@ Optional:
   --train-ratio R                   (default: 0.8)
   --val-ratio R                     (default: 0.1)
   --min-gap-seconds SEC             (default: 120)
+  --classifier-head NAME            logreg | mlp (default: logreg)
   --logreg-c VALUE                  (default: 1.0)
   --max-iter N                      (default: 3000)
+  --epochs N                        (default: 25; MLP only)
+  --mlp-batch-size N                (default: 256)
+  --mlp-hidden-dims DIMS            (default: 512,128)
+  --mlp-dropout VALUE               (default: 0.2)
+  --mlp-learning-rate VALUE         (default: 0.001)
+  --early-stopping-patience N       (default: 5)
   --train-pos-augment-copies N      (default: 1)
   --train-neg-augment-copies N      (default: 1)
   --center-bias-sigma-frac VALUE    (default: 0.25)
@@ -175,8 +189,15 @@ while [[ $# -gt 0 ]]; do
     --train-ratio) TRAIN_RATIO="$2"; shift 2 ;;
     --val-ratio) VAL_RATIO="$2"; shift 2 ;;
     --min-gap-seconds) MIN_GAP_SECONDS="$2"; shift 2 ;;
+    --classifier-head) CLASSIFIER_HEAD="$2"; shift 2 ;;
     --logreg-c) LOGREG_C="$2"; shift 2 ;;
     --max-iter) MAX_ITER="$2"; shift 2 ;;
+    --epochs) EPOCHS="$2"; shift 2 ;;
+    --mlp-batch-size) MLP_BATCH_SIZE="$2"; shift 2 ;;
+    --mlp-hidden-dims) MLP_HIDDEN_DIMS="$2"; shift 2 ;;
+    --mlp-dropout) MLP_DROPOUT="$2"; shift 2 ;;
+    --mlp-learning-rate) MLP_LEARNING_RATE="$2"; shift 2 ;;
+    --early-stopping-patience) EARLY_STOPPING_PATIENCE="$2"; shift 2 ;;
     --train-pos-augment-copies) TRAIN_POS_AUGMENT_COPIES="$2"; shift 2 ;;
     --train-neg-augment-copies) TRAIN_NEG_AUGMENT_COPIES="$2"; shift 2 ;;
     --center-bias-sigma-frac) CENTER_BIAS_SIGMA_FRAC="$2"; shift 2 ;;
@@ -434,7 +455,8 @@ TRCLIP_TAG="$(fmt_num "$TRAIN_CLIP_SECONDS")"
 EVCLIP_TAG="$(fmt_num "$EVAL_CLIP_SECONDS")"
 CBS_TAG="$(fmt_num "$CENTER_BIAS_SIGMA_FRAC")"
 GAP_TAG="$(fmt_num "$MIN_GAP_SECONDS")"
-BASE_FOLDER="finwhale-perch2-${MODEL_TAG}-b${BATCH_SIZE}-ctx${CTX_TAG}-tr${TRCLIP_TAG}-ev${EVCLIP_TAG}-cbs${CBS_TAG}-gap${GAP_TAG}-seed${SEED}"
+HEAD_TAG="$(safe_tag "$CLASSIFIER_HEAD")"
+BASE_FOLDER="finwhale-perch2-${MODEL_TAG}-head${HEAD_TAG}-b${BATCH_SIZE}-ctx${CTX_TAG}-tr${TRCLIP_TAG}-ev${EVCLIP_TAG}-cbs${CBS_TAG}-gap${GAP_TAG}-seed${SEED}"
 if [[ -n "$RUN_TAG" ]]; then
   BASE_FOLDER="${BASE_FOLDER}-$(safe_tag "$RUN_TAG")"
 fi
@@ -455,8 +477,15 @@ PYTHON_CMD=(
   --val-ratio "$VAL_RATIO"
   --min-gap-seconds "$MIN_GAP_SECONDS"
   --seed "$SEED"
+  --classifier-head "$CLASSIFIER_HEAD"
   --logreg-c "$LOGREG_C"
   --max-iter "$MAX_ITER"
+  --epochs "$EPOCHS"
+  --mlp-batch-size "$MLP_BATCH_SIZE"
+  --mlp-hidden-dims "$MLP_HIDDEN_DIMS"
+  --mlp-dropout "$MLP_DROPOUT"
+  --mlp-learning-rate "$MLP_LEARNING_RATE"
+  --early-stopping-patience "$EARLY_STOPPING_PATIENCE"
   --train-pos-augment-copies "$TRAIN_POS_AUGMENT_COPIES"
   --train-neg-augment-copies "$TRAIN_NEG_AUGMENT_COPIES"
   --center-bias-sigma-frac "$CENTER_BIAS_SIGMA_FRAC"
@@ -495,8 +524,13 @@ if [[ "$USE_WANDB" == "true" ]]; then
 else
   echo "  wandb: disabled"
 fi
-echo "  perch-model: $PERCH_MODEL | batch-size: $BATCH_SIZE"
+echo "  perch-model: $PERCH_MODEL | batch-size: $BATCH_SIZE | classifier-head: $CLASSIFIER_HEAD"
 echo "  context: $CONTEXT_SECONDS | train-clip: $TRAIN_CLIP_SECONDS | eval-clip: $EVAL_CLIP_SECONDS"
+if [[ "$CLASSIFIER_HEAD" == "mlp" ]]; then
+  echo "  mlp: epochs=$EPOCHS batch=$MLP_BATCH_SIZE hidden_dims=$MLP_HIDDEN_DIMS dropout=$MLP_DROPOUT lr=$MLP_LEARNING_RATE patience=$EARLY_STOPPING_PATIENCE"
+else
+  echo "  logreg: c=$LOGREG_C max_iter=$MAX_ITER"
+fi
 echo "  train_pos_augment_copies: $TRAIN_POS_AUGMENT_COPIES | train_neg_augment_copies: $TRAIN_NEG_AUGMENT_COPIES"
 echo "  center_bias_sigma_frac: $CENTER_BIAS_SIGMA_FRAC"
 echo "  output-root: $EXP_PATH"

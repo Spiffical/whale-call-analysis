@@ -28,7 +28,7 @@ import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Ensure repo root is importable when running as a script.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -903,14 +903,42 @@ def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: fl
     }
 
 
-def train_embedding_classifier(
+def _parse_hidden_dims(spec: str) -> List[int]:
+    dims: List[int] = []
+    for part in str(spec).split(","):
+        token = part.strip()
+        if not token:
+            continue
+        value = int(token)
+        if value <= 0:
+            raise ValueError("Hidden layer sizes must be positive integers.")
+        dims.append(value)
+    if not dims:
+        raise ValueError("At least one hidden layer size is required for the MLP head.")
+    return dims
+
+
+def _balanced_class_weight(y_true: np.ndarray) -> Dict[int, float]:
+    y_true = np.asarray(y_true, dtype=np.int64)
+    total = int(len(y_true))
+    pos = int((y_true == 1).sum())
+    neg = int((y_true == 0).sum())
+    if pos == 0 or neg == 0:
+        return {0: 1.0, 1: 1.0}
+    return {
+        0: float(total / (2.0 * neg)),
+        1: float(total / (2.0 * pos)),
+    }
+
+
+def train_embedding_logreg(
     x: np.ndarray,
     y: np.ndarray,
     index_by_split: Dict[str, np.ndarray],
     seed: int,
     c: float,
     max_iter: int,
-) -> Tuple[StandardScaler, LogisticRegression, dict]:
+) -> Tuple[StandardScaler, LogisticRegression, dict, dict]:
     """Train logistic regression from precomputed split indices."""
     if index_by_split["train"].size == 0:
         raise RuntimeError("Train split is empty. Increase sample size or adjust split ratios.")
@@ -941,7 +969,166 @@ def train_embedding_classifier(
         probs = clf.predict_proba(scaler.transform(x[split_idx]))[:, 1]
         metrics[split_name] = compute_binary_metrics(y_true=y[split_idx], y_prob=probs, threshold=0.5)
 
-    return scaler, clf, metrics
+    return scaler, clf, metrics, {}
+
+
+def train_embedding_mlp(
+    x: np.ndarray,
+    y: np.ndarray,
+    index_by_split: Dict[str, np.ndarray],
+    seed: int,
+    hidden_dims: str,
+    dropout: float,
+    learning_rate: float,
+    epochs: int,
+    mlp_batch_size: int,
+    early_stopping_patience: int,
+    wandb_run=None,
+) -> Tuple[StandardScaler, Any, dict, dict]:
+    """Train a small neural network on top of fixed embeddings."""
+    if index_by_split["train"].size == 0:
+        raise RuntimeError("Train split is empty. Increase sample size or adjust split ratios.")
+
+    import tensorflow as tf
+
+    tf.keras.utils.set_random_seed(seed)
+
+    x_train = x[index_by_split["train"]]
+    y_train = y[index_by_split["train"]].astype(np.float32)
+    val_idx = index_by_split.get("val", np.asarray([], dtype=np.int64))
+    x_val = x[val_idx] if val_idx.size else np.zeros((0, x.shape[1]), dtype=x.dtype)
+    y_val = y[val_idx].astype(np.float32) if val_idx.size else np.zeros((0,), dtype=np.float32)
+
+    if len(np.unique(y_train)) < 2:
+        raise RuntimeError("Train split has only one class. Increase negatives or sample size.")
+
+    scaler = StandardScaler()
+    x_train_scaled = scaler.fit_transform(x_train).astype(np.float32)
+    x_val_scaled = scaler.transform(x_val).astype(np.float32) if val_idx.size else None
+
+    dims = _parse_hidden_dims(hidden_dims)
+    inputs = tf.keras.Input(shape=(x_train_scaled.shape[1],), name="embedding")
+    hidden = inputs
+    for idx, units in enumerate(dims):
+        hidden = tf.keras.layers.Dense(units, activation="relu", name=f"dense_{idx+1}")(hidden)
+        if dropout > 0:
+            hidden = tf.keras.layers.Dropout(float(dropout), name=f"dropout_{idx+1}")(hidden)
+    outputs = tf.keras.layers.Dense(1, activation="sigmoid", name="call_probability")(hidden)
+    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="perch_embedding_mlp")
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=float(learning_rate)),
+        loss=tf.keras.losses.BinaryCrossentropy(),
+        metrics=[
+            tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+            tf.keras.metrics.Precision(name="precision"),
+            tf.keras.metrics.Recall(name="recall"),
+            tf.keras.metrics.AUC(name="auc"),
+        ],
+    )
+
+    callbacks: List[Any] = []
+    if early_stopping_patience > 0:
+        if val_idx.size:
+            callbacks.append(
+                tf.keras.callbacks.EarlyStopping(
+                    monitor="val_auc",
+                    mode="max",
+                    patience=int(early_stopping_patience),
+                    restore_best_weights=True,
+                )
+            )
+        else:
+            callbacks.append(
+                tf.keras.callbacks.EarlyStopping(
+                    monitor="loss",
+                    mode="min",
+                    patience=int(early_stopping_patience),
+                    restore_best_weights=True,
+                )
+            )
+
+    if wandb_run is not None:
+        import wandb
+
+        class _WandbEpochLogger(tf.keras.callbacks.Callback):
+            def on_epoch_end(self, epoch, logs=None):
+                logs = logs or {}
+                payload = {
+                    f"epoch/{key}": float(value)
+                    for key, value in logs.items()
+                    if isinstance(value, (int, float, np.floating))
+                }
+                payload["epoch"] = int(epoch + 1)
+                wandb.log(payload, step=int(epoch + 1))
+
+        callbacks.append(_WandbEpochLogger())
+
+    history = model.fit(
+        x_train_scaled,
+        y_train,
+        validation_data=(x_val_scaled, y_val) if val_idx.size else None,
+        epochs=int(epochs),
+        batch_size=int(mlp_batch_size),
+        shuffle=True,
+        verbose=2,
+        callbacks=callbacks,
+        class_weight=_balanced_class_weight(y_train),
+    )
+
+    metrics: Dict[str, dict] = {}
+    for split_name, split_idx in index_by_split.items():
+        if split_idx.size == 0:
+            metrics[split_name] = {"empty_split": True}
+            continue
+        split_probs = model.predict(
+            scaler.transform(x[split_idx]).astype(np.float32),
+            batch_size=int(mlp_batch_size),
+            verbose=0,
+        ).reshape(-1)
+        metrics[split_name] = compute_binary_metrics(
+            y_true=y[split_idx],
+            y_prob=split_probs,
+            threshold=0.5,
+        )
+
+    history_dict = {
+        key: [float(v) for v in values]
+        for key, values in (history.history or {}).items()
+    }
+    return scaler, model, metrics, history_dict
+
+
+def train_embedding_classifier(
+    x: np.ndarray,
+    y: np.ndarray,
+    index_by_split: Dict[str, np.ndarray],
+    args: argparse.Namespace,
+    wandb_run=None,
+) -> Tuple[StandardScaler, Any, dict, dict]:
+    classifier_head = str(getattr(args, "classifier_head", "logreg")).lower().strip()
+    if classifier_head == "mlp":
+        return train_embedding_mlp(
+            x=x,
+            y=y,
+            index_by_split=index_by_split,
+            seed=int(args.seed),
+            hidden_dims=str(args.mlp_hidden_dims),
+            dropout=float(args.mlp_dropout),
+            learning_rate=float(args.mlp_learning_rate),
+            epochs=int(args.epochs),
+            mlp_batch_size=int(args.mlp_batch_size),
+            early_stopping_patience=int(args.early_stopping_patience),
+            wandb_run=wandb_run,
+        )
+    return train_embedding_logreg(
+        x=x,
+        y=y,
+        index_by_split=index_by_split,
+        seed=int(args.seed),
+        c=float(args.logreg_c),
+        max_iter=int(args.max_iter),
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -993,8 +1180,26 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--min-gap-seconds", type=float, default=120.0)
     ap.add_argument("--seed", type=int, default=42)
 
+    ap.add_argument(
+        "--classifier-head",
+        type=str,
+        default="logreg",
+        choices=["logreg", "mlp"],
+        help="Classifier trained on Perch embeddings",
+    )
     ap.add_argument("--logreg-c", type=float, default=1.0, help="Inverse regularization strength")
     ap.add_argument("--max-iter", type=int, default=3000, help="Logistic regression max iterations")
+    ap.add_argument("--epochs", type=int, default=25, help="MLP training epochs")
+    ap.add_argument("--mlp-batch-size", type=int, default=256, help="MLP training batch size")
+    ap.add_argument("--mlp-hidden-dims", type=str, default="512,128", help="Comma-separated MLP hidden layer sizes")
+    ap.add_argument("--mlp-dropout", type=float, default=0.2, help="Dropout rate for the MLP head")
+    ap.add_argument("--mlp-learning-rate", type=float, default=1e-3, help="Learning rate for the MLP head")
+    ap.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=5,
+        help="Epoch patience for MLP early stopping (0 disables)",
+    )
     ap.add_argument(
         "--train-pos-augment-copies",
         type=int,
@@ -1038,6 +1243,15 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--eval-clip-seconds must be <= --context-seconds.")
     if args.batch_size <= 0:
         raise SystemExit("--batch-size must be > 0.")
+    if args.epochs <= 0:
+        raise SystemExit("--epochs must be > 0.")
+    if args.mlp_batch_size <= 0:
+        raise SystemExit("--mlp-batch-size must be > 0.")
+    if args.mlp_dropout < 0 or args.mlp_dropout >= 1:
+        raise SystemExit("--mlp-dropout must be in [0, 1).")
+    if args.mlp_learning_rate <= 0:
+        raise SystemExit("--mlp-learning-rate must be > 0.")
+    _parse_hidden_dims(args.mlp_hidden_dims)
     if args.train_pos_augment_copies < 0:
         raise SystemExit("--train-pos-augment-copies must be >= 0.")
     if args.train_neg_augment_copies < 0:
@@ -1181,37 +1395,74 @@ def main() -> None:
             neg = int((yy == 0).sum())
             used_split_counts[split_name] = {"pos": pos, "neg": neg, "total": int(len(split_idx))}
 
-        scaler, clf, metrics = train_embedding_classifier(
+        scaler, clf, metrics, training_history = train_embedding_classifier(
             x=x,
             y=y,
             index_by_split=index_by_split,
-            seed=int(args.seed),
-            c=float(args.logreg_c),
-            max_iter=int(args.max_iter),
+            args=args,
+            wandb_run=wandb_run,
         )
 
-        model_path = run_dir / "perch2_logreg.joblib"
-        joblib.dump(
-            {
-                "scaler": scaler,
-                "classifier": clf,
-                "perch_model": args.perch_model,
-                "embedding_dim": int(x.shape[1]),
-                "context_seconds": float(args.context_seconds),
-                "train_clip_seconds": float(args.train_clip_seconds),
-                "eval_clip_seconds": float(args.eval_clip_seconds),
-                "train_args": vars(args),
-                "wandb": {
-                    "run_id": wandb_run_id,
-                    "run_url": wandb_run_url,
-                    "project": args.wandb_project if args.use_wandb else None,
-                    "group": args.wandb_group if args.use_wandb else None,
-                    "name": wandb_run_name if args.use_wandb else None,
+        classifier_head = str(args.classifier_head).lower().strip()
+        if classifier_head == "mlp" and training_history:
+            epochs_ran = len(training_history.get("loss", []))
+            best_val_auc = max(training_history.get("val_auc", [float("nan")]))
+            print(
+                "MLP training complete | "
+                f"epochs_ran={epochs_ran} "
+                f"best_val_auc={best_val_auc:.4f}"
+            )
+        if classifier_head == "mlp":
+            model_path = run_dir / "perch2_mlp.keras"
+            scaler_path = run_dir / "perch2_mlp_scaler.joblib"
+            clf.save(model_path)
+            joblib.dump(
+                {
+                    "scaler": scaler,
+                    "classifier_head": classifier_head,
+                    "perch_model": args.perch_model,
+                    "embedding_dim": int(x.shape[1]),
+                    "context_seconds": float(args.context_seconds),
+                    "train_clip_seconds": float(args.train_clip_seconds),
+                    "eval_clip_seconds": float(args.eval_clip_seconds),
+                    "train_args": vars(args),
+                    "wandb": {
+                        "run_id": wandb_run_id,
+                        "run_url": wandb_run_url,
+                        "project": args.wandb_project if args.use_wandb else None,
+                        "group": args.wandb_group if args.use_wandb else None,
+                        "name": wandb_run_name if args.use_wandb else None,
+                    },
                 },
-            },
-            model_path,
-        )
-        print(f"Saved model: {model_path}")
+                scaler_path,
+            )
+            print(f"Saved model: {model_path}")
+            print(f"Saved scaler: {scaler_path}")
+        else:
+            model_path = run_dir / "perch2_logreg.joblib"
+            scaler_path = None
+            joblib.dump(
+                {
+                    "scaler": scaler,
+                    "classifier": clf,
+                    "classifier_head": classifier_head,
+                    "perch_model": args.perch_model,
+                    "embedding_dim": int(x.shape[1]),
+                    "context_seconds": float(args.context_seconds),
+                    "train_clip_seconds": float(args.train_clip_seconds),
+                    "eval_clip_seconds": float(args.eval_clip_seconds),
+                    "train_args": vars(args),
+                    "wandb": {
+                        "run_id": wandb_run_id,
+                        "run_url": wandb_run_url,
+                        "project": args.wandb_project if args.use_wandb else None,
+                        "group": args.wandb_group if args.use_wandb else None,
+                        "name": wandb_run_name if args.use_wandb else None,
+                    },
+                },
+                model_path,
+            )
+            print(f"Saved model: {model_path}")
 
         if not args.skip_save_embeddings:
             embeddings_path = run_dir / "embeddings.npz"
@@ -1231,12 +1482,14 @@ def main() -> None:
             "context_split_counts": context_split_counts,
             "used_split_counts": used_split_counts,
             "metrics": metrics,
+            "training_history": training_history,
             "artifacts": {
                 "context_window_manifest": str(context_manifest_path),
                 "subclip_manifest": str(subclip_manifest_path),
                 "used_subclips": str(used_manifest_path),
                 "skipped_subclips": str(skipped_path) if skipped_path else None,
                 "model": str(model_path),
+                "scaler": str(scaler_path) if scaler_path else None,
             },
             "wandb": {
                 "run_id": wandb_run_id,
