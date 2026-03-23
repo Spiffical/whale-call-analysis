@@ -937,6 +937,197 @@ def _balanced_class_weight(y_true: np.ndarray) -> Dict[int, float]:
     }
 
 
+def _build_embedding_mlp_model(tf, input_dim: int, dims: List[int], dropout: float):
+    inputs = tf.keras.Input(shape=(input_dim,), name="embedding")
+    hidden = inputs
+    for idx, units in enumerate(dims):
+        hidden = tf.keras.layers.Dense(units, activation="relu", name=f"dense_{idx+1}")(hidden)
+        if dropout > 0:
+            hidden = tf.keras.layers.Dropout(float(dropout), name=f"dropout_{idx+1}")(hidden)
+    outputs = tf.keras.layers.Dense(1, activation="sigmoid", name="call_probability")(hidden)
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name="perch_embedding_mlp")
+
+
+def _build_embedding_resnet_model(tf, input_dim: int, width: int, blocks: int, dropout: float):
+    inputs = tf.keras.Input(shape=(input_dim,), name="embedding")
+    hidden = tf.keras.layers.Dense(width, activation="relu", name="stem_dense")(inputs)
+    if dropout > 0:
+        hidden = tf.keras.layers.Dropout(float(dropout), name="stem_dropout")(hidden)
+
+    for idx in range(int(blocks)):
+        residual = hidden
+        block = tf.keras.layers.LayerNormalization(name=f"resblock_{idx+1}_ln")(hidden)
+        block = tf.keras.layers.Dense(width, activation="relu", name=f"resblock_{idx+1}_dense_1")(block)
+        if dropout > 0:
+            block = tf.keras.layers.Dropout(float(dropout), name=f"resblock_{idx+1}_dropout_1")(block)
+        block = tf.keras.layers.Dense(width, activation=None, name=f"resblock_{idx+1}_dense_2")(block)
+        if dropout > 0:
+            block = tf.keras.layers.Dropout(float(dropout), name=f"resblock_{idx+1}_dropout_2")(block)
+        hidden = tf.keras.layers.Add(name=f"resblock_{idx+1}_add")([residual, block])
+        hidden = tf.keras.layers.ReLU(name=f"resblock_{idx+1}_relu")(hidden)
+
+    hidden = tf.keras.layers.LayerNormalization(name="head_ln")(hidden)
+    outputs = tf.keras.layers.Dense(1, activation="sigmoid", name="call_probability")(hidden)
+    return tf.keras.Model(inputs=inputs, outputs=outputs, name="perch_embedding_resnet")
+
+
+def _train_embedding_neural_head(
+    x: np.ndarray,
+    y: np.ndarray,
+    index_by_split: Dict[str, np.ndarray],
+    seed: int,
+    learning_rate: float,
+    epochs: int,
+    batch_size: int,
+    early_stopping_patience: int,
+    model_builder,
+    wandb_run=None,
+) -> Tuple[StandardScaler, Any, dict, dict]:
+    if index_by_split["train"].size == 0:
+        raise RuntimeError("Train split is empty. Increase sample size or adjust split ratios.")
+
+    import tensorflow as tf
+
+    tf.keras.utils.set_random_seed(seed)
+
+    x_train = x[index_by_split["train"]]
+    y_train = y[index_by_split["train"]].astype(np.float32)
+    val_idx = index_by_split.get("val", np.asarray([], dtype=np.int64))
+    x_val = x[val_idx] if val_idx.size else np.zeros((0, x.shape[1]), dtype=x.dtype)
+    y_val = y[val_idx].astype(np.float32) if val_idx.size else np.zeros((0,), dtype=np.float32)
+
+    if len(np.unique(y_train)) < 2:
+        raise RuntimeError("Train split has only one class. Increase negatives or sample size.")
+
+    scaler = StandardScaler()
+    x_train_scaled = scaler.fit_transform(x_train).astype(np.float32)
+    x_val_scaled = scaler.transform(x_val).astype(np.float32) if val_idx.size else None
+
+    model = model_builder(tf=tf, input_dim=int(x_train_scaled.shape[1]))
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=float(learning_rate)),
+        loss=tf.keras.losses.BinaryCrossentropy(),
+        metrics=[
+            tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+            tf.keras.metrics.Precision(name="precision"),
+            tf.keras.metrics.Recall(name="recall"),
+            tf.keras.metrics.AUC(name="auc"),
+        ],
+    )
+
+    callbacks: List[Any] = []
+    epoch_metric_history: Dict[str, List[float]] = {}
+    if early_stopping_patience > 0:
+        if val_idx.size:
+            callbacks.append(
+                tf.keras.callbacks.EarlyStopping(
+                    monitor="val_auc",
+                    mode="max",
+                    patience=int(early_stopping_patience),
+                    restore_best_weights=True,
+                )
+            )
+        else:
+            callbacks.append(
+                tf.keras.callbacks.EarlyStopping(
+                    monitor="loss",
+                    mode="min",
+                    patience=int(early_stopping_patience),
+                    restore_best_weights=True,
+                )
+            )
+
+    if wandb_run is not None:
+        import wandb
+
+        class _WandbEpochLogger(tf.keras.callbacks.Callback):
+            def _append_history(self, key: str, value: float) -> None:
+                epoch_metric_history.setdefault(key, []).append(float(value))
+
+            def on_epoch_end(self, epoch, logs=None):
+                logs = logs or {}
+                step = int(epoch + 1)
+                payload: Dict[str, float] = {"trainer/epoch": float(step)}
+
+                train_prob = self.model.predict(
+                    x_train_scaled,
+                    batch_size=int(batch_size),
+                    verbose=0,
+                ).reshape(-1)
+                train_metrics = compute_binary_metrics(
+                    y_true=y_train.astype(np.int64),
+                    y_prob=train_prob,
+                    threshold=0.5,
+                )
+                if isinstance(logs.get("loss"), (int, float, np.floating)):
+                    train_metrics["loss"] = float(logs["loss"])
+
+                split_metrics = {"train": train_metrics}
+                if val_idx.size and x_val_scaled is not None:
+                    val_prob = self.model.predict(
+                        x_val_scaled,
+                        batch_size=int(batch_size),
+                        verbose=0,
+                    ).reshape(-1)
+                    val_metrics = compute_binary_metrics(
+                        y_true=y_val.astype(np.int64),
+                        y_prob=val_prob,
+                        threshold=0.5,
+                    )
+                    if isinstance(logs.get("val_loss"), (int, float, np.floating)):
+                        val_metrics["loss"] = float(logs["val_loss"])
+                    split_metrics["val"] = val_metrics
+
+                for split_name, metric_map in split_metrics.items():
+                    for key, value in metric_map.items():
+                        if isinstance(value, (int, float, np.floating)):
+                            scalar = float(value)
+                            if np.isfinite(scalar):
+                                metric_key = f"metrics/{split_name}/{key}"
+                                payload[metric_key] = scalar
+                                self._append_history(metric_key, scalar)
+
+                self._append_history("trainer/epoch", float(step))
+                wandb.log(payload, step=step)
+
+        callbacks.append(_WandbEpochLogger())
+
+    history = model.fit(
+        x_train_scaled,
+        y_train,
+        validation_data=(x_val_scaled, y_val) if val_idx.size else None,
+        epochs=int(epochs),
+        batch_size=int(batch_size),
+        shuffle=True,
+        verbose=2,
+        callbacks=callbacks,
+        class_weight=_balanced_class_weight(y_train),
+    )
+
+    metrics: Dict[str, dict] = {}
+    for split_name, split_idx in index_by_split.items():
+        if split_idx.size == 0:
+            metrics[split_name] = {"empty_split": True}
+            continue
+        split_probs = model.predict(
+            scaler.transform(x[split_idx]).astype(np.float32),
+            batch_size=int(batch_size),
+            verbose=0,
+        ).reshape(-1)
+        metrics[split_name] = compute_binary_metrics(
+            y_true=y[split_idx],
+            y_prob=split_probs,
+            threshold=0.5,
+        )
+
+    history_dict = {
+        key: [float(v) for v in values]
+        for key, values in (history.history or {}).items()
+    }
+    history_dict.update(epoch_metric_history)
+    return scaler, model, metrics, history_dict
+
+
 def train_embedding_logreg(
     x: np.ndarray,
     y: np.ndarray,
@@ -991,159 +1182,60 @@ def train_embedding_mlp(
     early_stopping_patience: int,
     wandb_run=None,
 ) -> Tuple[StandardScaler, Any, dict, dict]:
-    """Train a small neural network on top of fixed embeddings."""
-    if index_by_split["train"].size == 0:
-        raise RuntimeError("Train split is empty. Increase sample size or adjust split ratios.")
-
-    import tensorflow as tf
-
-    tf.keras.utils.set_random_seed(seed)
-
-    x_train = x[index_by_split["train"]]
-    y_train = y[index_by_split["train"]].astype(np.float32)
-    val_idx = index_by_split.get("val", np.asarray([], dtype=np.int64))
-    x_val = x[val_idx] if val_idx.size else np.zeros((0, x.shape[1]), dtype=x.dtype)
-    y_val = y[val_idx].astype(np.float32) if val_idx.size else np.zeros((0,), dtype=np.float32)
-
-    if len(np.unique(y_train)) < 2:
-        raise RuntimeError("Train split has only one class. Increase negatives or sample size.")
-
-    scaler = StandardScaler()
-    x_train_scaled = scaler.fit_transform(x_train).astype(np.float32)
-    x_val_scaled = scaler.transform(x_val).astype(np.float32) if val_idx.size else None
-
+    """Train an MLP on top of fixed embeddings."""
     dims = _parse_hidden_dims(hidden_dims)
-    inputs = tf.keras.Input(shape=(x_train_scaled.shape[1],), name="embedding")
-    hidden = inputs
-    for idx, units in enumerate(dims):
-        hidden = tf.keras.layers.Dense(units, activation="relu", name=f"dense_{idx+1}")(hidden)
-        if dropout > 0:
-            hidden = tf.keras.layers.Dropout(float(dropout), name=f"dropout_{idx+1}")(hidden)
-    outputs = tf.keras.layers.Dense(1, activation="sigmoid", name="call_probability")(hidden)
-    model = tf.keras.Model(inputs=inputs, outputs=outputs, name="perch_embedding_mlp")
-
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=float(learning_rate)),
-        loss=tf.keras.losses.BinaryCrossentropy(),
-        metrics=[
-            tf.keras.metrics.BinaryAccuracy(name="accuracy"),
-            tf.keras.metrics.Precision(name="precision"),
-            tf.keras.metrics.Recall(name="recall"),
-            tf.keras.metrics.AUC(name="auc"),
-        ],
+    return _train_embedding_neural_head(
+        x=x,
+        y=y,
+        index_by_split=index_by_split,
+        seed=seed,
+        learning_rate=learning_rate,
+        epochs=epochs,
+        batch_size=mlp_batch_size,
+        early_stopping_patience=early_stopping_patience,
+        model_builder=lambda tf, input_dim: _build_embedding_mlp_model(
+            tf=tf,
+            input_dim=input_dim,
+            dims=dims,
+            dropout=dropout,
+        ),
+        wandb_run=wandb_run,
     )
 
-    callbacks: List[Any] = []
-    epoch_metric_history: Dict[str, List[float]] = {}
-    if early_stopping_patience > 0:
-        if val_idx.size:
-            callbacks.append(
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="val_auc",
-                    mode="max",
-                    patience=int(early_stopping_patience),
-                    restore_best_weights=True,
-                )
-            )
-        else:
-            callbacks.append(
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="loss",
-                    mode="min",
-                    patience=int(early_stopping_patience),
-                    restore_best_weights=True,
-                )
-            )
 
-    if wandb_run is not None:
-        import wandb
-
-        class _WandbEpochLogger(tf.keras.callbacks.Callback):
-            def _append_history(self, key: str, value: float) -> None:
-                epoch_metric_history.setdefault(key, []).append(float(value))
-
-            def on_epoch_end(self, epoch, logs=None):
-                logs = logs or {}
-                step = int(epoch + 1)
-                payload: Dict[str, float] = {"trainer/epoch": float(step)}
-
-                train_prob = self.model.predict(
-                    x_train_scaled,
-                    batch_size=int(mlp_batch_size),
-                    verbose=0,
-                ).reshape(-1)
-                train_metrics = compute_binary_metrics(
-                    y_true=y_train.astype(np.int64),
-                    y_prob=train_prob,
-                    threshold=0.5,
-                )
-                if isinstance(logs.get("loss"), (int, float, np.floating)):
-                    train_metrics["loss"] = float(logs["loss"])
-
-                split_metrics = {"train": train_metrics}
-                if val_idx.size and x_val_scaled is not None:
-                    val_prob = self.model.predict(
-                        x_val_scaled,
-                        batch_size=int(mlp_batch_size),
-                        verbose=0,
-                    ).reshape(-1)
-                    val_metrics = compute_binary_metrics(
-                        y_true=y_val.astype(np.int64),
-                        y_prob=val_prob,
-                        threshold=0.5,
-                    )
-                    if isinstance(logs.get("val_loss"), (int, float, np.floating)):
-                        val_metrics["loss"] = float(logs["val_loss"])
-                    split_metrics["val"] = val_metrics
-
-                for split_name, metric_map in split_metrics.items():
-                    for key, value in metric_map.items():
-                        if isinstance(value, (int, float, np.floating)):
-                            scalar = float(value)
-                            if np.isfinite(scalar):
-                                metric_key = f"metrics/{split_name}/{key}"
-                                payload[metric_key] = scalar
-                                self._append_history(metric_key, scalar)
-
-                self._append_history("trainer/epoch", float(step))
-                wandb.log(payload, step=step)
-
-        callbacks.append(_WandbEpochLogger())
-
-    history = model.fit(
-        x_train_scaled,
-        y_train,
-        validation_data=(x_val_scaled, y_val) if val_idx.size else None,
-        epochs=int(epochs),
-        batch_size=int(mlp_batch_size),
-        shuffle=True,
-        verbose=2,
-        callbacks=callbacks,
-        class_weight=_balanced_class_weight(y_train),
+def train_embedding_resnet(
+    x: np.ndarray,
+    y: np.ndarray,
+    index_by_split: Dict[str, np.ndarray],
+    seed: int,
+    width: int,
+    blocks: int,
+    dropout: float,
+    learning_rate: float,
+    epochs: int,
+    batch_size: int,
+    early_stopping_patience: int,
+    wandb_run=None,
+) -> Tuple[StandardScaler, Any, dict, dict]:
+    """Train a residual dense head on fixed embeddings."""
+    return _train_embedding_neural_head(
+        x=x,
+        y=y,
+        index_by_split=index_by_split,
+        seed=seed,
+        learning_rate=learning_rate,
+        epochs=epochs,
+        batch_size=batch_size,
+        early_stopping_patience=early_stopping_patience,
+        model_builder=lambda tf, input_dim: _build_embedding_resnet_model(
+            tf=tf,
+            input_dim=input_dim,
+            width=int(width),
+            blocks=int(blocks),
+            dropout=dropout,
+        ),
+        wandb_run=wandb_run,
     )
-
-    metrics: Dict[str, dict] = {}
-    for split_name, split_idx in index_by_split.items():
-        if split_idx.size == 0:
-            metrics[split_name] = {"empty_split": True}
-            continue
-        split_probs = model.predict(
-            scaler.transform(x[split_idx]).astype(np.float32),
-            batch_size=int(mlp_batch_size),
-            verbose=0,
-        ).reshape(-1)
-        metrics[split_name] = compute_binary_metrics(
-            y_true=y[split_idx],
-            y_prob=split_probs,
-            threshold=0.5,
-        )
-
-    history_dict = {
-        key: [float(v) for v in values]
-        for key, values in (history.history or {}).items()
-    }
-    history_dict.update(epoch_metric_history)
-    return scaler, model, metrics, history_dict
 
 
 def train_embedding_classifier(
@@ -1165,6 +1257,21 @@ def train_embedding_classifier(
             learning_rate=float(args.mlp_learning_rate),
             epochs=int(args.epochs),
             mlp_batch_size=int(args.mlp_batch_size),
+            early_stopping_patience=int(args.early_stopping_patience),
+            wandb_run=wandb_run,
+        )
+    if classifier_head == "resnet":
+        return train_embedding_resnet(
+            x=x,
+            y=y,
+            index_by_split=index_by_split,
+            seed=int(args.seed),
+            width=int(args.resnet_width),
+            blocks=int(args.resnet_blocks),
+            dropout=float(args.mlp_dropout),
+            learning_rate=float(args.mlp_learning_rate),
+            epochs=int(args.epochs),
+            batch_size=int(args.mlp_batch_size),
             early_stopping_patience=int(args.early_stopping_patience),
             wandb_run=wandb_run,
         )
@@ -1231,7 +1338,7 @@ def parse_args() -> argparse.Namespace:
         "--classifier-head",
         type=str,
         default="logreg",
-        choices=["logreg", "mlp"],
+        choices=["logreg", "mlp", "resnet"],
         help="Classifier trained on Perch embeddings",
     )
     ap.add_argument("--logreg-c", type=float, default=1.0, help="Inverse regularization strength")
@@ -1239,6 +1346,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--epochs", type=int, default=25, help="MLP training epochs")
     ap.add_argument("--mlp-batch-size", type=int, default=256, help="MLP training batch size")
     ap.add_argument("--mlp-hidden-dims", type=str, default="512,128", help="Comma-separated MLP hidden layer sizes")
+    ap.add_argument("--resnet-width", type=int, default=512, help="Hidden width for the residual embedding head")
+    ap.add_argument("--resnet-blocks", type=int, default=3, help="Residual block count for the residual embedding head")
     ap.add_argument("--mlp-dropout", type=float, default=0.2, help="Dropout rate for the MLP head")
     ap.add_argument("--mlp-learning-rate", type=float, default=1e-3, help="Learning rate for the MLP head")
     ap.add_argument(
@@ -1294,6 +1403,10 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--epochs must be > 0.")
     if args.mlp_batch_size <= 0:
         raise SystemExit("--mlp-batch-size must be > 0.")
+    if args.resnet_width <= 0:
+        raise SystemExit("--resnet-width must be > 0.")
+    if args.resnet_blocks <= 0:
+        raise SystemExit("--resnet-blocks must be > 0.")
     if args.mlp_dropout < 0 or args.mlp_dropout >= 1:
         raise SystemExit("--mlp-dropout must be in [0, 1).")
     if args.mlp_learning_rate <= 0:
@@ -1451,17 +1564,18 @@ def main() -> None:
         )
 
         classifier_head = str(args.classifier_head).lower().strip()
-        if classifier_head == "mlp" and training_history:
+        if classifier_head in {"mlp", "resnet"} and training_history:
             epochs_ran = len(training_history.get("loss", []))
             best_val_auc = max(training_history.get("val_auc", [float("nan")]))
             print(
-                "MLP training complete | "
+                f"{classifier_head.upper()} training complete | "
                 f"epochs_ran={epochs_ran} "
                 f"best_val_auc={best_val_auc:.4f}"
             )
-        if classifier_head == "mlp":
-            model_path = run_dir / "perch2_mlp.keras"
-            scaler_path = run_dir / "perch2_mlp_scaler.joblib"
+        if classifier_head in {"mlp", "resnet"}:
+            model_stem = "perch2_mlp" if classifier_head == "mlp" else "perch2_resnet"
+            model_path = run_dir / f"{model_stem}.keras"
+            scaler_path = run_dir / f"{model_stem}_scaler.joblib"
             clf.save(model_path)
             joblib.dump(
                 {

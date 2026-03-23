@@ -64,6 +64,8 @@ MAX_ITER=3000
 EPOCHS=25
 MLP_BATCH_SIZE=256
 MLP_HIDDEN_DIMS="512,128"
+RESNET_WIDTH=512
+RESNET_BLOCKS=3
 MLP_DROPOUT="0.2"
 MLP_LEARNING_RATE="0.001"
 EARLY_STOPPING_PATIENCE=5
@@ -106,12 +108,14 @@ Optional:
   --train-ratio R                   (default: 0.8)
   --val-ratio R                     (default: 0.1)
   --min-gap-seconds SEC             (default: 120)
-  --classifier-head NAME            logreg | mlp (default: logreg)
+  --classifier-head NAME            logreg | mlp | resnet (default: logreg)
   --logreg-c VALUE                  (default: 1.0)
   --max-iter N                      (default: 3000)
-  --epochs N                        (default: 25; MLP only)
+  --epochs N                        (default: 25; neural heads only)
   --mlp-batch-size N                (default: 256)
   --mlp-hidden-dims DIMS            (default: 512,128)
+  --resnet-width N                  (default: 512)
+  --resnet-blocks N                 (default: 3)
   --mlp-dropout VALUE               (default: 0.2)
   --mlp-learning-rate VALUE         (default: 0.001)
   --early-stopping-patience N       (default: 5)
@@ -195,6 +199,8 @@ while [[ $# -gt 0 ]]; do
     --epochs) EPOCHS="$2"; shift 2 ;;
     --mlp-batch-size) MLP_BATCH_SIZE="$2"; shift 2 ;;
     --mlp-hidden-dims) MLP_HIDDEN_DIMS="$2"; shift 2 ;;
+    --resnet-width) RESNET_WIDTH="$2"; shift 2 ;;
+    --resnet-blocks) RESNET_BLOCKS="$2"; shift 2 ;;
     --mlp-dropout) MLP_DROPOUT="$2"; shift 2 ;;
     --mlp-learning-rate) MLP_LEARNING_RATE="$2"; shift 2 ;;
     --early-stopping-patience) EARLY_STOPPING_PATIENCE="$2"; shift 2 ;;
@@ -483,6 +489,8 @@ PYTHON_CMD=(
   --epochs "$EPOCHS"
   --mlp-batch-size "$MLP_BATCH_SIZE"
   --mlp-hidden-dims "$MLP_HIDDEN_DIMS"
+  --resnet-width "$RESNET_WIDTH"
+  --resnet-blocks "$RESNET_BLOCKS"
   --mlp-dropout "$MLP_DROPOUT"
   --mlp-learning-rate "$MLP_LEARNING_RATE"
   --early-stopping-patience "$EARLY_STOPPING_PATIENCE"
@@ -528,6 +536,8 @@ echo "  perch-model: $PERCH_MODEL | batch-size: $BATCH_SIZE | classifier-head: $
 echo "  context: $CONTEXT_SECONDS | train-clip: $TRAIN_CLIP_SECONDS | eval-clip: $EVAL_CLIP_SECONDS"
 if [[ "$CLASSIFIER_HEAD" == "mlp" ]]; then
   echo "  mlp: epochs=$EPOCHS batch=$MLP_BATCH_SIZE hidden_dims=$MLP_HIDDEN_DIMS dropout=$MLP_DROPOUT lr=$MLP_LEARNING_RATE patience=$EARLY_STOPPING_PATIENCE"
+elif [[ "$CLASSIFIER_HEAD" == "resnet" ]]; then
+  echo "  resnet-head: epochs=$EPOCHS batch=$MLP_BATCH_SIZE width=$RESNET_WIDTH blocks=$RESNET_BLOCKS dropout=$MLP_DROPOUT lr=$MLP_LEARNING_RATE patience=$EARLY_STOPPING_PATIENCE"
 else
   echo "  logreg: c=$LOGREG_C max_iter=$MAX_ITER"
 fi
