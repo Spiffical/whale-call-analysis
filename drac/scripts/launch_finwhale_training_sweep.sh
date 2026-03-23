@@ -25,6 +25,8 @@ NEG_DIR=""
 DATASET_TARS_CSV=""      # CSV list: tag=/path/to/all_mat_files.tar,tag2=/path/to/all_mat_files.tar
 DATASET_TAG_SINGLE=""    # Optional tag for single data source
 MODEL="resnet18"
+MODELS_CSV=""
+MODEL_PRESET=""
 BATCH_SIZE=64
 EPOCHS=100
 NUM_WORKERS=4
@@ -59,7 +61,9 @@ Required (choose one data source):
 Options:
   --dataset-tag TAG                Optional tag for single data source (default: auto)
   --dataset-tars CSV               Multi-dataset tar list: tag=/path/a.tar,tag2=/path/b.tar
-  --model NAME                     (default: resnet18)
+  --model NAME                     Single model name (default: resnet18)
+  --models CSV                     Comma-separated model list
+  --model-preset NAME              One of: architecture_benchmark, resnets
   --batch-size N                   (default: 64)
   --epochs N                       (default: 100)
   --num-workers N                  (default: 4)
@@ -92,6 +96,8 @@ while [[ $# -gt 0 ]]; do
     --pos-dir) POS_DIR="$2"; shift 2 ;;
     --neg-dir) NEG_DIR="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
+    --models) MODELS_CSV="$2"; shift 2 ;;
+    --model-preset) MODEL_PRESET="$2"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --epochs) EPOCHS="$2"; shift 2 ;;
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
@@ -130,6 +136,11 @@ if [[ -z "$SWEEP_ID" ]]; then
   SWEEP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 
+if [[ -n "$MODELS_CSV" && -n "$MODEL_PRESET" ]]; then
+  echo "Error: use either --models or --model-preset, not both"
+  exit 1
+fi
+
 split_csv() {
   local raw="$1"
   raw="${raw// /}"
@@ -141,13 +152,48 @@ split_csv() {
   done
 }
 
+emit_model_preset() {
+  local preset="$1"
+  case "$preset" in
+    architecture_benchmark|benchmark|diverse)
+      cat <<'EOF'
+SmallCNN
+DeepCNN:w32:d4
+DeepCNN:w64:d6
+DeepCNN:w96:d8
+resnet18
+resnet34
+resnet50
+EOF
+      ;;
+    resnets|resnet_family)
+      cat <<'EOF'
+resnet18
+resnet34
+resnet50
+EOF
+      ;;
+    *)
+      echo "Error: unknown --model-preset '$preset'" >&2
+      return 1
+      ;;
+  esac
+}
+
 readarray -t SEED_LIST < <(split_csv "$SEEDS_CSV")
 readarray -t LR_LIST < <(split_csv "$LRS_CSV")
 readarray -t BALANCE_LIST < <(split_csv "$BALANCES_CSV")
 readarray -t CENTER_BIAS_LIST < <(split_csv "$CENTER_BIAS_CSV")
 readarray -t MIN_GAP_LIST < <(split_csv "$MIN_GAPS_CSV")
+if [[ -n "$MODELS_CSV" ]]; then
+  readarray -t MODEL_LIST < <(split_csv "$MODELS_CSV")
+elif [[ -n "$MODEL_PRESET" ]]; then
+  readarray -t MODEL_LIST < <(emit_model_preset "$MODEL_PRESET")
+else
+  MODEL_LIST=("$MODEL")
+fi
 
-if [[ ${#SEED_LIST[@]} -eq 0 || ${#LR_LIST[@]} -eq 0 || ${#BALANCE_LIST[@]} -eq 0 || ${#CENTER_BIAS_LIST[@]} -eq 0 || ${#MIN_GAP_LIST[@]} -eq 0 ]]; then
+if [[ ${#SEED_LIST[@]} -eq 0 || ${#LR_LIST[@]} -eq 0 || ${#BALANCE_LIST[@]} -eq 0 || ${#CENTER_BIAS_LIST[@]} -eq 0 || ${#MIN_GAP_LIST[@]} -eq 0 || ${#MODEL_LIST[@]} -eq 0 ]]; then
   echo "Error: one of the parameter lists is empty."
   exit 1
 fi
@@ -231,77 +277,79 @@ for d_idx in "${!DATASET_TAG_LIST[@]}"; do
   dataset_mode="${DATASET_MODE_LIST[$d_idx]}"
   dataset_group="${WANDB_GROUP_BASE}-${dataset_tag}"
 
-  for seed in "${SEED_LIST[@]}"; do
-    for lr in "${LR_LIST[@]}"; do
-      for balance in "${BALANCE_LIST[@]}"; do
-        for cbs in "${CENTER_BIAS_LIST[@]}"; do
-          for gap in "${MIN_GAP_LIST[@]}"; do
-            RUN_COUNT=$((RUN_COUNT + 1))
-            run_slug=$(printf "r%03d_d%s_%s_lr%s_bal%s_cbs%s_gap%s_s%s" \
-              "$RUN_COUNT" \
-              "$(to_tag "$dataset_tag")" \
-              "$(to_tag "$MODEL")" \
-              "$(to_tag "$lr")" \
-              "$(to_tag "$balance")" \
-              "$(to_tag "$cbs")" \
-              "$(to_tag "$gap")" \
-              "$(to_tag "$seed")")
+  for model in "${MODEL_LIST[@]}"; do
+    for seed in "${SEED_LIST[@]}"; do
+      for lr in "${LR_LIST[@]}"; do
+        for balance in "${BALANCE_LIST[@]}"; do
+          for cbs in "${CENTER_BIAS_LIST[@]}"; do
+            for gap in "${MIN_GAP_LIST[@]}"; do
+              RUN_COUNT=$((RUN_COUNT + 1))
+              run_slug=$(printf "r%03d_d%s_%s_lr%s_bal%s_cbs%s_gap%s_s%s" \
+                "$RUN_COUNT" \
+                "$(to_tag "$dataset_tag")" \
+                "$(to_tag "$model")" \
+                "$(to_tag "$lr")" \
+                "$(to_tag "$balance")" \
+                "$(to_tag "$cbs")" \
+                "$(to_tag "$gap")" \
+                "$(to_tag "$seed")")
 
-            run_exp_dir="$RUNS_DIR/$dataset_tag/$run_slug"
-            mkdir -p "$run_exp_dir"
+              run_exp_dir="$RUNS_DIR/$dataset_tag/$run_slug"
+              mkdir -p "$run_exp_dir"
 
-            echo -e "${run_slug}\t${dataset_tag}\t${dataset_source}\t${MODEL}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${dataset_group}" >> "$PLAN_TSV"
+              echo -e "${run_slug}\t${dataset_tag}\t${dataset_source}\t${model}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${dataset_group}" >> "$PLAN_TSV"
 
-            cmd=(
-              sbatch --parsable "$SUBMIT_SCRIPT"
-              --model "$MODEL"
-              --batch-size "$BATCH_SIZE"
-              --epochs "$EPOCHS"
-              --num-workers "$NUM_WORKERS"
-              --lr "$lr"
-              --balance "$balance"
-              --train-ratio "$TRAIN_RATIO"
-              --val-ratio "$VAL_RATIO"
-              --main-metric "$MAIN_METRIC"
-              --device "$DEVICE"
-              --exp-dir "$run_exp_dir"
-              --seed "$seed"
-              --split-strategy "$SPLIT_STRATEGY"
-              --min-gap-seconds "$gap"
-              --center-bias-sigma-frac "$cbs"
-              --run-tag "$run_slug"
-            )
+              cmd=(
+                sbatch --parsable "$SUBMIT_SCRIPT"
+                --model "$model"
+                --batch-size "$BATCH_SIZE"
+                --epochs "$EPOCHS"
+                --num-workers "$NUM_WORKERS"
+                --lr "$lr"
+                --balance "$balance"
+                --train-ratio "$TRAIN_RATIO"
+                --val-ratio "$VAL_RATIO"
+                --main-metric "$MAIN_METRIC"
+                --device "$DEVICE"
+                --exp-dir "$run_exp_dir"
+                --seed "$seed"
+                --split-strategy "$SPLIT_STRATEGY"
+                --min-gap-seconds "$gap"
+                --center-bias-sigma-frac "$cbs"
+                --run-tag "$run_slug"
+              )
 
-            if [[ "$dataset_mode" == "tar" ]]; then
-              cmd+=( --tar-path "$dataset_source" )
-            else
-              ds_pos="${dataset_source%%|*}"
-              ds_neg="${dataset_source#*|}"
-              cmd+=( --pos-dir "$ds_pos" --neg-dir "$ds_neg" )
-            fi
-
-            if [[ "$USE_WANDB" == "true" ]]; then
-              cmd+=( --use-wandb --wandb-project "$WANDB_PROJECT" --wandb-group "$dataset_group" )
-              if [[ -n "$WANDB_ENTITY" ]]; then
-                cmd+=( --wandb-entity "$WANDB_ENTITY" )
+              if [[ "$dataset_mode" == "tar" ]]; then
+                cmd+=( --tar-path "$dataset_source" )
+              else
+                ds_pos="${dataset_source%%|*}"
+                ds_neg="${dataset_source#*|}"
+                cmd+=( --pos-dir "$ds_pos" --neg-dir "$ds_neg" )
               fi
-            fi
 
-            {
-              printf '%q ' "${cmd[@]}"
-              printf '\n'
-            } >> "$REPLAY_SH"
+              if [[ "$USE_WANDB" == "true" ]]; then
+                cmd+=( --use-wandb --wandb-project "$WANDB_PROJECT" --wandb-group "$dataset_group" )
+                if [[ -n "$WANDB_ENTITY" ]]; then
+                  cmd+=( --wandb-entity "$WANDB_ENTITY" )
+                fi
+              fi
 
-            if [[ "$DRY_RUN" == "true" ]]; then
-              job_id="DRYRUN_${RUN_COUNT}"
-              echo "[dry-run] $job_id $run_slug dataset=$dataset_tag"
-            else
-              sbatch_out="$("${cmd[@]}")"
-              job_id="${sbatch_out%%;*}"
-              echo "[submitted] job_id=${job_id} run_slug=${run_slug} dataset=${dataset_tag}"
-            fi
+              {
+                printf '%q ' "${cmd[@]}"
+                printf '\n'
+              } >> "$REPLAY_SH"
 
-            echo -e "${job_id}\t${run_slug}\t${dataset_tag}\t${dataset_source}\t${MODEL}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${dataset_group}" >> "$SUBMITTED_TSV"
+              if [[ "$DRY_RUN" == "true" ]]; then
+                job_id="DRYRUN_${RUN_COUNT}"
+                echo "[dry-run] $job_id $run_slug dataset=$dataset_tag model=$model"
+              else
+                sbatch_out="$("${cmd[@]}")"
+                job_id="${sbatch_out%%;*}"
+                echo "[submitted] job_id=${job_id} run_slug=${run_slug} dataset=${dataset_tag} model=${model}"
+              fi
+
+              echo -e "${job_id}\t${run_slug}\t${dataset_tag}\t${dataset_source}\t${model}\t${lr}\t${balance}\t${cbs}\t${gap}\t${seed}\t${run_exp_dir}\t${dataset_group}" >> "$SUBMITTED_TSV"
+            done
           done
         done
       done
@@ -316,6 +364,10 @@ echo "Sweep prepared: $SWEEP_DIR"
 echo "Datasets:"
 for d_idx in "${!DATASET_TAG_LIST[@]}"; do
   echo "  - ${DATASET_TAG_LIST[$d_idx]} -> ${DATASET_SOURCE_LIST[$d_idx]}"
+done
+echo "Models:"
+for model in "${MODEL_LIST[@]}"; do
+  echo "  - $model"
 done
 echo "Planned runs: $RUN_COUNT"
 echo "Plan file: $PLAN_TSV"

@@ -145,8 +145,8 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
 
     lines.append("## Top Runs")
     lines.append("")
-    lines.append("| rank | dataset | run_slug | best(main) | best_epoch | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed | wandb |")
-    lines.append("|---:|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|")
+    lines.append("| rank | dataset | model | run_slug | best(main) | best_epoch | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed | wandb |")
+    lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|")
 
     for idx, row in enumerate(completed_sorted[:top_n], start=1):
         wandb_url = row.get("wandb_run_url") or ""
@@ -157,6 +157,7 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
                 [
                     str(idx),
                     str(row.get("dataset_tag", "")),
+                    str(row.get("model", "")),
                     str(row.get("run_slug", "")),
                     _format_metric(_to_float(row.get("best_main_metric"))),
                     str(row.get("best_epoch", "")),
@@ -177,8 +178,8 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
     lines.append("")
     lines.append("## Best Per Dataset")
     lines.append("")
-    lines.append("| dataset | run_slug | best(main) | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|")
+    lines.append("| dataset | model | run_slug | best(main) | val_f1 | val_auc | test_f1 | test_auc | balance | cbs | gap | seed |")
+    lines.append("|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|")
 
     by_dataset: Dict[str, List[Dict[str, Any]]] = {}
     for row in completed:
@@ -198,6 +199,7 @@ def _write_markdown(rows: List[Dict[str, Any]], out_path: Path, top_n: int = 20)
             + " | ".join(
                 [
                     dtag,
+                    str(best.get("model", "")),
                     str(best.get("run_slug", "")),
                     _format_metric(_to_float(best.get("best_main_metric"))),
                     _format_metric(_to_float(best.get("best_val_f1"))),
