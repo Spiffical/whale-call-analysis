@@ -165,6 +165,18 @@ def _relative_seconds_from_iso(filename: str, iso_value: Any) -> Optional[float]
     return (event_ts - clip_ts).total_seconds()
 
 
+def _normalize_segment_seconds(filename: str, seconds_value: Any) -> Optional[float]:
+    seconds = _safe_float(seconds_value, default=float("nan"))
+    if seconds != seconds:
+        return None
+    if abs(seconds) <= 86400.0:
+        return seconds
+    clip_ts = parse_filename_timestamp(filename)
+    if clip_ts is None:
+        return seconds
+    return seconds - clip_ts.timestamp()
+
+
 def load_prediction_segments(path: Path | str) -> Tuple[Dict[str, Any], List[PredictedSegment]]:
     json_path = Path(path)
     with open(json_path, "r", encoding="utf-8") as handle:
@@ -186,8 +198,10 @@ def load_prediction_segments(path: Path | str) -> Tuple[Dict[str, Any], List[Pre
             filename = str(segment.get("source_audio") or segment.get("file_name") or "").strip()
             if not filename:
                 continue
-            start_s = _safe_float(segment.get("time_start_sec"))
-            end_s = _safe_float(segment.get("time_end_sec"))
+            start_s = _normalize_segment_seconds(filename, segment.get("time_start_sec"))
+            end_s = _normalize_segment_seconds(filename, segment.get("time_end_sec"))
+            if start_s is None or end_s is None:
+                continue
             score = _safe_float(segment.get("score"), base_score or 0.0)
             grouped[filename].append((start_s, end_s, score))
 

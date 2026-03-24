@@ -160,6 +160,33 @@ class TestPart2Eval(unittest.TestCase):
             self.assertEqual(clip_confusion["fn"], 1)
             self.assertEqual(clip_confusion["tn"], 0)
 
+    def test_absolute_source_segment_times_are_normalized(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            predictions_json = tmp / "predictions_postprocessed.json"
+            payload = {
+                "schema_version": "2.1",
+                "items": [
+                    {
+                        "item_id": "evt_abs",
+                        "model_outputs": [{"class_hierarchy": "Fin whale", "score": 0.91}],
+                        "source_segments": [
+                            {
+                                "source_audio": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                                "time_start_sec": 1736035210.5,
+                                "time_end_sec": 1736035211.7,
+                                "score": 0.91,
+                            }
+                        ],
+                    }
+                ],
+            }
+            predictions_json.write_text(json.dumps(payload), encoding="utf-8")
+            _, predictions = load_prediction_segments(predictions_json)
+            self.assertEqual(len(predictions), 1)
+            self.assertAlmostEqual(predictions[0].start_time_s, 10.5, places=4)
+            self.assertAlmostEqual(predictions[0].end_time_s, 11.7, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()
