@@ -104,6 +104,16 @@ def _selected_clip_names(manifests_dir: Path, manifest_key: str, limit: int | No
     return clip_names
 
 
+def _load_selected_clips_file(path: Path) -> List[str]:
+    names: List[str] = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            value = line.strip()
+            if value:
+                names.append(value)
+    return sorted(dict.fromkeys(names))
+
+
 def _neighbor_clip_names(clip_names: Sequence[str], inventory_names: Sequence[str]) -> List[str]:
     inventory = set(inventory_names)
     neighbors = set()
@@ -157,6 +167,12 @@ def main() -> None:
         ],
         help="Manifest list used to choose the subset clips",
     )
+    ap.add_argument(
+        "--selected-clips-file",
+        type=str,
+        default=None,
+        help="Optional explicit text file of clip names to keep; overrides --manifest-key/--limit",
+    )
     ap.add_argument("--limit", type=int, default=None, help="Optional cap on selected clips after manifest ordering")
     ap.add_argument(
         "--no-inference-context",
@@ -185,8 +201,13 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_rows = {key: _read_csv(manifests_dir / f"{key}.csv") for key in MANIFEST_CSV_KEYS}
-    selected_clips = _selected_clip_names(manifests_dir, args.manifest_key, args.limit)
+    if args.selected_clips_file:
+        selected_clips = _load_selected_clips_file(Path(args.selected_clips_file).resolve())
+    else:
+        selected_clips = _selected_clip_names(manifests_dir, args.manifest_key, args.limit)
     if not selected_clips:
+        if args.selected_clips_file:
+            raise SystemExit(f"No clip names found in selected clips file: {args.selected_clips_file}")
         raise SystemExit(f"No clip names found for manifest key '{args.manifest_key}'")
     selected_clip_set = set(selected_clips)
 
@@ -240,7 +261,8 @@ def main() -> None:
     summary = _load_summary(manifests_dir / "summary.json")
     subset_summary = {
         "source_bundle": str(source_bundle),
-        "manifest_key": args.manifest_key,
+        "manifest_key": None if args.selected_clips_file else args.manifest_key,
+        "selected_clips_file": str(Path(args.selected_clips_file).resolve()) if args.selected_clips_file else None,
         "selected_clip_count": len(selected_clips),
         "selected_audio_with_context_count": len(audio_clip_set),
         "selected_inference_context_count": len(inference_context),

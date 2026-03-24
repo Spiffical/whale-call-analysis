@@ -203,6 +203,7 @@ def main():
     ap.add_argument('--wandb-entity', type=str, default=None, help='WandB entity (username or team)')
     ap.add_argument('--wandb-group', type=str, default=None, help='WandB group for organizing runs')
     ap.add_argument('--wandb-name', type=str, default=None, help='WandB run name (default: auto-generated)')
+    ap.add_argument('--wandb-tags', type=str, default=None, help='Comma-separated WandB tags')
     args = ap.parse_args()
 
     # Parse crop_size: None, int, or [freq, time]
@@ -251,6 +252,7 @@ def main():
                 "augment_test": args.augment_test,
             },
             out_dir=str(out_dir),
+            tags=args.wandb_tags,
         )
 
     # Build test dataset once

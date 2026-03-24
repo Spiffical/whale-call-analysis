@@ -9,6 +9,13 @@ except Exception:
 
 from .negative_sampler import sample_negative_windows_for_file  # noqa: F401
 from .part2_annotations import build_part2_manifests, write_part2_manifests  # noqa: F401
+from .part2_finetune import (  # noqa: F401
+    assign_time_pools,
+    build_learning_curve_plan,
+    load_finetune_clip_records,
+    order_train_pool,
+    select_budget_clips,
+)
 
 try:
     from .reporting import print_status, print_header, create_analysis_report  # noqa: F401

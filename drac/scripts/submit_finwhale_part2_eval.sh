@@ -17,8 +17,15 @@ if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "$SLURM_SUBMIT_DIR/drac/scripts/submit_fi
   REPO_ROOT="$SLURM_SUBMIT_DIR"
 else
   SCRIPT_PATH="${BASH_SOURCE[0]}"
+  if [[ -L "$SCRIPT_PATH" ]]; then
+    SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
+  fi
   SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd)"
-  REPO_ROOT="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)"
+  if [[ -d "$SCRIPT_DIR/../.." && -f "$SCRIPT_DIR/../../scripts/inference/evaluate_part2_predictions.py" ]]; then
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)"
+  else
+    REPO_ROOT="$HOME/whale-call-analysis"
+  fi
 fi
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
 VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
@@ -47,6 +54,12 @@ BASELINE_TAR=""
 BASELINE_POS_DIR=""
 BASELINE_NEG_DIR=""
 BASELINE_SPLITS_DIR=""
+USE_WANDB="false"
+WANDB_PROJECT="whale-call-analysis"
+WANDB_ENTITY=""
+WANDB_GROUP=""
+WANDB_NAME_PREFIX=""
+WANDB_TAGS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +87,12 @@ while [[ $# -gt 0 ]]; do
     --baseline-pos-dir) BASELINE_POS_DIR="$2"; shift 2 ;;
     --baseline-neg-dir) BASELINE_NEG_DIR="$2"; shift 2 ;;
     --baseline-splits-dir) BASELINE_SPLITS_DIR="$2"; shift 2 ;;
+    --use-wandb) USE_WANDB="true"; shift ;;
+    --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
+    --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
+    --wandb-group) WANDB_GROUP="$2"; shift 2 ;;
+    --wandb-name-prefix) WANDB_NAME_PREFIX="$2"; shift 2 ;;
+    --wandb-tags) WANDB_TAGS="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -93,6 +112,18 @@ if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
   exit 2
 fi
 source "$VENV_PATH/bin/activate"
+
+if [[ "$USE_WANDB" == "true" && -z "${WANDB_API_KEY:-}" ]]; then
+  if [[ -f "$HOME/.wandb_api_key" ]]; then
+    export WANDB_API_KEY
+    WANDB_API_KEY="$(cat "$HOME/.wandb_api_key")"
+    echo "Loaded WANDB_API_KEY from ~/.wandb_api_key"
+  elif [[ -f "$PROJECT_PATH/.env" ]]; then
+    export $(grep -v '^#' "$PROJECT_PATH/.env" | xargs)
+  else
+    echo "Warning: WandB requested but WANDB_API_KEY is not configured."
+  fi
+fi
 
 rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/whale_project/"
 export PYTHONPATH="${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src"
@@ -190,6 +221,18 @@ if [[ -n "$BASELINE_TAR" || ( -n "$BASELINE_POS_DIR" && -n "$BASELINE_NEG_DIR" )
   if [[ -n "$CROP_SIZE" ]]; then
     BASELINE_CMD+=( --crop-size "$CROP_SIZE" )
   fi
+  if [[ "$USE_WANDB" == "true" ]]; then
+    BASELINE_CMD+=( --use-wandb --wandb-project "$WANDB_PROJECT" )
+    if [[ -n "$WANDB_ENTITY" ]]; then
+      BASELINE_CMD+=( --wandb-entity "$WANDB_ENTITY" )
+    fi
+    if [[ -n "$WANDB_GROUP" ]]; then
+      BASELINE_CMD+=( --wandb-group "$WANDB_GROUP" )
+    fi
+    if [[ -n "$WANDB_NAME_PREFIX" ]]; then
+      BASELINE_CMD+=( --wandb-name "${WANDB_NAME_PREFIX}_baseline" )
+    fi
+  fi
   echo "Running historical baseline..."
   "${BASELINE_CMD[@]}"
   BASELINE_METRICS_JSON="$(find "$BASELINE_OUT" -maxdepth 2 -type f -name metrics.json | head -n 1 || true)"
@@ -244,6 +287,23 @@ for STEP in "${WINDOW_STEP_VALUES[@]}"; do
   fi
   if [[ "$MERGE_EVENT_MEDIA" == "true" ]]; then
     EVAL_CMD+=( --merge-event-media )
+  fi
+  if [[ "$USE_WANDB" == "true" ]]; then
+    EVAL_CMD+=( --use-wandb --wandb-project "$WANDB_PROJECT" )
+    if [[ -n "$WANDB_ENTITY" ]]; then
+      EVAL_CMD+=( --wandb-entity "$WANDB_ENTITY" )
+    fi
+    if [[ -n "$WANDB_GROUP" ]]; then
+      EVAL_CMD+=( --wandb-group "$WANDB_GROUP" )
+    fi
+    if [[ -n "$WANDB_NAME_PREFIX" ]]; then
+      EVAL_CMD+=( --wandb-name "${WANDB_NAME_PREFIX}_part2_ws${STEP_TRIM}" )
+    fi
+    if [[ -n "$WANDB_TAGS" ]]; then
+      EVAL_CMD+=( --wandb-tags "$WANDB_TAGS,part2,window_step_${STEP_TRIM}" )
+    else
+      EVAL_CMD+=( --wandb-tags "part2,window_step_${STEP_TRIM}" )
+    fi
   fi
 
   echo "Running Part 2 evaluation for window_step=$STEP_TRIM"

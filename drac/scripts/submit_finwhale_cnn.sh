@@ -44,6 +44,8 @@ USE_WANDB="false"
 WANDB_PROJECT="finwhale_cnn"
 WANDB_GROUP="supervised_cnn"
 WANDB_ENTITY=""
+WANDB_NAME=""
+WANDB_TAGS=""
 EPOCHS=20
 BATCH_SIZE=64
 NUM_WORKERS=4
@@ -55,6 +57,7 @@ CROP_SIZE=""            # Empty = full freq range (square). Can be "96" or "96,9
 DEVICE="cuda"
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"   # Path to this repo on DRAC login node
 EXP_DIR="/exp"                # Base experiment dir (shared scratch/project recommended)
+EXP_PATH_OVERRIDE=""
 COPY_TO_TMP="true"           # Default to true as requested
 GIT_BRANCH="main"        # Required branch in PROJECT_PATH
 AUTO_SWITCH_BRANCH="false"    # If true, auto checkout required branch in PROJECT_PATH
@@ -67,6 +70,13 @@ MODEL="SmallCNN"
 MAIN_METRIC="f1"
 CENTER_BIAS_SIGMA_FRAC=0.25
 RUN_TAG=""
+INIT_CHECKPOINT=""
+SPLITS_DIR=""
+EXPERIMENT_ID=""
+SAMPLING_MODE=""
+BUDGET_CALLS=""
+BUDGET_CLIPS=""
+REPEAT_INDEX=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -77,6 +87,8 @@ while [[ $# -gt 0 ]]; do
     --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
     --wandb-group) WANDB_GROUP="$2"; shift 2 ;;
     --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
+    --wandb-name) WANDB_NAME="$2"; shift 2 ;;
+    --wandb-tags) WANDB_TAGS="$2"; shift 2 ;;
     --epochs) EPOCHS="$2"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
@@ -87,6 +99,7 @@ while [[ $# -gt 0 ]]; do
     --crop-size) CROP_SIZE="$2"; shift 2 ;;
     --device) DEVICE="$2"; shift 2 ;;
     --exp-dir) EXP_DIR="$2"; shift 2 ;;
+    --exp-path) EXP_PATH_OVERRIDE="$2"; shift 2 ;;
     --copy-to-tmp) COPY_TO_TMP="true"; shift ;;
     --no-copy) COPY_TO_TMP="false"; shift ;;
     --git-branch) GIT_BRANCH="$2"; shift 2 ;;
@@ -99,6 +112,13 @@ while [[ $# -gt 0 ]]; do
     --main-metric) MAIN_METRIC="$2"; shift 2 ;;
     --center-bias-sigma-frac) CENTER_BIAS_SIGMA_FRAC="$2"; shift 2 ;;
     --run-tag) RUN_TAG="$2"; shift 2 ;;
+    --init-checkpoint) INIT_CHECKPOINT="$2"; shift 2 ;;
+    --splits-dir) SPLITS_DIR="$2"; shift 2 ;;
+    --experiment-id) EXPERIMENT_ID="$2"; shift 2 ;;
+    --sampling-mode) SAMPLING_MODE="$2"; shift 2 ;;
+    --budget-calls) BUDGET_CALLS="$2"; shift 2 ;;
+    --budget-clips) BUDGET_CLIPS="$2"; shift 2 ;;
+    --repeat-index) REPEAT_INDEX="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -121,6 +141,7 @@ echo "  project: $WANDB_PROJECT | group: $WANDB_GROUP | entity: ${WANDB_ENTITY:-
 echo "  epochs: $EPOCHS | batch: $BATCH_SIZE | lr: $LR | balance: $BALANCE"
 echo "  train_ratio: $TRAIN_RATIO | val_ratio: $VAL_RATIO | crop: $CROP_SIZE"
 echo "  split: $SPLIT_STRATEGY | min_gap: $MIN_GAP_SECONDS | center_bias_sigma_frac: $CENTER_BIAS_SIGMA_FRAC"
+echo "  splits_dir: ${SPLITS_DIR:-<generated>} | init_checkpoint: ${INIT_CHECKPOINT:-<none>}"
 echo "  copy_to_tmp: $COPY_TO_TMP"
 
 # Load modules and venv
@@ -247,7 +268,11 @@ if [[ -n "$RUN_TAG" ]]; then
   RUN_TAG_SAFE=$(echo "$RUN_TAG" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
   BASE_FOLDER="${BASE_FOLDER}-${RUN_TAG_SAFE}"
 fi
-EXP_PATH="${EXP_DIR}/finwhale/${BASE_FOLDER}"
+if [[ -n "$EXP_PATH_OVERRIDE" ]]; then
+  EXP_PATH="$EXP_PATH_OVERRIDE"
+else
+  EXP_PATH="${EXP_DIR}/finwhale/${BASE_FOLDER}"
+fi
 mkdir -p "$EXP_PATH"
 
 PYTHON_SCRIPT="$SLURM_TMPDIR/whale_project/scripts/train/train_cnn.py"
@@ -270,11 +295,38 @@ if [[ "$USE_WANDB" == "true" ]]; then
   if [[ -n "$WANDB_ENTITY" ]]; then
     PYTHON_CMD+=( --wandb_entity "$WANDB_ENTITY" )
   fi
+  if [[ -n "$WANDB_NAME" ]]; then
+    PYTHON_CMD+=( --wandb_name "$WANDB_NAME" )
+  fi
+  if [[ -n "$WANDB_TAGS" ]]; then
+    PYTHON_CMD+=( --wandb_tags "$WANDB_TAGS" )
+  fi
 fi
 
 # Add optional crop-size if specified
 if [[ -n "$CROP_SIZE" ]]; then
   PYTHON_CMD+=( --crop-size "$CROP_SIZE" )
+fi
+if [[ -n "$INIT_CHECKPOINT" ]]; then
+  PYTHON_CMD+=( --init-checkpoint "$INIT_CHECKPOINT" )
+fi
+if [[ -n "$SPLITS_DIR" ]]; then
+  PYTHON_CMD+=( --splits-dir "$SPLITS_DIR" )
+fi
+if [[ -n "$EXPERIMENT_ID" ]]; then
+  PYTHON_CMD+=( --experiment-id "$EXPERIMENT_ID" )
+fi
+if [[ -n "$SAMPLING_MODE" ]]; then
+  PYTHON_CMD+=( --sampling-mode "$SAMPLING_MODE" )
+fi
+if [[ -n "$BUDGET_CALLS" ]]; then
+  PYTHON_CMD+=( --budget-calls "$BUDGET_CALLS" )
+fi
+if [[ -n "$BUDGET_CLIPS" ]]; then
+  PYTHON_CMD+=( --budget-clips "$BUDGET_CLIPS" )
+fi
+if [[ -n "$REPEAT_INDEX" ]]; then
+  PYTHON_CMD+=( --repeat-index "$REPEAT_INDEX" )
 fi
 
 # Ensure src is importable

@@ -41,6 +41,7 @@ from src.dataset.part2_eval import (
     summarize_sweep_rows,
     write_csv,
 )
+from src.utils.wandb_utils import finish_run, init_wandb_test, save_wandb_files, update_wandb_summary
 
 
 def _parse_float_list(raw: str, *, allow_empty: bool = False) -> List[float]:
@@ -599,6 +600,112 @@ def _copytree_replace(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst)
 
 
+def _log_part2_wandb(
+    *,
+    output_dir: Path,
+    selected_rows: Sequence[Dict[str, Any]],
+    best_metrics_json: Path,
+    sweep_rows: Sequence[Dict[str, Any]],
+    args: argparse.Namespace,
+) -> None:
+    if not args.use_wandb:
+        return
+
+    config = {
+        "annotations_csv": args.annotations_csv,
+        "clip_manifest_csv": args.clip_manifest_csv,
+        "match_collar_s": float(args.match_collar_s),
+        "window_step_label": args.window_step_label,
+        "low_thresholds": args.low_thresholds,
+        "high_thresholds": args.high_thresholds,
+        "min_members_values": args.min_members_values,
+        "max_gap_values": args.max_gap_values,
+        "class_hierarchy": args.class_hierarchy,
+        "mode": "postprocessed" if args.postprocessed_json else "sweep",
+    }
+    init_wandb_test(
+        project_name=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group,
+        run_name=args.wandb_name or f"part2_eval_{output_dir.name}",
+        config=config,
+        out_dir=str(output_dir),
+        tags=args.wandb_tags,
+        job_type="part2_evaluation",
+    )
+    try:
+        with open(best_metrics_json, "r", encoding="utf-8") as handle:
+            metrics_payload = json.load(handle)
+        strict_metrics = metrics_payload.get("overall_event_metrics", {})
+        merged_metrics = metrics_payload.get("merged_region_metrics", {})
+        raw_metrics = metrics_payload.get("raw_window_metrics") or {}
+        clip_metrics = metrics_payload.get("overall_clip_metrics", {})
+        summary = {
+            "best/strict_event_precision": float(strict_metrics.get("precision", 0.0)),
+            "best/strict_event_recall": float(strict_metrics.get("recall", 0.0)),
+            "best/strict_event_f1": float(strict_metrics.get("f1", 0.0)),
+            "best/merged_region_precision": float(merged_metrics.get("precision", 0.0)),
+            "best/merged_region_recall": float(merged_metrics.get("recall", 0.0)),
+            "best/merged_region_f1": float(merged_metrics.get("f1", 0.0)),
+            "best/clip_precision": float(clip_metrics.get("precision", 0.0)),
+            "best/clip_recall": float(clip_metrics.get("recall", 0.0)),
+            "best/clip_f1": float(clip_metrics.get("f1", 0.0)),
+        }
+        if raw_metrics:
+            summary.update(
+                {
+                    "best/raw_window_precision": float(raw_metrics.get("precision", 0.0)),
+                    "best/raw_window_recall": float(raw_metrics.get("recall", 0.0)),
+                    "best/raw_window_f1": float(raw_metrics.get("f1", 0.0)),
+                }
+            )
+        update_wandb_summary(summary)
+
+        try:
+            import wandb
+
+            op_table = wandb.Table(
+                columns=list(selected_rows[0].keys()) if selected_rows else ["label"],
+                data=[[row.get(col) for col in (list(selected_rows[0].keys()) if selected_rows else ["label"])] for row in selected_rows] if selected_rows else [],
+            )
+            wandb.log({"operating_points": op_table})
+            if sweep_rows:
+                sweep_columns = list(sweep_rows[0].keys())
+                sweep_table = wandb.Table(columns=sweep_columns)
+                for row in sweep_rows:
+                    sweep_table.add_data(*[row.get(col) for col in sweep_columns])
+                wandb.log({"sweep_summary": sweep_table})
+
+            for image_name in (
+                "overall_view_metrics.png",
+                "overall_clip_confusion.png",
+                "bucket_recall_comparison.png",
+                "sweep_precision_recall.png",
+            ):
+                image_path = output_dir / image_name
+                if image_path.exists():
+                    wandb.log({image_name.replace(".png", ""): wandb.Image(str(image_path))})
+        except Exception as exc:
+            print(f"Warning: Could not log rich Part 2 artifacts to wandb: {exc}")
+
+        save_wandb_files(
+            [
+                output_dir / "report.md",
+                output_dir / "metrics.json",
+                output_dir / "overall_view_metrics.csv",
+                output_dir / "bucket_metrics.csv",
+                output_dir / "context_recall_metrics.csv",
+                output_dir / "selected_operating_points.csv",
+                output_dir / "sweep_summary.csv",
+                output_dir / "rapid_review.csv",
+                output_dir / "recommendations.md",
+            ],
+            base_path=output_dir,
+        )
+    finally:
+        finish_run()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate Part 2 predictions and build the report bundle")
     ap.add_argument("--annotations-csv", type=str, required=True)
@@ -615,6 +722,12 @@ def main() -> None:
     ap.add_argument("--min-members-values", type=str, default="2,3")
     ap.add_argument("--max-gap-values", type=str, default="auto,10,15")
     ap.add_argument("--merge-event-media", action="store_true")
+    ap.add_argument("--use-wandb", action="store_true")
+    ap.add_argument("--wandb-project", type=str, default="whale-call-analysis")
+    ap.add_argument("--wandb-entity", type=str, default=None)
+    ap.add_argument("--wandb-group", type=str, default=None)
+    ap.add_argument("--wandb-name", type=str, default=None)
+    ap.add_argument("--wandb-tags", type=str, default=None)
     args = ap.parse_args()
 
     if bool(args.postprocessed_json) == bool(args.window_predictions_json):
@@ -641,6 +754,14 @@ def main() -> None:
             raw_window_threshold=min(_parse_float_list(args.low_thresholds)),
             baseline_summary=baseline_summary,
         )
+        if args.use_wandb:
+            _log_part2_wandb(
+                output_dir=output_dir,
+                selected_rows=[],
+                best_metrics_json=output_dir / "metrics.json",
+                sweep_rows=[],
+                args=args,
+            )
         return
 
     sweep_rows = _sweep_candidates(
@@ -713,6 +834,15 @@ def main() -> None:
                 _copytree_replace(src, target)
             else:
                 shutil.copy2(src, target)
+
+    if args.use_wandb:
+        _log_part2_wandb(
+            output_dir=output_dir,
+            selected_rows=selected_rows,
+            best_metrics_json=output_dir / "metrics.json",
+            sweep_rows=sweep_rows,
+            args=args,
+        )
 
 
 if __name__ == "__main__":

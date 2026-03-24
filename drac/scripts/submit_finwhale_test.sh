@@ -70,6 +70,7 @@ WANDB_PROJECT="whale-call-analysis"
 WANDB_ENTITY=""
 WANDB_GROUP=""
 WANDB_NAME=""
+WANDB_TAGS=""
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -104,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
     --wandb-group) WANDB_GROUP="$2"; shift 2 ;;
     --wandb-name) WANDB_NAME="$2"; shift 2 ;;
+    --wandb-tags) WANDB_TAGS="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -237,6 +239,9 @@ if [[ "$USE_WANDB" == "true" ]]; then
   fi
   if [[ -n "$WANDB_NAME" ]]; then
     CMD+=( --wandb-name "$WANDB_NAME" )
+  fi
+  if [[ -n "$WANDB_TAGS" ]]; then
+    CMD+=( --wandb-tags "$WANDB_TAGS" )
   fi
 fi
 

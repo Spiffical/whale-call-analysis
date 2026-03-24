@@ -14,11 +14,12 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Ensure repo root is on sys.path so `src` is importable when running as a script
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +41,8 @@ from src.utils.wandb_utils import (
     log_training_metrics,
     log_validation_metrics,
     finish_run,
+    save_wandb_files,
+    update_wandb_summary,
 )
 from src.utils.model_utils import create_checkpoint_metadata
 
@@ -189,6 +192,87 @@ def _dataset_label_counts(ds: FinWhaleMatDataset) -> dict:
     return {"total": int(len(labels)), "pos": pos, "neg": neg}
 
 
+def _common_dataset_root(pos_dir: str, neg_dir: str) -> Path:
+    pos_path = Path(pos_dir).resolve()
+    neg_path = Path(neg_dir).resolve()
+    try:
+        return Path(os.path.commonpath([str(pos_path), str(neg_path)]))
+    except Exception:
+        return pos_path.parent
+
+
+def _resolve_split_entry_path(
+    raw_path: str,
+    *,
+    label: int,
+    pos_dir: str,
+    neg_dir: str,
+    dataset_root: Path,
+) -> Path:
+    path = Path(raw_path)
+    candidates: List[Path] = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        candidates.extend(
+            [
+                dataset_root / path,
+                (Path(pos_dir) / path.name) if int(label) == 1 else (Path(neg_dir) / path.name),
+                Path(pos_dir) / path,
+                Path(neg_dir) / path,
+            ]
+        )
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists():
+            return resolved
+    raise FileNotFoundError(f"Could not resolve split entry path '{raw_path}' for label={label}")
+
+
+def _load_explicit_split_file(
+    split_path: Path,
+    *,
+    pos_dir: str,
+    neg_dir: str,
+) -> List[Tuple[Path, int]]:
+    dataset_root = _common_dataset_root(pos_dir, neg_dir)
+    items: List[Tuple[Path, int]] = []
+    with open(split_path, "r", encoding="utf-8") as handle:
+        for line_no, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if "\t" in line:
+                raw_path, raw_label = line.split("\t", 1)
+            else:
+                parts = line.split()
+                if len(parts) < 2:
+                    raise ValueError(f"Invalid split line {split_path}:{line_no}: expected '<path>\\t<label>'")
+                raw_path, raw_label = parts[0], parts[1]
+            label = int(raw_label)
+            resolved = _resolve_split_entry_path(
+                raw_path,
+                label=label,
+                pos_dir=pos_dir,
+                neg_dir=neg_dir,
+                dataset_root=dataset_root,
+            )
+            items.append((resolved, label))
+    return items
+
+
+def _copy_split_dir(src_dir: Path, dst_dir: Path) -> None:
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for split_name in ("train", "val", "test"):
+        src = src_dir / f"{split_name}.txt"
+        if src.exists():
+            shutil.copy2(src, dst_dir / src.name)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Train CNN on Fin Whale MAT spectrograms")
     ap.add_argument('--pos-dir', type=str, required=True, help='Directory with positive MAT files')
@@ -213,11 +297,15 @@ def main():
     ap.add_argument('--val-ratio', type=float, default=0.1)
     ap.add_argument('--balance', type=str, default='none', choices=['none', 'weighted', 'oversample'])
     ap.add_argument('--save-path', type=str, default='checkpoints/finwhale_cnn.pt')
+    ap.add_argument('--splits-dir', type=str, default=None, help='Optional directory containing explicit train/val/test.txt splits')
+    ap.add_argument('--init-checkpoint', type=str, default=None, help='Optional checkpoint to load before training for fine-tuning')
     # WandB args
     ap.add_argument('--use_wandb', action='store_true', help='Enable logging to Weights & Biases')
     ap.add_argument('--wandb_entity', type=str, default=None, help='WandB entity (username or team) to use')
     ap.add_argument('--wandb_group', type=str, default=None, help='WandB group name for organizing runs')
     ap.add_argument('--wandb_project', type=str, default='finwhale_cnn', help='WandB project name')
+    ap.add_argument('--wandb_name', type=str, default=None, help='Optional WandB run name')
+    ap.add_argument('--wandb_tags', type=str, default=None, help='Comma-separated WandB tags')
     ap.add_argument('--exp_dir', type=str, default='exp/finwhale_cnn', help='Experiment directory for logs and checkpoints')
     ap.add_argument('--use-amp', action='store_true', help='Enable mixed precision on CUDA')
     # Leakage-safe split options
@@ -229,6 +317,12 @@ def main():
     ap.add_argument('--model', type=str, default='SmallCNN', help='Model name: SmallCNN, DeepCNN[:w64:d8], resnet18/34/50')
     # Main metric selection
     ap.add_argument('--main-metric', type=str, default='f1', choices=['f1','acc','auc','precision','recall'], help='Validation metric to select best model')
+    # Fine-tune metadata for reporting/WandB
+    ap.add_argument('--experiment-id', type=str, default=None, help='Optional logical experiment identifier')
+    ap.add_argument('--sampling-mode', type=str, default=None, help='Sampling mode for learning-curve experiments')
+    ap.add_argument('--budget-calls', type=int, default=None, help='Actual fin-call budget represented by this run')
+    ap.add_argument('--budget-clips', type=int, default=None, help='Actual fin-positive clip count represented by this run')
+    ap.add_argument('--repeat-index', type=int, default=None, help='Repeat index for randomized learning-curve runs')
     args = ap.parse_args()
 
     # Parse crop_size: None, int, or [freq, time]
@@ -281,7 +375,9 @@ def main():
             args, 
             project_name=args.wandb_project, 
             entity=args.wandb_entity, 
-            group=args.wandb_group
+            group=args.wandb_group,
+            run_name=args.wandb_name,
+            tags=args.wandb_tags,
         )
         if run is not None:
             wandb_run_id = run.id
@@ -291,7 +387,52 @@ def main():
                 wandb_run_url = None
 
     # Create loaders
-    if args.split_strategy == 'internal':
+    split_source = "generated"
+    if args.splits_dir:
+        split_source = "provided"
+        provided_split_dir = Path(args.splits_dir).resolve()
+        train_items = _load_explicit_split_file(provided_split_dir / "train.txt", pos_dir=args.pos_dir, neg_dir=args.neg_dir)
+        val_items = _load_explicit_split_file(provided_split_dir / "val.txt", pos_dir=args.pos_dir, neg_dir=args.neg_dir)
+        test_split_path = provided_split_dir / "test.txt"
+        test_items = _load_explicit_split_file(test_split_path, pos_dir=args.pos_dir, neg_dir=args.neg_dir) if test_split_path.exists() else list(val_items)
+
+        split_dir = Path(args.exp_dir) / 'splits'
+        _copy_split_dir(provided_split_dir, split_dir)
+
+        train_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='train', crop_size=crop_size,
+                                      min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                      center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                      crop_time_seconds=args.crop_time_seconds,
+                                      crop_freq_range_hz=crop_freq_range_hz,
+                                      file_list=train_items)
+        val_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='val', crop_size=crop_size,
+                                    min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                    center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                    crop_time_seconds=args.crop_time_seconds,
+                                    crop_freq_range_hz=crop_freq_range_hz,
+                                    file_list=val_items)
+        test_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='test', crop_size=crop_size,
+                                     min_db=args.min_db, max_db=args.max_db, seed=args.seed,
+                                     center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                     crop_time_seconds=args.crop_time_seconds,
+                                     crop_freq_range_hz=crop_freq_range_hz,
+                                     file_list=test_items)
+
+        sampler = None
+        if args.balance in ('weighted', 'oversample'):
+            labels = torch.tensor([lbl for _, lbl in train_ds.files], dtype=torch.long)
+            class_counts = torch.bincount(labels, minlength=2).float()
+            class_weights = 1.0 / torch.clamp(class_counts, min=1.0)
+            sample_weights = class_weights[labels]
+            if args.balance == 'weighted':
+                sampler = torch.utils.data.WeightedRandomSampler(weights=sample_weights, num_samples=len(train_ds), replacement=True)
+            else:
+                target = int(2 * torch.max(class_counts).item())
+                sampler = torch.utils.data.WeightedRandomSampler(weights=sample_weights, num_samples=target, replacement=True)
+        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=(sampler is None), sampler=sampler, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
+        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
+        test_loader = torch.utils.data.DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
+    elif args.split_strategy == 'internal':
         train_loader, val_loader, test_loader = make_dataloaders(
             pos_dir=args.pos_dir,
             neg_dir=args.neg_dir,
@@ -365,8 +506,38 @@ def main():
         val_loader = torch.utils.data.DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
         test_loader = torch.utils.data.DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=args.pin_memory, drop_last=False)
 
+    train_counts_preview = _dataset_label_counts(train_loader.dataset)  # type: ignore[arg-type]
+    val_counts_preview = _dataset_label_counts(val_loader.dataset)  # type: ignore[arg-type]
+    test_counts_preview = _dataset_label_counts(test_loader.dataset)  # type: ignore[arg-type]
+    print(
+        "Dataset counts:",
+        f"train={train_counts_preview}",
+        f"val={val_counts_preview}",
+        f"test={test_counts_preview}",
+        f"split_source={split_source}",
+    )
+
     # Model, optimizer, loss
     model = create_model(args.model, num_classes=2, in_ch=1).to(device)
+    init_checkpoint_info: Optional[Dict[str, object]] = None
+    if args.init_checkpoint:
+        init_checkpoint_path = Path(args.init_checkpoint).resolve()
+        print(f"Loading init checkpoint: {init_checkpoint_path}")
+        ckpt = torch.load(init_checkpoint_path, map_location=device)
+        state_dict = ckpt.get('model_state') if isinstance(ckpt, dict) else None
+        if state_dict is None and isinstance(ckpt, dict):
+            state_dict = {k: v for k, v in ckpt.items() if isinstance(v, torch.Tensor)}
+        if state_dict is None:
+            raise SystemExit(f"Could not find model_state in init checkpoint: {init_checkpoint_path}")
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing or unexpected:
+            print(f"Init checkpoint load details: missing={missing} unexpected={unexpected}")
+        init_checkpoint_info = {
+            "path": str(init_checkpoint_path),
+            "model_id": ckpt.get("model_id") if isinstance(ckpt, dict) else None,
+            "architecture": ckpt.get("architecture") if isinstance(ckpt, dict) else None,
+            "trained_at": ckpt.get("trained_at") if isinstance(ckpt, dict) else None,
+        }
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     # If we are not using sampler-based balancing, use class-weighted CE
     if args.balance == 'none':
@@ -475,7 +646,6 @@ def main():
             'ft_test_f1': test_metrics['f1'],
             'ft_test_auc': test_metrics['auc'],
         }, use_wandb=True)
-        finish_run()
 
     # Persist local experiment artifacts for sweep-level analysis.
     try:
@@ -510,6 +680,9 @@ def main():
                 "val": val_counts,
                 "test": test_counts,
             },
+            "split_source": split_source,
+            "provided_splits_dir": str(Path(args.splits_dir).resolve()) if args.splits_dir else None,
+            "init_checkpoint": init_checkpoint_info,
             "best": {
                 "main_metric": args.main_metric,
                 "value": float(best_metric),
@@ -527,8 +700,33 @@ def main():
         with open(exp_dir / "run_summary.json", "w") as f:
             json.dump(summary, f, indent=2)
         print(f"Saved run artifacts: {history_path}, {exp_dir / 'run_summary.json'}")
+
+        if args.use_wandb:
+            update_wandb_summary({
+                "best/main_metric": args.main_metric,
+                f"best/{args.main_metric}": float(best_metric),
+                "best/epoch": int(best_epoch),
+                "test/f1": float(test_metrics["f1"]),
+                "test/precision": float(test_metrics["precision"]),
+                "test/recall": float(test_metrics["recall"]),
+                "test/auc": float(test_metrics["auc"]),
+                "dataset/train_total": int(train_counts["total"]),
+                "dataset/train_pos": int(train_counts["pos"]),
+                "dataset/train_neg": int(train_counts["neg"]),
+                "dataset/val_total": int(val_counts["total"]),
+                "dataset/test_total": int(test_counts["total"]),
+                "split_source": split_source,
+                "init_checkpoint_model_id": init_checkpoint_info.get("model_id") if init_checkpoint_info else None,
+            })
+            save_wandb_files(
+                [history_path, exp_dir / "run_summary.json", save_path, exp_dir / "args.pkl"],
+                base_path=exp_dir,
+            )
     except Exception as e:
         print(f"Warning: failed to write run artifacts: {e}")
+
+    if args.use_wandb:
+        finish_run()
 
 
 if __name__ == '__main__':

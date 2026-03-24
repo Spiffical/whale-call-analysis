@@ -1,18 +1,43 @@
-"""
-Utilities for Weights & Biases (wandb) integration.
-Supports both training and testing workflows.
-"""
+"""Utilities for Weights & Biases (wandb) integration."""
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Iterable
 
 import wandb
 import numpy as np
 import torch
 
 
-def init_wandb(args, project_name="whale-call-analysis", entity=None, group=None, run_id=None):
+def _merge_non_null(base: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in (extra or {}).items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _normalize_tags(tags: Optional[Iterable[str] | str]) -> Optional[List[str]]:
+    if tags is None:
+        return None
+    if isinstance(tags, str):
+        values = [token.strip() for token in tags.split(",") if token.strip()]
+    else:
+        values = [str(token).strip() for token in tags if str(token).strip()]
+    return values or None
+
+
+def init_wandb(
+    args,
+    project_name: str = "whale-call-analysis",
+    entity: Optional[str] = None,
+    group: Optional[str] = None,
+    run_id: Optional[str] = None,
+    run_name: Optional[str] = None,
+    tags: Optional[Iterable[str] | str] = None,
+    job_type: str = "training",
+    config_extra: Optional[Dict[str, Any]] = None,
+):
     """Initialize a wandb run for training."""
     if not hasattr(args, 'use_wandb') or not args.use_wandb:
         return None
@@ -32,18 +57,29 @@ def init_wandb(args, project_name="whale-call-analysis", entity=None, group=None
         "train_ratio": getattr(args, 'train_ratio', None),
         "val_ratio": getattr(args, 'val_ratio', None),
         "crop_size": getattr(args, 'crop_size', None),
+        "splits_dir": getattr(args, 'splits_dir', None),
+        "init_checkpoint": getattr(args, 'init_checkpoint', None),
+        "experiment_id": getattr(args, 'experiment_id', None),
+        "sampling_mode": getattr(args, 'sampling_mode', None),
+        "budget_calls": getattr(args, 'budget_calls', None),
+        "budget_clips": getattr(args, 'budget_clips', None),
+        "repeat_index": getattr(args, 'repeat_index', None),
     }
-    
+    config = _merge_non_null(config, config_extra)
+    tag_list = _normalize_tags(tags if tags is not None else getattr(args, "wandb_tags", None))
+
     run = wandb.init(
         project=project_name,
         entity=entity,
         config=config,
-        name=os.path.basename(args.exp_dir) if hasattr(args, 'exp_dir') else None,
+        name=run_name or getattr(args, "wandb_name", None) or (os.path.basename(args.exp_dir) if hasattr(args, 'exp_dir') else None),
         dir=getattr(args, 'exp_dir', None),
         group=group,
-        id=run_id
+        id=run_id,
+        tags=tag_list,
+        job_type=job_type,
     )
-    
+
     return run
 
 
@@ -54,6 +90,8 @@ def init_wandb_test(
     run_name: Optional[str] = None,
     config: Optional[Dict] = None,
     out_dir: Optional[str] = None,
+    tags: Optional[Iterable[str] | str] = None,
+    job_type: str = "evaluation",
 ) -> Optional[wandb.sdk.wandb_run.Run]:
     """Initialize a wandb run for testing/evaluation.
     
@@ -76,7 +114,8 @@ def init_wandb_test(
             name=run_name,
             dir=out_dir,
             group=group,
-            job_type="evaluation",
+            job_type=job_type,
+            tags=_normalize_tags(tags),
         )
         return run
     except Exception as e:
@@ -258,3 +297,23 @@ def finish_run():
     """Finish the current wandb run."""
     if wandb.run is not None:
         wandb.finish()
+
+
+def update_wandb_summary(summary: Dict[str, Any]) -> None:
+    """Merge scalar-ish values into the active wandb run summary."""
+    if wandb.run is None:
+        return
+    for key, value in summary.items():
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            wandb.run.summary[key] = value
+
+
+def save_wandb_files(paths: Iterable[str | Path], *, base_path: Optional[str | Path] = None) -> None:
+    """Upload files from the current run directory for convenient inspection."""
+    if wandb.run is None:
+        return
+    for path in paths:
+        try:
+            wandb.save(str(path), base_path=str(base_path) if base_path is not None else None)
+        except Exception as exc:
+            print(f"Warning: Could not upload {path} to wandb: {exc}")
