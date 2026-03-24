@@ -500,6 +500,10 @@ def main() -> None:
     manifests_dir = bundle_dir / "manifests"
     raw_audio_dir = bundle_dir / "raw_audio"
     mat_dir = bundle_dir / "mat_files"
+    dataset_doc_meta = load_dataset_documentation(str(dataset_doc))
+    proc_params = get_processing_params(dataset_doc=dataset_doc_meta, model_path=None)
+    spec_window_duration = float(proc_params.get("win_dur") or 1.0)
+    spec_overlap = float(proc_params.get("overlap") or 0.9)
     effective_edge_context_s = _resolve_edge_context_seconds(dataset_doc, args.edge_context_s)
 
     _print_header("PART 2 VM PREP START")
@@ -707,8 +711,8 @@ def main() -> None:
         "data_source": data_source,
         "spectrogram_config": {
             "context_duration": float(args.window_s),
-            "window_duration": "",
-            "overlap": "",
+            "window_duration": spec_window_duration,
+            "overlap": spec_overlap,
             "edge_context": float(effective_edge_context_s),
             "source": {
                 "type": "computed",

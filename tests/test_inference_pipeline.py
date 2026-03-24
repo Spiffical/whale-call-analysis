@@ -12,6 +12,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.sequential_prep import compute_window_positions, crop_to_freq_lims
+from scripts.inference.run_inference import (
+    _compute_window_time_range,
+    _resolve_window_times_from_time_axis,
+    _window_times_look_like_bins,
+)
 
 
 class TestWindowTiling(unittest.TestCase):
@@ -253,6 +258,38 @@ class TestChunkCoverage(unittest.TestCase):
         if len(gaps) > 1:
             gap_std = np.std(gaps)
             self.assertLess(gap_std, 2)  # Very small variance
+
+
+class TestInferenceWindowTiming(unittest.TestCase):
+    """Tests for reconstructing physical window times during inference."""
+
+    def test_compute_window_time_range_preserves_negative_context(self):
+        times = np.arange(-10.0, 300.1, 0.1, dtype=np.float32)
+        start_s, end_s = _compute_window_time_range(
+            times=times,
+            start_idx=0,
+            window_bins=96,
+            win_dur=1.0,
+            overlap=0.9,
+        )
+        self.assertAlmostEqual(start_s, -10.5, places=4)
+        self.assertAlmostEqual(end_s, 0.0, places=4)
+
+    def test_resolve_window_times_from_time_axis_uses_saved_t_axis(self):
+        times = np.arange(-10.0, 300.1, 0.1, dtype=np.float32)
+        start_s, end_s = _resolve_window_times_from_time_axis(
+            times,
+            window_start_bin=100,
+            crop_time_bins=96,
+            win_dur=1.0,
+            overlap=0.9,
+        )
+        self.assertAlmostEqual(start_s, -0.5, places=4)
+        self.assertAlmostEqual(end_s, 10.0, places=3)
+
+    def test_window_times_look_like_bins(self):
+        self.assertTrue(_window_times_look_like_bins(120, 216, 120, 96))
+        self.assertFalse(_window_times_look_like_bins(-0.5, 10.0, 100, 96))
 
 
 if __name__ == '__main__':

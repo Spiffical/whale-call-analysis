@@ -83,6 +83,50 @@ def _infer_time_bin_seconds_from_mat(mat_path: Optional[Path]) -> Optional[float
     return _infer_time_bin_seconds(np.asarray(data[tk]).squeeze())
 
 
+def _coerce_optional_float(value: Optional[Any]) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(out):
+        return None
+    return out
+
+
+def _window_times_look_like_bins(
+    window_time_start: Optional[Any],
+    window_time_end: Optional[Any],
+    window_start_bin: Optional[Any],
+    crop_time_bins: Optional[Any],
+) -> bool:
+    try:
+        wts = float(window_time_start) if window_time_start is not None else None
+        wte = float(window_time_end) if window_time_end is not None else None
+    except (TypeError, ValueError):
+        return False
+    if wts is None or wte is None:
+        return False
+
+    try:
+        ws = float(window_start_bin) if window_start_bin is not None else None
+    except (TypeError, ValueError):
+        ws = None
+    try:
+        ct = float(crop_time_bins) if crop_time_bins is not None else None
+    except (TypeError, ValueError):
+        ct = None
+
+    if ws is not None and abs(wts - ws) < 1e-6:
+        return True
+    if ct is not None and abs((wte - wts) - ct) < 1e-3:
+        return True
+    return False
+
+
 def _maybe_convert_window_times_from_bins(
     window_time_start: Optional[Any],
     window_time_end: Optional[Any],
@@ -118,13 +162,7 @@ def _maybe_convert_window_times_from_bins(
     except (TypeError, ValueError):
         ct = None
 
-    looks_like_bins = False
-    if ws is not None and abs(wts - ws) < 1e-6:
-        looks_like_bins = True
-    if ct is not None and abs((wte - wts) - ct) < 1e-3:
-        looks_like_bins = True
-
-    if looks_like_bins:
+    if _window_times_look_like_bins(wts, wte, ws, ct):
         return wts * tbin, wte * tbin
     return wts, wte
 
@@ -706,10 +744,34 @@ def _compute_window_time_range(
     else:
         hop_sec = (win_dur * (1.0 - overlap)) if (win_dur is not None and overlap is not None) else 0.0
     if win_dur is None:
-        win_dur = 0.0
-    window_time_start = max(0.0, center_start - (win_dur / 2.0))
+        win_dur = hop_sec if hop_sec > 0 else 0.0
+    window_time_start = center_start - (win_dur / 2.0)
     window_time_end = window_time_start + max(0, window_bins - 1) * hop_sec + win_dur
     return window_time_start, window_time_end
+
+
+def _resolve_window_times_from_time_axis(
+    times: Optional[np.ndarray],
+    *,
+    window_start_bin: Optional[Any],
+    crop_time_bins: Optional[Any],
+    win_dur: Optional[Any],
+    overlap: Optional[Any],
+) -> Tuple[Optional[float], Optional[float]]:
+    try:
+        start_idx = int(window_start_bin) if window_start_bin is not None else None
+        window_bins = int(crop_time_bins) if crop_time_bins is not None else None
+    except (TypeError, ValueError):
+        return None, None
+    if start_idx is None or window_bins is None or window_bins <= 0:
+        return None, None
+    return _compute_window_time_range(
+        times=times,
+        start_idx=start_idx,
+        window_bins=window_bins,
+        win_dur=_coerce_optional_float(win_dur),
+        overlap=_coerce_optional_float(overlap),
+    )
 
 def extract_crop_size_from_checkpoint(checkpoint_path: str) -> Optional[int]:
     """Extract crop_size from checkpoint's training args.
@@ -1545,6 +1607,14 @@ def main():
     print_status(f"Building predictions JSON items ({total_tracker_items})...", "PROGRESS")
     progress_every = 2000 if total_tracker_items >= 10000 else 500
     time_bin_cache: Dict[str, Optional[float]] = {}
+    time_axis_cache: Dict[str, Optional[np.ndarray]] = {}
+    tracker_win_dur = (
+        spec_config.get("window_duration")
+        or spec_config.get("window_duration_sec")
+        or spec_config.get("win_dur")
+        or spec_config.get("win_dur_s")
+    )
+    tracker_overlap = spec_config.get("overlap") or spec_config.get("overlap_ratio")
     for idx, result in enumerate(results_for_tracker, start=1):
         file_id = result['file_id']
         base_id = file_id.rsplit('_win', 1)[0] if '_win' in file_id else file_id
@@ -1626,6 +1696,51 @@ def main():
             parent_freq_bin_end = export_item.get('parent_freq_bin_end')
             parent_time_bin_start = export_item.get('parent_time_bin_start')
             parent_time_bin_end = export_item.get('parent_time_bin_end')
+
+        fallback_mat_for_times = (Path(args.mat_dir) / f"{base_id}.mat").resolve()
+        if not fallback_mat_for_times.exists():
+            fallback_mat_for_times = None
+        mat_for_times = mat_from_meta if mat_from_meta is not None else fallback_mat_for_times
+
+        # Prefer reconstructing physical times from the saved MAT time axis when
+        # window_time_* is missing or clearly stored as bin indices. This keeps
+        # boundary-context clips aligned with annotations even when T starts < 0.
+        if (
+            window_start is not None
+            and meta.get('crop_time_bins') is not None
+            and (
+                window_time_start is None
+                or window_time_end is None
+                or _window_times_look_like_bins(
+                    window_time_start,
+                    window_time_end,
+                    window_start,
+                    meta.get('crop_time_bins'),
+                )
+            )
+        ):
+            if base_id not in time_axis_cache:
+                times_from_mat = None
+                if mat_for_times is not None and mat_for_times.exists():
+                    try:
+                        mat_data = scipy.io.loadmat(str(mat_for_times), simplify_cells=True)
+                        tk = _find_key(mat_data, InferenceDataset.TIME_KEYS)
+                        if tk in mat_data:
+                            times_from_mat = np.asarray(mat_data[tk]).squeeze()
+                    except Exception:
+                        times_from_mat = None
+                time_axis_cache[base_id] = times_from_mat
+            axis_window_start, axis_window_end = _resolve_window_times_from_time_axis(
+                time_axis_cache.get(base_id),
+                window_start_bin=window_start,
+                crop_time_bins=meta.get('crop_time_bins'),
+                win_dur=tracker_win_dur,
+                overlap=tracker_overlap,
+            )
+            if axis_window_start is not None and axis_window_end is not None:
+                window_time_start = axis_window_start
+                window_time_end = axis_window_end
+
         # Backward-compatibility: older inference exports can store window_time_*
         # in bin units. Convert here so downstream JSON stays in seconds.
         window_time_start, window_time_end = _maybe_convert_window_times_from_bins(
