@@ -7,7 +7,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .part2_annotations import (
@@ -20,6 +20,14 @@ from .part2_annotations import (
 )
 
 PART2_BUCKETS = [FIN_BUCKET_20, FIN_BUCKET_40, FIN_BUCKET_OTHER]
+STRICT_EVENT_VIEW = "strict_event"
+MERGED_REGION_VIEW = "merged_region_coverage"
+RAW_WINDOW_VIEW = "raw_window_coverage"
+VIEW_LABELS = {
+    STRICT_EVENT_VIEW: "Strict Call Extraction",
+    MERGED_REGION_VIEW: "Merged Region Coverage",
+    RAW_WINDOW_VIEW: "Raw Window Coverage",
+}
 
 
 @dataclass(frozen=True)
@@ -239,19 +247,80 @@ def _overlap_seconds(pred: PredictedSegment, ann: AnnotationEvent, collar_s: flo
     return max(0.0, end - start)
 
 
+def _group_predictions_by_file(
+    predictions: Sequence[PredictedSegment],
+) -> Dict[str, List[PredictedSegment]]:
+    grouped: Dict[str, List[PredictedSegment]] = defaultdict(list)
+    for pred in predictions:
+        grouped[pred.filename].append(pred)
+    return grouped
+
+
+def _group_annotations_by_file(
+    annotations: Sequence[AnnotationEvent],
+) -> Dict[str, List[AnnotationEvent]]:
+    grouped: Dict[str, List[AnnotationEvent]] = defaultdict(list)
+    for ann in annotations:
+        grouped[ann.filename].append(ann)
+    return grouped
+
+
+def _merge_intervals(intervals: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    cleaned = sorted(
+        (
+            (min(float(start), float(end)), max(float(start), float(end)))
+            for start, end in intervals
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    merged: List[Tuple[float, float]] = []
+    for start, end in cleaned:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _prediction_review_summary(predictions: Sequence[PredictedSegment]) -> Dict[str, float]:
+    durations = [max(0.0, pred.end_time_s - pred.start_time_s) for pred in predictions]
+    intervals_by_file: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+    for pred in predictions:
+        intervals_by_file[pred.filename].append((pred.start_time_s, pred.end_time_s))
+
+    union_seconds = 0.0
+    for intervals in intervals_by_file.values():
+        union_seconds += sum(max(0.0, end - start) for start, end in _merge_intervals(intervals))
+
+    return {
+        "prediction_count": len(predictions),
+        "unique_predicted_clip_count": len(intervals_by_file),
+        "mean_prediction_duration_s": mean(durations) if durations else 0.0,
+        "median_prediction_duration_s": median(durations) if durations else 0.0,
+        "max_prediction_duration_s": max(durations) if durations else 0.0,
+        "total_review_seconds": union_seconds,
+        "total_review_minutes": union_seconds / 60.0,
+    }
+
+
+def filter_predictions_by_score(
+    predictions: Sequence[PredictedSegment],
+    min_score: float,
+) -> List[PredictedSegment]:
+    threshold = float(min_score)
+    return [pred for pred in predictions if pred.score >= threshold]
+
+
 def match_predictions_to_annotations(
     predictions: Sequence[PredictedSegment],
     annotations: Sequence[AnnotationEvent],
     collar_s: float,
 ) -> Tuple[List[Match], List[PredictedSegment], List[AnnotationEvent]]:
     candidates: List[Tuple[float, float, float, str, str, Match]] = []
-    ann_by_id = {ann.annotation_id: ann for ann in annotations}
-    pred_by_id = {pred.prediction_id: pred for pred in predictions}
+    ann_by_file = _group_annotations_by_file(annotations)
 
     for pred in predictions:
-        for ann in annotations:
-            if pred.filename != ann.filename:
-                continue
+        for ann in ann_by_file.get(pred.filename, []):
             overlap_s = _overlap_seconds(pred, ann, collar_s)
             if overlap_s <= 0:
                 continue
@@ -290,6 +359,53 @@ def match_predictions_to_annotations(
     unmatched_predictions = [pred for pred in predictions if pred.prediction_id not in matched_pred_ids]
     unmatched_annotations = [ann for ann in annotations if ann.annotation_id not in matched_ann_ids]
     return matches, unmatched_predictions, unmatched_annotations
+
+
+def coverage_metrics(
+    predictions: Sequence[PredictedSegment],
+    annotations: Sequence[AnnotationEvent],
+    collar_s: float,
+) -> Dict[str, float]:
+    ann_by_file = _group_annotations_by_file(annotations)
+    useful_prediction_ids: set[str] = set()
+    covered_annotation_ids: set[str] = set()
+
+    for pred in predictions:
+        anns = ann_by_file.get(pred.filename, [])
+        if not anns:
+            continue
+        pred_hit = False
+        for ann in anns:
+            overlap_s = _overlap_seconds(pred, ann, collar_s)
+            if overlap_s <= 0:
+                continue
+            pred_hit = True
+            covered_annotation_ids.add(ann.annotation_id)
+        if pred_hit:
+            useful_prediction_ids.add(pred.prediction_id)
+
+    summary = _prediction_review_summary(predictions)
+    useful_predictions = len(useful_prediction_ids)
+    covered_annotations = len(covered_annotation_ids)
+    prediction_count = len(predictions)
+    annotation_count = len(annotations)
+    precision = _safe_div(useful_predictions, prediction_count)
+    recall = _safe_div(covered_annotations, annotation_count)
+    f1 = _safe_div(2.0 * precision * recall, precision + recall)
+
+    return {
+        "prediction_count": prediction_count,
+        "useful_prediction_count": useful_predictions,
+        "annotation_count": annotation_count,
+        "covered_annotation_count": covered_annotations,
+        "uncovered_annotation_count": max(0, annotation_count - covered_annotations),
+        "unmatched_prediction_count": max(0, prediction_count - useful_predictions),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "predictions_per_covered_call": _safe_div(prediction_count, covered_annotations),
+        **summary,
+    }
 
 
 def _safe_div(num: float, den: float) -> float:
@@ -363,6 +479,83 @@ def bucket_event_metrics(
     return out
 
 
+def bucket_coverage_metrics(
+    predictions: Sequence[PredictedSegment],
+    annotations: Sequence[AnnotationEvent],
+    collar_s: float,
+) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    for bucket in PART2_BUCKETS:
+        bucket_annotations = [ann for ann in annotations if ann.call_type_bucket == bucket]
+        out[bucket] = coverage_metrics(predictions, bucket_annotations, collar_s)
+    return out
+
+
+def context_recall_rows(
+    *,
+    predictions: Sequence[PredictedSegment],
+    annotations: Sequence[AnnotationEvent],
+    collar_s: float,
+    view_name: str,
+    min_annotation_count: int = 1,
+) -> List[Dict[str, Any]]:
+    tags = sorted({tag for ann in annotations for tag in ann.context_tags} or {UNKNOWN_CONTEXT})
+    rows: List[Dict[str, Any]] = []
+    for bucket in PART2_BUCKETS:
+        bucket_annotations = [ann for ann in annotations if ann.call_type_bucket == bucket]
+        for tag in tags:
+            tagged_annotations = [ann for ann in bucket_annotations if tag in ann.context_tags]
+            if len(tagged_annotations) < int(min_annotation_count):
+                continue
+            if view_name == STRICT_EVENT_VIEW:
+                matches, _, unmatched_annotations = match_predictions_to_annotations(
+                    predictions,
+                    tagged_annotations,
+                    collar_s,
+                )
+                covered_count = len(matches)
+                recall = _safe_div(covered_count, len(tagged_annotations))
+            else:
+                metrics = coverage_metrics(predictions, tagged_annotations, collar_s)
+                covered_count = int(metrics["covered_annotation_count"])
+                recall = float(metrics["recall"])
+            rows.append(
+                {
+                    "view": view_name,
+                    "bucket": bucket,
+                    "context_tag": tag,
+                    "annotation_count": len(tagged_annotations),
+                    "covered_annotation_count": covered_count,
+                    "uncovered_annotation_count": max(0, len(tagged_annotations) - covered_count),
+                    "recall": recall,
+                }
+            )
+    return rows
+
+
+def hardest_context_rows(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    max_items: int = 8,
+    min_annotation_count: int = 25,
+) -> List[Dict[str, Any]]:
+    filtered = [
+        row
+        for row in rows
+        if int(row.get("annotation_count", 0)) >= int(min_annotation_count)
+    ]
+    filtered.sort(
+        key=lambda row: (
+            _safe_float(row.get("recall"), 1.0),
+            -int(row.get("annotation_count", 0)),
+            str(row.get("view", "")),
+            str(row.get("bucket", "")),
+            str(row.get("context_tag", "")),
+        )
+    )
+    return list(filtered[:max_items])
+
+
 def summarize_sweep_rows(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     keys = [
         "window_step",
@@ -376,6 +569,16 @@ def summarize_sweep_rows(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
         "precision",
         "recall",
         "f1",
+        "merged_region_precision",
+        "merged_region_recall",
+        "merged_region_f1",
+        "raw_window_threshold",
+        "raw_window_precision",
+        "raw_window_recall",
+        "raw_window_f1",
+        "prediction_count",
+        "covered_annotation_count",
+        "total_review_minutes",
     ]
     return [{key: row.get(key, "") for key in keys} for row in rows]
 
@@ -515,30 +718,69 @@ def write_csv(path: Path | str, rows: Sequence[Dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
+def _configure_plot_style(plt) -> None:
+    try:
+        plt.style.use("seaborn-v0_8-whitegrid")
+    except Exception:
+        plt.style.use("default")
+    plt.rcParams.update(
+        {
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.titlesize": 13,
+            "axes.titleweight": "semibold",
+            "axes.labelsize": 11,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "legend.fontsize": 9,
+            "figure.titlesize": 14,
+            "savefig.bbox": "tight",
+            "savefig.facecolor": "white",
+        }
+    )
+
+
 def maybe_plot_confusion_matrix(path: Path | str, matrix: Dict[str, float], title: str) -> Optional[Path]:
     try:
         import matplotlib.pyplot as plt
+        import numpy as np
     except Exception:
         return None
 
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    _configure_plot_style(plt)
     image = [
         [matrix.get("tn", 0), matrix.get("fp", 0)],
         [matrix.get("fn", 0), matrix.get("tp", 0)],
     ]
 
-    fig, ax = plt.subplots(figsize=(4, 4))
-    ax.imshow(image, cmap="Blues")
+    fig, ax = plt.subplots(figsize=(4.6, 4.0), dpi=220)
+    heatmap = ax.imshow(image, cmap="Blues")
     labels = [["TN", "FP"], ["FN", "TP"]]
+    vmax = max(1.0, float(np.max(image)))
     for i in range(2):
         for j in range(2):
-            ax.text(j, i, f"{labels[i][j]}\n{image[i][j]}", ha="center", va="center")
-    ax.set_xticks([0, 1], labels=["Pred -,", "Pred +"])
-    ax.set_yticks([0, 1], labels=["Actual -", "Actual +"])
-    ax.set_title(title)
+            value = image[i][j]
+            text_color = "white" if float(value) > 0.55 * vmax else "#17324d"
+            ax.text(
+                j,
+                i,
+                f"{labels[i][j]}\n{value:,}",
+                ha="center",
+                va="center",
+                fontsize=11,
+                fontweight="semibold",
+                color=text_color,
+            )
+    ax.set_xticks([0, 1], labels=["Predicted non-fin", "Predicted fin"])
+    ax.set_yticks([0, 1], labels=["Actual non-fin", "Actual fin"])
+    ax.set_xlabel("Model output")
+    ax.set_ylabel("Reference label")
+    ax.set_title(title, pad=12)
+    fig.colorbar(heatmap, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=220)
     plt.close(fig)
     return out_path
 
@@ -551,19 +793,128 @@ def maybe_plot_sweep_curve(path: Path | str, rows: Sequence[Dict[str, Any]], win
 
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    _configure_plot_style(plt)
 
-    sorted_rows = sorted(rows, key=lambda row: (_safe_float(row.get("recall")), _safe_float(row.get("precision"))))
-    recalls = [_safe_float(row.get("recall")) for row in sorted_rows]
-    precisions = [_safe_float(row.get("precision")) for row in sorted_rows]
-
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(recalls, precisions, marker="o")
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.set_title(f"Part 2 sweep precision/recall ({window_step_label})")
-    ax.grid(True, alpha=0.3)
+    panels = [
+        ("Strict Call Extraction", "precision", "recall", "#0f4c81"),
+        ("Merged Region Coverage", "merged_region_precision", "merged_region_recall", "#2a9d8f"),
+        ("Raw Window Coverage", "raw_window_precision", "raw_window_recall", "#e76f51"),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(13.8, 4.2), dpi=220, sharex=False, sharey=False)
+    if not isinstance(axes, (list, tuple)):
+        axes = list(axes)
+    for ax, (title, p_key, r_key, color) in zip(axes, panels):
+        sorted_rows = sorted(
+            rows,
+            key=lambda row: (_safe_float(row.get(r_key, row.get("recall"))), _safe_float(row.get(p_key, row.get("precision")))),
+        )
+        recalls = [_safe_float(row.get(r_key, row.get("recall"))) for row in sorted_rows]
+        precisions = [_safe_float(row.get(p_key, row.get("precision"))) for row in sorted_rows]
+        ax.plot(recalls, precisions, marker="o", markersize=5, linewidth=2.0, color=color)
+        if recalls and precisions:
+            best_index = max(
+                range(len(sorted_rows)),
+                key=lambda idx: (
+                    _safe_float(sorted_rows[idx].get("f1")),
+                    _safe_float(sorted_rows[idx].get(r_key, sorted_rows[idx].get("recall"))),
+                ),
+            )
+            ax.scatter(
+                [recalls[best_index]],
+                [precisions[best_index]],
+                s=64,
+                color=color,
+                edgecolor="white",
+                linewidth=1.2,
+                zorder=5,
+            )
+        ax.set_xlabel("Recall")
+        ax.set_ylabel("Precision")
+        ax.set_title(title, pad=10)
+        ax.set_xlim(left=0.0)
+        ax.set_ylim(bottom=0.0, top=1.02)
+        ax.grid(True, alpha=0.28)
+    fig.suptitle(f"Part 2 Sweep Tradeoffs ({window_step_label})", y=1.04)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=220)
+    plt.close(fig)
+    return out_path
+
+
+def maybe_plot_view_summary(path: Path | str, rows: Sequence[Dict[str, Any]]) -> Optional[Path]:
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return None
+
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _configure_plot_style(plt)
+
+    labels = [row.get("view_label", row.get("view", "")) for row in rows]
+    precisions = [_safe_float(row.get("precision")) for row in rows]
+    recalls = [_safe_float(row.get("recall")) for row in rows]
+    f1s = [_safe_float(row.get("f1")) for row in rows]
+    x = np.arange(len(labels))
+    width = 0.24
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.6), dpi=220)
+    ax.bar(x - width, precisions, width=width, label="Precision", color="#0f4c81")
+    ax.bar(x, recalls, width=width, label="Recall", color="#2a9d8f")
+    ax.bar(x + width, f1s, width=width, label="F1", color="#e76f51")
+    ax.set_xticks(x, labels=labels)
+    ax.set_ylim(0.0, 1.02)
+    ax.set_ylabel("Score")
+    ax.set_title("Part 2 Evaluation Views", pad=10)
+    ax.legend(frameon=False, ncol=3, loc="upper center")
+    ax.grid(True, axis="y", alpha=0.25)
+    for container in ax.containers:
+        ax.bar_label(container, fmt="%.2f", padding=3, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=220)
+    plt.close(fig)
+    return out_path
+
+
+def maybe_plot_bucket_recall_comparison(
+    path: Path | str,
+    *,
+    strict_bucket_metrics: Dict[str, Dict[str, float]],
+    merged_bucket_metrics: Dict[str, Dict[str, float]],
+    raw_bucket_metrics: Dict[str, Dict[str, float]],
+) -> Optional[Path]:
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return None
+
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _configure_plot_style(plt)
+
+    x = np.arange(len(PART2_BUCKETS))
+    width = 0.24
+    strict_vals = [float(strict_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
+    merged_vals = [float(merged_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
+    raw_vals = [float(raw_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
+
+    fig, ax = plt.subplots(figsize=(8.4, 4.6), dpi=220)
+    ax.bar(x - width, strict_vals, width=width, label="Strict event recall", color="#0f4c81")
+    ax.bar(x, merged_vals, width=width, label="Merged-region call coverage", color="#2a9d8f")
+    ax.bar(x + width, raw_vals, width=width, label="Raw-window call coverage", color="#e76f51")
+    ax.set_xticks(x, labels=PART2_BUCKETS)
+    ax.set_ylim(0.0, 1.02)
+    ax.set_ylabel("Recall")
+    ax.set_xlabel("Fin-whale call subtype")
+    ax.set_title("Subtype Recall by Evaluation View", pad=10)
+    ax.legend(frameon=False, loc="upper left")
+    ax.grid(True, axis="y", alpha=0.25)
+    for container in ax.containers:
+        ax.bar_label(container, fmt="%.2f", padding=3, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=220)
     plt.close(fig)
     return out_path
 
@@ -571,30 +922,55 @@ def maybe_plot_sweep_curve(path: Path | str, rows: Sequence[Dict[str, Any]], win
 def evaluation_report_lines(
     *,
     summary_title: str,
-    overall_event_metrics: Dict[str, float],
+    strict_event_metrics: Dict[str, float],
+    merged_region_metrics: Dict[str, float],
+    raw_window_metrics: Optional[Dict[str, float]],
     overall_clip_metrics: Dict[str, float],
-    bucket_event_metrics_map: Dict[str, Dict[str, float]],
+    bucket_strict_event_metrics_map: Dict[str, Dict[str, float]],
+    bucket_merged_region_metrics_map: Dict[str, Dict[str, float]],
+    bucket_raw_window_metrics_map: Optional[Dict[str, Dict[str, float]]],
     bucket_clip_metrics_map: Dict[str, Dict[str, float]],
     recommendations: Sequence[str],
     rapid_review_count: int,
     baseline_summary: Optional[Dict[str, Any]] = None,
     sweep_summary_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    hardest_context_rows: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> List[str]:
     lines = [f"# {summary_title}", ""]
     lines.extend(
         [
             "## Part 2 Summary",
             "",
-            f"- Event-level precision: `{overall_event_metrics['precision']:.4f}`",
-            f"- Event-level recall: `{overall_event_metrics['recall']:.4f}`",
-            f"- Event-level F1: `{overall_event_metrics['f1']:.4f}`",
-            f"- Event-level counts: `TP={overall_event_metrics['tp']}`, `FP={overall_event_metrics['fp']}`, `FN={overall_event_metrics['fn']}`",
+            "This report shows three complementary views of performance:",
+            "",
+            "- `Strict Call Extraction`: one predicted event can match only one annotated call. This is the hardest metric and reflects per-call extraction quality.",
+            "- `Merged Region Coverage`: one merged predicted region can cover many annotated calls. This reflects rapid-review usefulness.",
+            "- `Raw Window Coverage`: pre-merge detector windows above threshold count as positive. This isolates the CNN detector from the event-merging logic.",
+            "",
+            f"- Strict event precision: `{strict_event_metrics['precision']:.4f}`",
+            f"- Strict event recall: `{strict_event_metrics['recall']:.4f}`",
+            f"- Strict event F1: `{strict_event_metrics['f1']:.4f}`",
+            f"- Strict event counts: `TP={strict_event_metrics['tp']}`, `FP={strict_event_metrics['fp']}`, `FN={strict_event_metrics['fn']}`",
+            f"- Merged-region precision: `{merged_region_metrics['precision']:.4f}`",
+            f"- Merged-region call coverage recall: `{merged_region_metrics['recall']:.4f}`",
+            f"- Merged-region coverage F1: `{merged_region_metrics['f1']:.4f}`",
+            f"- Merged-region review burden: `{int(merged_region_metrics['prediction_count'])}` regions, `{merged_region_metrics['total_review_minutes']:.1f}` review minutes",
             f"- Clip-level accuracy: `{overall_clip_metrics['accuracy']:.4f}`",
             f"- Clip-level counts: `TP={overall_clip_metrics['tp']}`, `FP={overall_clip_metrics['fp']}`, `FN={overall_clip_metrics['fn']}`, `TN={overall_clip_metrics['tn']}`",
             f"- Rapid-review queue size: `{rapid_review_count}`",
             "",
         ]
     )
+    if raw_window_metrics is not None:
+        lines.extend(
+            [
+                f"- Raw-window precision: `{raw_window_metrics['precision']:.4f}`",
+                f"- Raw-window call coverage recall: `{raw_window_metrics['recall']:.4f}`",
+                f"- Raw-window coverage F1: `{raw_window_metrics['f1']:.4f}`",
+                f"- Raw-window review burden: `{int(raw_window_metrics['prediction_count'])}` positive windows, `{raw_window_metrics['total_review_minutes']:.1f}` review minutes",
+                "",
+            ]
+        )
 
     if baseline_summary:
         lines.extend(["## Historical Baseline", ""])
@@ -603,10 +979,17 @@ def evaluation_report_lines(
         lines.append("")
 
     if sweep_summary_rows:
-        lines.extend(["## Sweep Summary", "", "| window_step | low | high | min_members | max_gap | precision | recall | f1 |", "| --- | --- | --- | --- | --- | --- | --- | --- |"])
+        lines.extend(
+            [
+                "## Sweep Summary",
+                "",
+                "| window_step | low | high | min_members | max_gap | strict precision | strict recall | strict f1 | merged recall | raw-window recall |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
         for row in sweep_summary_rows:
             lines.append(
-                "| {window_step} | {low_threshold} | {high_threshold} | {min_members} | {max_gap_seconds} | {precision:.4f} | {recall:.4f} | {f1:.4f} |".format(
+                "| {window_step} | {low_threshold} | {high_threshold} | {min_members} | {max_gap_seconds} | {precision:.4f} | {recall:.4f} | {f1:.4f} | {merged_region_recall:.4f} | {raw_window_recall} |".format(
                     window_step=row.get("window_step", ""),
                     low_threshold=row.get("low_threshold", ""),
                     high_threshold=row.get("high_threshold", ""),
@@ -615,28 +998,48 @@ def evaluation_report_lines(
                     precision=_safe_float(row.get("precision")),
                     recall=_safe_float(row.get("recall")),
                     f1=_safe_float(row.get("f1")),
+                    merged_region_recall=_safe_float(row.get("merged_region_recall")),
+                    raw_window_recall=f"{_safe_float(row.get('raw_window_recall')):.4f}" if row.get("raw_window_recall", "") != "" else "n/a",
                 )
             )
         lines.append("")
 
     lines.extend(["## Fin Subtype Metrics", ""])
-    lines.append("| bucket | event precision | event recall | event f1 | clip precision | clip recall | clip f1 |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("| bucket | strict recall | merged-region coverage recall | raw-window coverage recall | clip recall | annotations |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
     for bucket in PART2_BUCKETS:
-        event_metrics = bucket_event_metrics_map[bucket]
+        event_metrics = bucket_strict_event_metrics_map[bucket]
+        merged_metrics = bucket_merged_region_metrics_map[bucket]
+        raw_metrics = bucket_raw_window_metrics_map[bucket] if bucket_raw_window_metrics_map is not None else None
         clip_metrics = bucket_clip_metrics_map[bucket]
         lines.append(
-            "| {bucket} | {ep:.4f} | {er:.4f} | {ef:.4f} | {cp:.4f} | {cr:.4f} | {cf:.4f} |".format(
+            "| {bucket} | {strict_recall:.4f} | {merged_recall:.4f} | {raw_recall} | {clip_recall:.4f} | {annotation_count} |".format(
                 bucket=bucket,
-                ep=event_metrics["precision"],
-                er=event_metrics["recall"],
-                ef=event_metrics["f1"],
-                cp=clip_metrics["precision"],
-                cr=clip_metrics["recall"],
-                cf=clip_metrics["f1"],
+                strict_recall=event_metrics["recall"],
+                merged_recall=merged_metrics["recall"],
+                raw_recall=f"{raw_metrics['recall']:.4f}" if raw_metrics is not None else "n/a",
+                clip_recall=clip_metrics["recall"],
+                annotation_count=int(event_metrics.get("annotation_count", 0)),
             )
         )
     lines.append("")
+
+    if hardest_context_rows:
+        lines.extend(["## Hardest Contexts", ""])
+        lines.append("| view | bucket | context | covered / total | recall |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for row in hardest_context_rows:
+            lines.append(
+                "| {view} | {bucket} | {context_tag} | {covered_annotation_count} / {annotation_count} | {recall:.4f} |".format(
+                    view=VIEW_LABELS.get(str(row.get("view", "")), str(row.get("view", ""))),
+                    bucket=row.get("bucket", ""),
+                    context_tag=row.get("context_tag", ""),
+                    covered_annotation_count=int(row.get("covered_annotation_count", 0)),
+                    annotation_count=int(row.get("annotation_count", 0)),
+                    recall=_safe_float(row.get("recall")),
+                )
+            )
+        lines.append("")
 
     lines.extend(["## Annotation Recommendations", ""])
     if recommendations:

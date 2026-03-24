@@ -10,10 +10,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.dataset.part2_eval import (
     build_clip_confusion,
+    coverage_metrics,
+    filter_predictions_by_score,
+    context_recall_rows,
     load_annotations_csv,
     load_clip_manifest_csv,
     load_prediction_segments,
     match_predictions_to_annotations,
+    PredictedSegment,
 )
 
 
@@ -186,6 +190,132 @@ class TestPart2Eval(unittest.TestCase):
             self.assertEqual(len(predictions), 1)
             self.assertAlmostEqual(predictions[0].start_time_s, 10.5, places=4)
             self.assertAlmostEqual(predictions[0].end_time_s, 11.7, places=4)
+
+    def test_coverage_metrics_credit_one_prediction_for_multiple_calls(self):
+        annotations = load_annotations_csv(
+            self._write_temp_annotations(
+                [
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "begin_time_s": "10.0",
+                        "end_time_s": "11.0",
+                        "species": "Bp",
+                        "call_type_bucket": "20Hz",
+                        "call_type_raw": "20 Hz",
+                        "comments": "",
+                        "context_tags": "vessel_or_masking",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "begin_time_s": "20.0",
+                        "end_time_s": "21.0",
+                        "species": "Bp",
+                        "call_type_bucket": "20Hz",
+                        "call_type_raw": "20 Hz",
+                        "comments": "",
+                        "context_tags": "vessel_or_masking",
+                    },
+                ]
+            )
+        )
+
+        predictions = [
+            PredictedSegment(
+                prediction_id="pred_001",
+                item_id="item_001",
+                filename="ICLISTENHF6016_20250105T000000.000Z.flac",
+                start_time_s=9.0,
+                end_time_s=21.5,
+                score=0.91,
+                source_index=0,
+            )
+        ]
+        metrics = coverage_metrics(predictions, annotations, collar_s=1.0)
+        self.assertEqual(metrics["prediction_count"], 1)
+        self.assertEqual(metrics["useful_prediction_count"], 1)
+        self.assertEqual(metrics["covered_annotation_count"], 2)
+        self.assertAlmostEqual(metrics["precision"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["recall"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["f1"], 1.0, places=6)
+
+    def test_filter_predictions_by_score_and_context_recall_rows(self):
+        annotations = load_annotations_csv(
+            self._write_temp_annotations(
+                [
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "begin_time_s": "10.0",
+                        "end_time_s": "11.0",
+                        "species": "Bp",
+                        "call_type_bucket": "20Hz",
+                        "call_type_raw": "20 Hz",
+                        "comments": "",
+                        "context_tags": "vessel_or_masking",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "begin_time_s": "40.0",
+                        "end_time_s": "41.0",
+                        "species": "Bp",
+                        "call_type_bucket": "20Hz",
+                        "call_type_raw": "20 Hz",
+                        "comments": "",
+                        "context_tags": "mixed_species",
+                    },
+                ]
+            )
+        )
+        predictions = [
+            PredictedSegment(
+                prediction_id="pred_hi",
+                item_id="item_hi",
+                filename="ICLISTENHF6016_20250105T000000.000Z.flac",
+                start_time_s=9.5,
+                end_time_s=11.5,
+                score=0.95,
+                source_index=0,
+            ),
+            PredictedSegment(
+                prediction_id="pred_lo",
+                item_id="item_lo",
+                filename="ICLISTENHF6016_20250105T000000.000Z.flac",
+                start_time_s=39.5,
+                end_time_s=41.5,
+                score=0.40,
+                source_index=0,
+            ),
+        ]
+        filtered = filter_predictions_by_score(predictions, 0.8)
+        self.assertEqual([pred.prediction_id for pred in filtered], ["pred_hi"])
+        rows = context_recall_rows(
+            predictions=filtered,
+            annotations=annotations,
+            collar_s=1.0,
+            view_name="raw_window_coverage",
+        )
+        recall_by_context = {row["context_tag"]: row["recall"] for row in rows}
+        self.assertAlmostEqual(recall_by_context["vessel_or_masking"], 1.0, places=6)
+        self.assertAlmostEqual(recall_by_context["mixed_species"], 0.0, places=6)
+
+    def _write_temp_annotations(self, rows):
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        path = Path(tmpdir.name) / "annotations.csv"
+        _write_csv(
+            path,
+            [
+                "filename",
+                "begin_time_s",
+                "end_time_s",
+                "species",
+                "call_type_bucket",
+                "call_type_raw",
+                "comments",
+                "context_tags",
+            ],
+            rows,
+        )
+        return path
 
 
 if __name__ == "__main__":

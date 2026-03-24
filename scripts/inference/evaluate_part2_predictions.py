@@ -19,15 +19,22 @@ if str(REPO_ROOT) not in sys.path:
 from src.dataset.part2_eval import (
     PART2_BUCKETS,
     bucket_event_metrics,
+    bucket_coverage_metrics,
     build_clip_confusion,
+    context_recall_rows,
+    coverage_metrics,
     evaluation_report_lines,
     filter_prediction_items_for_rapid_review,
+    filter_predictions_by_score,
+    hardest_context_rows,
     load_annotations_csv,
     load_clip_manifest_csv,
     load_prediction_segments,
     match_predictions_to_annotations,
+    maybe_plot_bucket_recall_comparison,
     maybe_plot_confusion_matrix,
     maybe_plot_sweep_curve,
+    maybe_plot_view_summary,
     rapid_review_rows,
     recommendations_from_errors,
     strict_o3_subset,
@@ -143,6 +150,78 @@ def _write_confusion_csv(path: Path, metrics: Dict[str, Any]) -> None:
     write_csv(path, rows)
 
 
+def _overall_view_rows(
+    *,
+    strict_event_metrics: Dict[str, Any],
+    merged_region_metrics: Dict[str, Any],
+    raw_window_metrics: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    rows = [
+        {
+            "view": "strict_event",
+            "view_label": "Strict Call Extraction",
+            "precision": strict_event_metrics.get("precision", 0.0),
+            "recall": strict_event_metrics.get("recall", 0.0),
+            "f1": strict_event_metrics.get("f1", 0.0),
+        },
+        {
+            "view": "merged_region_coverage",
+            "view_label": "Merged Region Coverage",
+            "precision": merged_region_metrics.get("precision", 0.0),
+            "recall": merged_region_metrics.get("recall", 0.0),
+            "f1": merged_region_metrics.get("f1", 0.0),
+        },
+    ]
+    if raw_window_metrics is not None:
+        rows.append(
+            {
+                "view": "raw_window_coverage",
+                "view_label": "Raw Window Coverage",
+                "precision": raw_window_metrics.get("precision", 0.0),
+                "recall": raw_window_metrics.get("recall", 0.0),
+                "f1": raw_window_metrics.get("f1", 0.0),
+            }
+        )
+    return rows
+
+
+def _sweep_row(
+    *,
+    tag: str,
+    combo_dir: Path,
+    window_step_label: str,
+    low_threshold: float,
+    high_threshold: float,
+    min_members: int,
+    max_gap_seconds: Optional[float],
+    eval_summary: Dict[str, Any],
+    raw_window_threshold: float,
+) -> Dict[str, Any]:
+    strict_metrics = eval_summary["overall_event_metrics"]
+    merged_metrics = eval_summary["merged_region_metrics"]
+    raw_metrics = eval_summary.get("raw_window_metrics") or {}
+    return {
+        "tag": tag,
+        "combo_dir": str(combo_dir),
+        "window_step": window_step_label,
+        "low_threshold": low_threshold,
+        "high_threshold": high_threshold,
+        "min_members": min_members,
+        "max_gap_seconds": "" if max_gap_seconds is None else max_gap_seconds,
+        **strict_metrics,
+        "merged_region_precision": merged_metrics.get("precision", 0.0),
+        "merged_region_recall": merged_metrics.get("recall", 0.0),
+        "merged_region_f1": merged_metrics.get("f1", 0.0),
+        "raw_window_threshold": raw_window_threshold,
+        "raw_window_precision": raw_metrics.get("precision", ""),
+        "raw_window_recall": raw_metrics.get("recall", ""),
+        "raw_window_f1": raw_metrics.get("f1", ""),
+        "prediction_count": merged_metrics.get("prediction_count", 0),
+        "covered_annotation_count": merged_metrics.get("covered_annotation_count", 0),
+        "total_review_minutes": merged_metrics.get("total_review_minutes", 0.0),
+    }
+
+
 def evaluate_single_postprocessed_output(
     *,
     postprocessed_json: Path,
@@ -150,6 +229,8 @@ def evaluate_single_postprocessed_output(
     clip_manifest,
     output_dir: Path,
     match_collar_s: float,
+    raw_window_predictions: Optional[Sequence[Any]] = None,
+    raw_window_threshold: Optional[float] = None,
     baseline_summary: Optional[Dict[str, Any]] = None,
     summary_title: str = "Fin Whale Part 2 Report",
     sweep_summary_rows: Optional[Sequence[Dict[str, Any]]] = None,
@@ -174,12 +255,22 @@ def evaluate_single_postprocessed_output(
     f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
     overall_event.update({"precision": precision, "recall": recall, "f1": f1})
 
+    merged_region_metrics = coverage_metrics(prediction_segments, fin_annotations, match_collar_s)
     overall_clip = build_clip_confusion(clip_manifest, prediction_segments)
     bucket_events = bucket_event_metrics(prediction_segments, fin_annotations, match_collar_s)
+    bucket_merged_region = bucket_coverage_metrics(prediction_segments, fin_annotations, match_collar_s)
     bucket_clips = {
         bucket: build_clip_confusion(clip_manifest, prediction_segments, bucket=bucket)
         for bucket in PART2_BUCKETS
     }
+
+    raw_window_positive_predictions = None
+    raw_window_metrics = None
+    bucket_raw_window = None
+    if raw_window_predictions is not None and raw_window_threshold is not None:
+        raw_window_positive_predictions = filter_predictions_by_score(raw_window_predictions, float(raw_window_threshold))
+        raw_window_metrics = coverage_metrics(raw_window_positive_predictions, fin_annotations, match_collar_s)
+        bucket_raw_window = bucket_coverage_metrics(raw_window_positive_predictions, fin_annotations, match_collar_s)
 
     annotations_by_id = {ann.annotation_id: ann for ann in fin_annotations}
     predictions_by_id = {pred.prediction_id: pred for pred in prediction_segments}
@@ -192,10 +283,20 @@ def evaluate_single_postprocessed_output(
     _write_confusion_csv(output_dir / "overall_clip_confusion.csv", overall_clip)
     maybe_plot_confusion_matrix(output_dir / "overall_clip_confusion.png", overall_clip, "Part 2 overall clip confusion")
 
+    overall_view_rows = _overall_view_rows(
+        strict_event_metrics=overall_event,
+        merged_region_metrics=merged_region_metrics,
+        raw_window_metrics=raw_window_metrics,
+    )
+    write_csv(output_dir / "overall_view_metrics.csv", overall_view_rows)
+    maybe_plot_view_summary(output_dir / "overall_view_metrics.png", overall_view_rows)
+
     bucket_metric_rows: List[Dict[str, Any]] = []
     for bucket in PART2_BUCKETS:
         clip_metrics = bucket_clips[bucket]
         event_metrics = bucket_events[bucket]
+        merged_metrics = bucket_merged_region[bucket]
+        raw_metrics = bucket_raw_window[bucket] if bucket_raw_window is not None else None
         _write_confusion_csv(output_dir / f"{bucket}_clip_confusion.csv", clip_metrics)
         maybe_plot_confusion_matrix(
             output_dir / f"{bucket}_clip_confusion.png",
@@ -211,6 +312,16 @@ def evaluate_single_postprocessed_output(
                 "event_precision": f"{event_metrics['precision']:.6f}",
                 "event_recall": f"{event_metrics['recall']:.6f}",
                 "event_f1": f"{event_metrics['f1']:.6f}",
+                "merged_region_precision": f"{merged_metrics['precision']:.6f}",
+                "merged_region_recall": f"{merged_metrics['recall']:.6f}",
+                "merged_region_f1": f"{merged_metrics['f1']:.6f}",
+                "merged_region_covered_calls": int(merged_metrics["covered_annotation_count"]),
+                "merged_region_review_minutes": f"{merged_metrics['total_review_minutes']:.6f}",
+                "raw_window_precision": f"{raw_metrics['precision']:.6f}" if raw_metrics is not None else "",
+                "raw_window_recall": f"{raw_metrics['recall']:.6f}" if raw_metrics is not None else "",
+                "raw_window_f1": f"{raw_metrics['f1']:.6f}" if raw_metrics is not None else "",
+                "raw_window_covered_calls": int(raw_metrics["covered_annotation_count"]) if raw_metrics is not None else "",
+                "raw_window_review_minutes": f"{raw_metrics['total_review_minutes']:.6f}" if raw_metrics is not None else "",
                 "clip_tp": clip_metrics["tp"],
                 "clip_fp": clip_metrics["fp"],
                 "clip_fn": clip_metrics["fn"],
@@ -221,6 +332,13 @@ def evaluate_single_postprocessed_output(
             }
         )
     write_csv(output_dir / "bucket_metrics.csv", bucket_metric_rows)
+    if bucket_raw_window is not None:
+        maybe_plot_bucket_recall_comparison(
+            output_dir / "bucket_recall_comparison.png",
+            strict_bucket_metrics=bucket_events,
+            merged_bucket_metrics=bucket_merged_region,
+            raw_bucket_metrics=bucket_raw_window,
+        )
 
     recommendations = recommendations_from_errors(
         unmatched_annotations=unmatched_annotations,
@@ -237,36 +355,79 @@ def evaluate_single_postprocessed_output(
     _write_json(rapid_app_json, rapid_payload)
     _write_json(rapid_o3_json, strict_o3_subset(rapid_payload))
 
+    context_rows = []
+    context_rows.extend(
+        context_recall_rows(
+            predictions=prediction_segments,
+            annotations=fin_annotations,
+            collar_s=match_collar_s,
+            view_name="strict_event",
+        )
+    )
+    context_rows.extend(
+        context_recall_rows(
+            predictions=prediction_segments,
+            annotations=fin_annotations,
+            collar_s=match_collar_s,
+            view_name="merged_region_coverage",
+        )
+    )
+    if raw_window_positive_predictions is not None:
+        context_rows.extend(
+            context_recall_rows(
+                predictions=raw_window_positive_predictions,
+                annotations=fin_annotations,
+                collar_s=match_collar_s,
+                view_name="raw_window_coverage",
+            )
+        )
+    write_csv(output_dir / "context_recall_metrics.csv", context_rows)
+    hardest_rows = hardest_context_rows(context_rows, max_items=8, min_annotation_count=25)
+
     summary_payload = {
         "postprocessed_json": str(postprocessed_json),
         "match_collar_s": float(match_collar_s),
         "overall_event_metrics": overall_event,
+        "merged_region_metrics": merged_region_metrics,
+        "raw_window_metrics": raw_window_metrics,
         "overall_clip_metrics": overall_clip,
         "bucket_event_metrics": bucket_events,
+        "bucket_merged_region_metrics": bucket_merged_region,
+        "bucket_raw_window_metrics": bucket_raw_window,
         "bucket_clip_metrics": bucket_clips,
         "recommendations": recommendations,
         "rapid_review_count": len(unmatched_predictions),
+        "raw_window_threshold": float(raw_window_threshold) if raw_window_threshold is not None else None,
     }
     _write_json(output_dir / "metrics.json", summary_payload)
 
     report_lines = evaluation_report_lines(
         summary_title=summary_title,
-        overall_event_metrics=overall_event,
+        strict_event_metrics=overall_event,
+        merged_region_metrics=merged_region_metrics,
+        raw_window_metrics=raw_window_metrics,
         overall_clip_metrics=overall_clip,
-        bucket_event_metrics_map=bucket_events,
+        bucket_strict_event_metrics_map=bucket_events,
+        bucket_merged_region_metrics_map=bucket_merged_region,
+        bucket_raw_window_metrics_map=bucket_raw_window,
         bucket_clip_metrics_map=bucket_clips,
         recommendations=recommendations,
         rapid_review_count=len(unmatched_predictions),
         baseline_summary=baseline_summary,
         sweep_summary_rows=sweep_summary_rows,
+        hardest_context_rows=hardest_rows,
     )
     report_path = output_dir / "report.md"
     report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
 
     return {
         "overall_event_metrics": overall_event,
+        "merged_region_metrics": merged_region_metrics,
+        "raw_window_metrics": raw_window_metrics,
         "overall_clip_metrics": overall_clip,
         "bucket_event_metrics": bucket_events,
+        "bucket_merged_region_metrics": bucket_merged_region,
+        "bucket_raw_window_metrics": bucket_raw_window,
         "bucket_clip_metrics": bucket_clips,
         "recommendations": recommendations,
         "rapid_review_count": len(unmatched_predictions),
@@ -318,6 +479,7 @@ def _sweep_candidates(
     *,
     window_predictions_json: Path,
     output_dir: Path,
+    window_step_label: str,
     low_thresholds: Sequence[float],
     high_thresholds: Sequence[float],
     min_members_values: Sequence[int],
@@ -326,6 +488,7 @@ def _sweep_candidates(
     annotations,
     clip_manifest,
     match_collar_s: float,
+    raw_window_predictions: Sequence[Any],
 ) -> List[Dict[str, Any]]:
     sweep_rows: List[Dict[str, Any]] = []
     sweep_dir = output_dir / "sweeps"
@@ -365,18 +528,22 @@ def _sweep_candidates(
                         clip_manifest=clip_manifest,
                         output_dir=combo_dir / "eval",
                         match_collar_s=match_collar_s,
+                        raw_window_predictions=raw_window_predictions,
+                        raw_window_threshold=low_threshold,
                         baseline_summary=None,
                         summary_title=f"Part 2 sweep evaluation: {tag}",
                     )
-                    row = {
-                        "tag": tag,
-                        "combo_dir": str(combo_dir),
-                        "low_threshold": low_threshold,
-                        "high_threshold": high_threshold,
-                        "min_members": min_members,
-                        "max_gap_seconds": "" if max_gap_seconds is None else max_gap_seconds,
-                        **eval_summary["overall_event_metrics"],
-                    }
+                    row = _sweep_row(
+                        tag=tag,
+                        combo_dir=combo_dir,
+                        window_step_label=window_step_label,
+                        low_threshold=low_threshold,
+                        high_threshold=high_threshold,
+                        min_members=min_members,
+                        max_gap_seconds=max_gap_seconds,
+                        eval_summary=eval_summary,
+                        raw_window_threshold=low_threshold,
+                    )
                     sweep_rows.append(row)
                     print(
                         "sweep",
@@ -385,9 +552,15 @@ def _sweep_candidates(
                         f"precision={row['precision']:.4f}",
                         f"recall={row['recall']:.4f}",
                         f"f1={row['f1']:.4f}",
+                        f"coverage_recall={float(row['merged_region_recall']):.4f}",
+                        f"window_recall={float(row['raw_window_recall']) if row['raw_window_recall'] != '' else 0.0:.4f}",
                     )
     write_csv(output_dir / "sweep_summary.csv", summarize_sweep_rows(sweep_rows))
-    maybe_plot_sweep_curve(output_dir / "sweep_precision_recall.png", sweep_rows, "window predictions")
+    maybe_plot_sweep_curve(
+        output_dir / "sweep_precision_recall.png",
+        sweep_rows,
+        window_step_label or "window predictions",
+    )
     return sweep_rows
 
 
@@ -453,6 +626,10 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     baseline_summary = _load_baseline_summary(args.baseline_metrics_json)
 
+    raw_window_predictions = None
+    if args.window_predictions_json:
+        _, raw_window_predictions = load_prediction_segments(args.window_predictions_json)
+
     if args.postprocessed_json:
         evaluate_single_postprocessed_output(
             postprocessed_json=Path(args.postprocessed_json),
@@ -460,6 +637,8 @@ def main() -> None:
             clip_manifest=clip_manifest,
             output_dir=output_dir,
             match_collar_s=float(args.match_collar_s),
+            raw_window_predictions=raw_window_predictions,
+            raw_window_threshold=min(_parse_float_list(args.low_thresholds)),
             baseline_summary=baseline_summary,
         )
         return
@@ -467,6 +646,7 @@ def main() -> None:
     sweep_rows = _sweep_candidates(
         window_predictions_json=Path(args.window_predictions_json),
         output_dir=output_dir,
+        window_step_label=args.window_step_label,
         low_thresholds=_parse_float_list(args.low_thresholds),
         high_thresholds=_parse_float_list(args.high_thresholds),
         min_members_values=_parse_int_list(args.min_members_values),
@@ -475,6 +655,7 @@ def main() -> None:
         annotations=annotations,
         clip_manifest=clip_manifest,
         match_collar_s=float(args.match_collar_s),
+        raw_window_predictions=raw_window_predictions or [],
     )
     selected = _select_operating_points(sweep_rows)
     selected_rows = [{"label": label, **row} for label, row in selected.items()]
@@ -501,6 +682,8 @@ def main() -> None:
             clip_manifest=clip_manifest,
             output_dir=op_dir,
             match_collar_s=float(args.match_collar_s),
+            raw_window_predictions=raw_window_predictions,
+            raw_window_threshold=float(row["low_threshold"]),
             baseline_summary=baseline_summary,
             summary_title=f"Fin Whale Part 2 Report ({label})",
             sweep_summary_rows=summarize_sweep_rows(sweep_rows),
@@ -517,7 +700,11 @@ def main() -> None:
         "recommendations.md",
         "overall_clip_confusion.csv",
         "overall_clip_confusion.png",
+        "overall_view_metrics.csv",
+        "overall_view_metrics.png",
         "bucket_metrics.csv",
+        "bucket_recall_comparison.png",
+        "context_recall_metrics.csv",
     ]:
         src = best_dir / artifact_name
         if src.exists():
