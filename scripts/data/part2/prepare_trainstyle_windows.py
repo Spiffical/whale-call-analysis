@@ -472,9 +472,18 @@ def main() -> None:
         )
 
         freqs, times, sxx, pdb = spec_gen.compute_spectrogram(audio_seg, fs)
+        backend_used = getattr(spec_gen, "_last_backend", None) or str(args.spec_backend)
+        analysis_window_s = float(win_dur)
+        time_axis_reference = "window_center"
+        if args.slide and str(backend_used).lower() == "torch":
+            # Torchaudio with center=False yields frame-start times. Shift to
+            # frame centers so downstream annotations and review plots align.
+            times = np.asarray(times, dtype=np.float32) + (0.5 * analysis_window_s)
+        else:
+            times = np.asarray(times, dtype=np.float32)
         freqs_c, pdb_c = crop_to_freq_lims(freqs, pdb, freq_min, freq_max)
         _, sxx_c = crop_to_freq_lims(freqs, sxx, freq_min, freq_max)
-        times_shifted = np.asarray(times, dtype=np.float32) + float(start_s)
+        times_shifted = times + float(start_s)
         if args.slide:
             times_c = times_shifted
         else:
@@ -497,8 +506,10 @@ def main() -> None:
                 "freq_min": freq_min,
                 "freq_max": freq_max,
                 "window_s": desired_duration if args.slide else float(args.window_s),
+                "analysis_window_s": analysis_window_s,
                 "edge_context_s": edge_context_s,
-                "backend": args.spec_backend,
+                "backend": backend_used,
+                "time_axis_reference": time_axis_reference,
             },
         )
 
@@ -507,8 +518,10 @@ def main() -> None:
             "begin_s": call.begin_s,
             "end_s": call.end_s,
             "out_mat": str(out_path),
-            "backend": args.spec_backend,
+            "backend": backend_used,
             "edge_context_s": edge_context_s,
+            "analysis_window_s": analysis_window_s,
+            "time_axis_reference": time_axis_reference,
         }
 
         if compare_dir and not args.slide:

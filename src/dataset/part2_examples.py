@@ -224,6 +224,67 @@ def _raw_windows_for_display(
     return tuple(selected)
 
 
+def _display_window_with_padding(
+    *,
+    start_s: float,
+    end_s: float,
+    annotation_spans: Sequence[Tuple[float, float, str]] = (),
+    pad_s: float = 0.6,
+    min_start_s: float = -12.0,
+) -> Tuple[float, float]:
+    disp_start = float(start_s) - float(pad_s)
+    disp_end = float(end_s) + float(pad_s)
+    for ann_start, ann_end, _label in annotation_spans:
+        disp_start = min(disp_start, float(ann_start) - float(pad_s))
+        disp_end = max(disp_end, float(ann_end) + float(pad_s))
+    if disp_end <= disp_start:
+        disp_end = disp_start + max(1.0, 2.0 * float(pad_s))
+    return max(disp_start, float(min_start_s)), disp_end
+
+
+def _infer_time_axis_center_offset(
+    *,
+    times: Any,
+    mat_data: Mapping[str, Any],
+    candidate: ExampleCandidate,
+) -> float:
+    time_axis_reference = str(mat_data.get("time_axis_reference") or "").strip().lower()
+    if time_axis_reference in {"window_center", "center", "frame_center"}:
+        return 0.0
+
+    try:
+        import numpy as np
+    except Exception:
+        return 0.0
+
+    time_values = np.asarray(times, dtype=np.float32).reshape(-1)
+    if time_values.size < 2:
+        return 0.0
+    hop_s = float(np.median(np.diff(time_values)))
+    if not math.isfinite(hop_s) or hop_s <= 0:
+        return 0.0
+
+    edge_context_s = _safe_float(mat_data.get("edge_context_s"), default=float("nan"))
+    if edge_context_s != edge_context_s:
+        return 0.0
+
+    raw_duration_s = None
+    if candidate.prediction_start_s is not None and candidate.prediction_end_s is not None:
+        raw_duration_s = max(0.0, float(candidate.prediction_end_s) - float(candidate.prediction_start_s))
+    if (raw_duration_s is None or raw_duration_s <= 0) and candidate.raw_prediction_windows:
+        raw_duration_s = float(
+            np.median([max(0.0, end - start) for start, end, _score in candidate.raw_prediction_windows])
+        )
+    if raw_duration_s is None or not math.isfinite(raw_duration_s) or raw_duration_s <= 0:
+        return 0.0
+
+    crop_bins = max(1, int(round(raw_duration_s / hop_s)))
+    inferred_window_s = edge_context_s - max(0, crop_bins - 1) * hop_s
+    if not math.isfinite(inferred_window_s) or inferred_window_s <= 0 or inferred_window_s > 5.0:
+        return 0.0
+    return 0.5 * inferred_window_s
+
+
 def _prediction_panel_title(
     *,
     base_label: str,
@@ -617,13 +678,19 @@ def _build_example_candidates(
                 local_any_count=len(local_all_annotations),
             )
         )
+        annotation_spans = _annotation_spans_for_rows(matched_annotations)
+        display_start_s, display_end_s = _display_window_with_padding(
+            start_s=pred.start_time_s,
+            end_s=pred.end_time_s,
+            annotation_spans=annotation_spans,
+        )
         out[target_group].append(
             ExampleCandidate(
                 group=target_group,
                 example_id=pred.prediction_id,
                 filename=pred.filename,
-                display_start_s=pred.start_time_s,
-                display_end_s=pred.end_time_s,
+                display_start_s=display_start_s,
+                display_end_s=display_end_s,
                 prediction_start_s=pred.start_time_s,
                 prediction_end_s=pred.end_time_s,
                 score=pred.score,
@@ -637,11 +704,11 @@ def _build_example_candidates(
                 bucket_labels=bucket_labels,
                 context_tags=context_tags,
                 species_codes=species_codes,
-                annotation_spans=_annotation_spans_for_rows(matched_annotations),
+                annotation_spans=annotation_spans,
                 raw_prediction_windows=_raw_windows_for_display(
                     pred.filename,
-                    pred.start_time_s,
-                    pred.end_time_s,
+                    display_start_s,
+                    display_end_s,
                     raw_windows_lookup,
                 ),
                 raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
@@ -666,13 +733,19 @@ def _build_example_candidates(
         species_codes = (ann.species,) if ann.species else ()
         mid = 0.5 * (ann.begin_time_s + ann.end_time_s)
         half = 0.5 * raw_window_duration_s
+        annotation_spans = ((ann.begin_time_s, ann.end_time_s, ann.call_type_bucket or FIN_BUCKET_OTHER),)
+        display_start_s, display_end_s = _display_window_with_padding(
+            start_s=mid - half,
+            end_s=mid + half,
+            annotation_spans=annotation_spans,
+        )
         out["raw_window_fn"].append(
             ExampleCandidate(
                 group="raw_window_fn",
                 example_id=f"rawfn::{ann.annotation_id}",
                 filename=ann.filename,
-                display_start_s=max(mid - half, -12.0),
-                display_end_s=mid + half,
+                display_start_s=display_start_s,
+                display_end_s=display_end_s,
                 prediction_start_s=None,
                 prediction_end_s=None,
                 score=None,
@@ -686,11 +759,11 @@ def _build_example_candidates(
                 bucket_labels=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
                 context_tags=context_tags,
                 species_codes=species_codes,
-                annotation_spans=((ann.begin_time_s, ann.end_time_s, ann.call_type_bucket or FIN_BUCKET_OTHER),),
+                annotation_spans=annotation_spans,
                 raw_prediction_windows=_raw_windows_for_display(
                     ann.filename,
-                    max(mid - half, -12.0),
-                    mid + half,
+                    display_start_s,
+                    display_end_s,
                     raw_windows_lookup,
                 ),
                 raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
@@ -733,13 +806,18 @@ def _build_example_candidates(
         context_tags = clip_row.context_tags or (UNKNOWN_CONTEXT,)
         species_codes = clip_row.species_codes
         tn_priority = 0 if clip_row.is_annotated_non_fin else 1
+        display_start_s, display_end_s = _display_window_with_padding(
+            start_s=pred.start_time_s,
+            end_s=pred.end_time_s,
+            annotation_spans=(),
+        )
         out["raw_window_tn"].append(
             ExampleCandidate(
                 group="raw_window_tn",
                 example_id=f"rawtn::{pred.prediction_id}",
                 filename=pred.filename,
-                display_start_s=pred.start_time_s,
-                display_end_s=pred.end_time_s,
+                display_start_s=display_start_s,
+                display_end_s=display_end_s,
                 prediction_start_s=pred.start_time_s,
                 prediction_end_s=pred.end_time_s,
                 score=pred.score,
@@ -756,8 +834,8 @@ def _build_example_candidates(
                 annotation_spans=(),
                 raw_prediction_windows=_raw_windows_for_display(
                     pred.filename,
-                    pred.start_time_s,
-                    pred.end_time_s,
+                    display_start_s,
+                    display_end_s,
                     raw_windows_lookup,
                 ),
                 raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
@@ -790,7 +868,7 @@ def _load_mat_crop(
     mat_path: Path,
     display_start_s: float,
     display_end_s: float,
-) -> Tuple[Any, Any, Any]:
+) -> Tuple[Any, Any, Any, Dict[str, Any]]:
     from scipy.io import loadmat
     import numpy as np
 
@@ -815,7 +893,7 @@ def _load_mat_crop(
         spec = spec.T
 
     if times.size == 0:
-        return spec, freqs, times
+        return spec, freqs, times, data
 
     start = float(display_start_s)
     end = float(display_end_s)
@@ -833,7 +911,7 @@ def _load_mat_crop(
         end_idx = min(len(times), index + 2)
         mask = np.zeros_like(times, dtype=bool)
         mask[start_idx:end_idx] = True
-    return spec[:, mask], freqs, times[mask]
+    return spec[:, mask], freqs, times[mask], data
 
 
 def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Optional[Path]:
@@ -852,12 +930,14 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
 
     from .part2_eval import _configure_plot_style
 
-    spec, freqs, times = _load_mat_crop(candidate.mat_path, candidate.display_start_s, candidate.display_end_s)
+    spec, freqs, times, mat_data = _load_mat_crop(candidate.mat_path, candidate.display_start_s, candidate.display_end_s)
     if times.size == 0:
         return None
+    time_axis_offset_s = _infer_time_axis_center_offset(times=times, mat_data=mat_data, candidate=candidate)
+    display_times = times + float(time_axis_offset_s)
 
     _configure_plot_style(plt)
-    duration = max(1.0, float(times[-1]) - float(times[0]))
+    duration = max(1.0, float(display_times[-1]) - float(display_times[0]))
     fig_width = min(14.0, max(7.0, 6.0 + 0.045 * duration))
     fig = plt.figure(figsize=(fig_width, 6.2), dpi=220)
     gs = fig.add_gridspec(
@@ -882,7 +962,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         spec,
         origin="lower",
         aspect="auto",
-        extent=[float(times[0]), float(times[-1]), float(freqs[0]), float(freqs[-1])],
+        extent=[float(display_times[0]), float(display_times[-1]), float(freqs[0]), float(freqs[-1])],
         cmap="magma",
         vmin=vmin,
         vmax=vmax,
@@ -942,10 +1022,10 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
 
     ax_spec.set_ylabel("Frequency (Hz)")
     ax_spec.grid(False)
-    if len(times) > 1 and float(times[-1]) > float(times[0]):
-        ax_spec.set_xlim(float(times[0]), float(times[-1]))
+    if len(display_times) > 1 and float(display_times[-1]) > float(display_times[0]):
+        ax_spec.set_xlim(float(display_times[0]), float(display_times[-1]))
     else:
-        center = float(times[0])
+        center = float(display_times[0])
         ax_spec.set_xlim(center - 0.5, center + 0.5)
     ax_spec.set_ylim(float(freqs[0]), float(freqs[-1]))
     ax_spec.tick_params(labelbottom=False)
@@ -966,8 +1046,8 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
 
     is_raw_window_group = candidate.group.startswith("raw_window")
     if is_raw_window_group:
-        ax_score.plot(times, score_mean, color="#94a3b8", linewidth=1.2, alpha=0.95)
-        ax_score.fill_between(times, 0.0, score_mean, where=~np.isnan(score_mean), color="#cbd5e1", alpha=0.22)
+        ax_score.plot(display_times, score_mean, color="#94a3b8", linewidth=1.2, alpha=0.95)
+        ax_score.fill_between(display_times, 0.0, score_mean, where=~np.isnan(score_mean), color="#cbd5e1", alpha=0.22)
         if (
             candidate.score is not None
             and candidate.prediction_start_s is not None
@@ -982,8 +1062,8 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
                 zorder=3,
             )
     else:
-        ax_score.plot(times, score_mean, color="#e76f51", linewidth=1.8)
-        ax_score.fill_between(times, 0.0, score_mean, where=~np.isnan(score_mean), color="#e76f51", alpha=0.18)
+        ax_score.plot(display_times, score_mean, color="#e76f51", linewidth=1.8)
+        ax_score.fill_between(display_times, 0.0, score_mean, where=~np.isnan(score_mean), color="#e76f51", alpha=0.18)
     if candidate.raw_positive_threshold is not None:
         ax_score.axhline(
             float(candidate.raw_positive_threshold),
