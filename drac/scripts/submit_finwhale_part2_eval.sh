@@ -160,6 +160,7 @@ METADATA_PATH="$BUNDLE_ROOT/$METADATA_RELPATH"
 RAW_AUDIO_DIR="$BUNDLE_ROOT/$RAW_AUDIO_RELPATH"
 ANNOTATIONS_CSV="$BUNDLE_ROOT/$ANNOTATIONS_RELPATH"
 CLIP_MANIFEST_CSV="$BUNDLE_ROOT/$CLIP_MANIFEST_RELPATH"
+ALL_ANNOTATIONS_CSV="$BUNDLE_ROOT/manifests/annotations_all.csv"
 
 if [[ ! -d "$MAT_DIR" || ! -f "$METADATA_PATH" || ! -f "$ANNOTATIONS_CSV" || ! -f "$CLIP_MANIFEST_CSV" ]]; then
   echo "Resolved bundle root: $BUNDLE_ROOT"
@@ -283,6 +284,9 @@ for STEP in "${WINDOW_STEP_VALUES[@]}"; do
     --min-members-values "$MIN_MEMBERS_VALUES"
     --max-gap-values "$MAX_GAP_VALUES"
   )
+  if [[ -f "$ALL_ANNOTATIONS_CSV" ]]; then
+    EVAL_CMD+=( --all-annotations-csv "$ALL_ANNOTATIONS_CSV" )
+  fi
   if [[ "$EXPORT_EXAMPLE_IMAGES" == "true" ]]; then
     EVAL_CMD+=(
       --example-mat-dir "$MAT_DIR"

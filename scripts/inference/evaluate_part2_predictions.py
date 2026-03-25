@@ -231,6 +231,7 @@ def evaluate_single_postprocessed_output(
     *,
     postprocessed_json: Path,
     annotations,
+    all_annotations,
     clip_manifest,
     output_dir: Path,
     match_collar_s: float,
@@ -430,6 +431,7 @@ def evaluate_single_postprocessed_output(
             raw_window_predictions=raw_window_predictions,
             raw_window_threshold=raw_window_threshold,
             annotations=fin_annotations,
+            all_annotations=all_annotations,
             clip_manifest=clip_manifest,
             mat_dir=example_mat_dir,
             max_examples_per_group=max_examples_per_group,
@@ -556,6 +558,7 @@ def _sweep_candidates(
     max_gap_values: Sequence[Optional[float]],
     class_hierarchy: Optional[str],
     annotations,
+    all_annotations,
     clip_manifest,
     match_collar_s: float,
     raw_window_predictions: Sequence[Any],
@@ -595,6 +598,7 @@ def _sweep_candidates(
                     eval_summary = evaluate_single_postprocessed_output(
                         postprocessed_json=combo_json,
                         annotations=annotations,
+                        all_annotations=all_annotations,
                         clip_manifest=clip_manifest,
                         output_dir=combo_dir / "eval",
                         match_collar_s=match_collar_s,
@@ -788,6 +792,7 @@ def _log_part2_wandb(
 def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate Part 2 predictions and build the report bundle")
     ap.add_argument("--annotations-csv", type=str, required=True)
+    ap.add_argument("--all-annotations-csv", type=str, default=None)
     ap.add_argument("--clip-manifest-csv", type=str, required=True)
     ap.add_argument("--output-dir", type=str, required=True)
     ap.add_argument("--postprocessed-json", type=str, default=None)
@@ -816,6 +821,7 @@ def main() -> None:
         raise SystemExit("Provide exactly one of --postprocessed-json or --window-predictions-json")
 
     annotations = load_annotations_csv(args.annotations_csv)
+    all_annotations = load_annotations_csv(args.all_annotations_csv) if args.all_annotations_csv else annotations
     clip_manifest = load_clip_manifest_csv(args.clip_manifest_csv)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -830,6 +836,7 @@ def main() -> None:
         evaluate_single_postprocessed_output(
             postprocessed_json=Path(args.postprocessed_json),
             annotations=annotations,
+            all_annotations=all_annotations,
             clip_manifest=clip_manifest,
             output_dir=output_dir,
             match_collar_s=float(args.match_collar_s),
@@ -862,6 +869,7 @@ def main() -> None:
         max_gap_values=_parse_optional_float_list(args.max_gap_values),
         class_hierarchy=args.class_hierarchy,
         annotations=annotations,
+        all_annotations=all_annotations,
         clip_manifest=clip_manifest,
         match_collar_s=float(args.match_collar_s),
         raw_window_predictions=raw_window_predictions or [],
@@ -888,6 +896,7 @@ def main() -> None:
         evaluate_single_postprocessed_output(
             postprocessed_json=op_json,
             annotations=annotations,
+            all_annotations=all_annotations,
             clip_manifest=clip_manifest,
             output_dir=op_dir,
             match_collar_s=float(args.match_collar_s),

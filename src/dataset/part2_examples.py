@@ -252,6 +252,30 @@ def _prediction_detail_text(
     return " | ".join(bits)
 
 
+def _raw_window_detail_text(
+    *,
+    score: Optional[float],
+    duration_s: float,
+    local_target_count: int,
+    local_any_count: Optional[int],
+    clip_species_codes: Sequence[str],
+    clip_context_tags: Sequence[str],
+) -> str:
+    bits: List[str] = []
+    if score is not None:
+        bits.append(f"score={score:.3f}")
+    bits.append(f"duration={duration_s:.1f}s")
+    bits.append(f"local_target_calls={int(local_target_count)}")
+    if local_any_count is not None:
+        bits.append(f"local_annotations={int(local_any_count)}")
+    interesting_tags = [tag for tag in clip_context_tags if tag != UNKNOWN_CONTEXT]
+    if interesting_tags:
+        bits.append("clip_context=" + ",".join(interesting_tags[:3]))
+    if clip_species_codes:
+        bits.append("clip_species=" + ",".join(clip_species_codes[:3]))
+    return " | ".join(bits)
+
+
 def _raw_window_duration(raw_window_predictions: Sequence[PredictedSegment]) -> float:
     durations = [
         max(0.0, float(pred.end_time_s) - float(pred.start_time_s))
@@ -325,6 +349,7 @@ def _build_example_candidates(
     raw_window_useful_prediction_ids: Sequence[str],
     raw_window_threshold: Optional[float],
     annotations: Sequence[AnnotationEvent],
+    all_annotations: Optional[Sequence[AnnotationEvent]],
     clip_manifest: Mapping[str, ClipManifestRow],
     postprocessed_item_map: Mapping[str, Mapping[str, Any]],
     raw_window_item_map: Mapping[str, Mapping[str, Any]],
@@ -337,6 +362,9 @@ def _build_example_candidates(
     annotations_by_file: Dict[str, List[AnnotationEvent]] = {}
     for ann in annotations:
         annotations_by_file.setdefault(ann.filename, []).append(ann)
+    all_annotations_by_file: Dict[str, List[AnnotationEvent]] = {}
+    for ann in all_annotations or annotations:
+        all_annotations_by_file.setdefault(ann.filename, []).append(ann)
 
     raw_windows_lookup = _raw_windows_by_file(raw_window_predictions)
 
@@ -558,11 +586,39 @@ def _build_example_candidates(
         if not is_positive:
             continue
         matched_annotations = _annotations_for_prediction(pred, annotations_by_file, collar_s)
+        local_all_annotations = _annotations_for_prediction(pred, all_annotations_by_file, collar_s)
         clip_row = clip_manifest.get(pred.filename)
         bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in matched_annotations}))
         context_tags = tuple(sorted({tag for ann in matched_annotations for tag in ann.context_tags} or (clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,))))
         species_codes = clip_row.species_codes if clip_row else ()
         target_group = "raw_window_tp" if pred.prediction_id in raw_tp_ids else "raw_window_fp"
+        panel_title = (
+            _prediction_panel_title(
+                base_label="Raw TP" if target_group == "raw_window_tp" else "Raw FP",
+                buckets=bucket_labels,
+                context_tags=context_tags,
+            )
+            if matched_annotations
+            else ("Raw FP | no local annotations" if not local_all_annotations else "Raw FP | non-target overlap")
+        )
+        detail_text = (
+            _prediction_detail_text(
+                score=pred.score,
+                duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
+                annotation_count=len(matched_annotations),
+                species_codes=species_codes,
+                context_tags=context_tags,
+            )
+            if matched_annotations
+            else _raw_window_detail_text(
+                score=pred.score,
+                duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
+                local_target_count=0,
+                local_any_count=len(local_all_annotations),
+                clip_species_codes=species_codes,
+                clip_context_tags=clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,),
+            )
+        )
         out[target_group].append(
             ExampleCandidate(
                 group=target_group,
@@ -596,18 +652,8 @@ def _build_example_candidates(
                     context_tags=context_tags,
                     species_codes=species_codes,
                 ),
-                panel_title=_prediction_panel_title(
-                    base_label="Raw TP" if target_group == "raw_window_tp" else "Raw FP",
-                    buckets=bucket_labels,
-                    context_tags=context_tags,
-                ),
-                detail_text=_prediction_detail_text(
-                    score=pred.score,
-                    duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
-                    annotation_count=len(matched_annotations),
-                    species_codes=species_codes,
-                    context_tags=context_tags,
-                ),
+                panel_title=panel_title,
+                detail_text=detail_text,
                 sort_key=(
                     -len(matched_annotations),
                     -float(pred.score),
@@ -681,6 +727,9 @@ def _build_example_candidates(
         matched_annotations = _annotations_for_prediction(pred, annotations_by_file, collar_s)
         if matched_annotations:
             continue
+        local_all_annotations = _annotations_for_prediction(pred, all_annotations_by_file, collar_s)
+        if local_all_annotations:
+            continue
         clip_row = clip_manifest.get(pred.filename)
         if clip_row is None:
             continue
@@ -720,17 +769,14 @@ def _build_example_candidates(
                     context_tags=context_tags,
                     species_codes=species_codes,
                 ),
-                panel_title=_prediction_panel_title(
-                    base_label="Raw TN",
-                    buckets=(),
-                    context_tags=context_tags,
-                ),
-                detail_text=_prediction_detail_text(
+                panel_title="Raw TN | no local annotations",
+                detail_text=_raw_window_detail_text(
                     score=pred.score,
                     duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
-                    annotation_count=0,
-                    species_codes=species_codes,
-                    context_tags=context_tags,
+                    local_target_count=0,
+                    local_any_count=0,
+                    clip_species_codes=species_codes,
+                    clip_context_tags=context_tags,
                 ),
                 sort_key=(
                     tn_priority,
@@ -1047,6 +1093,7 @@ def export_part2_example_gallery(
     raw_window_predictions: Optional[Sequence[PredictedSegment]],
     raw_window_threshold: Optional[float],
     annotations: Sequence[AnnotationEvent],
+    all_annotations: Optional[Sequence[AnnotationEvent]],
     clip_manifest: Mapping[str, ClipManifestRow],
     mat_dir: Optional[Path],
     max_examples_per_group: int = 8,
@@ -1088,6 +1135,7 @@ def export_part2_example_gallery(
         raw_window_useful_prediction_ids=list(raw_window_useful_prediction_ids),
         raw_window_threshold=raw_window_threshold,
         annotations=annotations,
+        all_annotations=all_annotations,
         clip_manifest=clip_manifest,
         postprocessed_item_map=postprocessed_item_map,
         raw_window_item_map=raw_window_item_map,
@@ -1150,7 +1198,11 @@ def export_part2_example_gallery(
                 "annotation_count": len(candidate.annotation_spans),
                 "panel_title": candidate.panel_title,
                 "detail_text": candidate.detail_text,
-                "short_meta": ",".join(list(candidate.bucket_labels[:1]) + [tag for tag in candidate.context_tags if tag != UNKNOWN_CONTEXT][:1]),
+                "short_meta": (
+                    candidate.panel_title.split("|", 1)[1].strip()
+                    if candidate.group in {"raw_window_fp", "raw_window_tn"} and not candidate.annotation_spans
+                    else ",".join(list(candidate.bucket_labels[:1]) + [tag for tag in candidate.context_tags if tag != UNKNOWN_CONTEXT][:1])
+                ),
             }
             group_rows.append(row)
             index_rows.append(row)
