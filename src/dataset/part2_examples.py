@@ -44,6 +44,8 @@ class ExampleCandidate:
     context_tags: Tuple[str, ...]
     species_codes: Tuple[str, ...]
     annotation_spans: Tuple[Tuple[float, float, str], ...]
+    raw_prediction_windows: Tuple[Tuple[float, float, float], ...]
+    raw_positive_threshold: Optional[float]
     category_labels: Tuple[str, ...]
     panel_title: str
     detail_text: str
@@ -184,6 +186,34 @@ def _annotation_spans_for_rows(rows: Sequence[AnnotationEvent]) -> Tuple[Tuple[f
     return tuple(spans)
 
 
+def _raw_windows_by_file(
+    raw_window_predictions: Sequence[PredictedSegment],
+) -> Dict[str, Tuple[Tuple[float, float, float], ...]]:
+    grouped: Dict[str, List[Tuple[float, float, float]]] = {}
+    for pred in raw_window_predictions:
+        grouped.setdefault(pred.filename, []).append(
+            (float(pred.start_time_s), float(pred.end_time_s), float(pred.score))
+        )
+    return {
+        filename: tuple(sorted(rows, key=lambda item: (item[0], item[1], item[2])))
+        for filename, rows in grouped.items()
+    }
+
+
+def _raw_windows_for_display(
+    filename: str,
+    display_start_s: float,
+    display_end_s: float,
+    windows_by_file: Mapping[str, Sequence[Tuple[float, float, float]]],
+) -> Tuple[Tuple[float, float, float], ...]:
+    selected: List[Tuple[float, float, float]] = []
+    for start_s, end_s, score in windows_by_file.get(filename, ()):
+        if end_s < display_start_s or start_s > display_end_s:
+            continue
+        selected.append((float(start_s), float(end_s), float(score)))
+    return tuple(selected)
+
+
 def _prediction_panel_title(
     *,
     base_label: str,
@@ -308,6 +338,8 @@ def _build_example_candidates(
     for ann in annotations:
         annotations_by_file.setdefault(ann.filename, []).append(ann)
 
+    raw_windows_lookup = _raw_windows_by_file(raw_window_predictions)
+
     merged_tp_ids = set(merged_useful_prediction_ids)
     raw_tp_ids = set(raw_window_useful_prediction_ids)
     raw_positive_ids = set()
@@ -358,6 +390,13 @@ def _build_example_candidates(
                 context_tags=context_tags,
                 species_codes=species_codes,
                 annotation_spans=_annotation_spans_for_rows(matched_annotations),
+                raw_prediction_windows=_raw_windows_for_display(
+                    pred.filename,
+                    max(pred.start_time_s - 2.0, -12.0),
+                    pred.end_time_s + 2.0,
+                    raw_windows_lookup,
+                ),
+                raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
                     bucket_labels=bucket_labels,
                     context_tags=context_tags,
@@ -410,6 +449,13 @@ def _build_example_candidates(
                 context_tags=context_tags,
                 species_codes=species_codes,
                 annotation_spans=(),
+                raw_prediction_windows=_raw_windows_for_display(
+                    pred.filename,
+                    max(pred.start_time_s - 2.0, -12.0),
+                    pred.end_time_s + 2.0,
+                    raw_windows_lookup,
+                ),
+                raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
                     bucket_labels=(),
                     context_tags=context_tags,
@@ -462,6 +508,13 @@ def _build_example_candidates(
                 context_tags=context_tags,
                 species_codes=species_codes,
                 annotation_spans=((ann.begin_time_s, ann.end_time_s, ann.call_type_bucket or FIN_BUCKET_OTHER),),
+                raw_prediction_windows=_raw_windows_for_display(
+                    ann.filename,
+                    max(ann.begin_time_s - display_pad, -12.0),
+                    ann.end_time_s + display_pad,
+                    raw_windows_lookup,
+                ),
+                raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
                     bucket_labels=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
                     context_tags=context_tags,
@@ -531,6 +584,13 @@ def _build_example_candidates(
                 context_tags=context_tags,
                 species_codes=species_codes,
                 annotation_spans=_annotation_spans_for_rows(matched_annotations),
+                raw_prediction_windows=_raw_windows_for_display(
+                    pred.filename,
+                    pred.start_time_s,
+                    pred.end_time_s,
+                    raw_windows_lookup,
+                ),
+                raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
                     bucket_labels=bucket_labels,
                     context_tags=context_tags,
@@ -584,6 +644,13 @@ def _build_example_candidates(
                 context_tags=context_tags,
                 species_codes=species_codes,
                 annotation_spans=((ann.begin_time_s, ann.end_time_s, ann.call_type_bucket or FIN_BUCKET_OTHER),),
+                raw_prediction_windows=_raw_windows_for_display(
+                    ann.filename,
+                    max(mid - half, -12.0),
+                    mid + half,
+                    raw_windows_lookup,
+                ),
+                raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
                     bucket_labels=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
                     context_tags=context_tags,
@@ -641,6 +708,13 @@ def _build_example_candidates(
                 context_tags=context_tags,
                 species_codes=species_codes,
                 annotation_spans=(),
+                raw_prediction_windows=_raw_windows_for_display(
+                    pred.filename,
+                    pred.start_time_s,
+                    pred.end_time_s,
+                    raw_windows_lookup,
+                ),
+                raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
                     bucket_labels=(),
                     context_tags=context_tags,
@@ -743,7 +817,14 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     _configure_plot_style(plt)
     duration = max(1.0, float(times[-1]) - float(times[0]))
     fig_width = min(14.0, max(7.0, 6.0 + 0.045 * duration))
-    fig, ax = plt.subplots(figsize=(fig_width, 5.0), dpi=220)
+    fig, (ax_spec, ax_score) = plt.subplots(
+        2,
+        1,
+        figsize=(fig_width, 6.2),
+        dpi=220,
+        sharex=True,
+        gridspec_kw={"height_ratios": [4.6, 1.15], "hspace": 0.06},
+    )
 
     import numpy as np
 
@@ -751,7 +832,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     vmax = float(np.percentile(spec, 99))
     if vmax <= vmin:
         vmax = vmin + 1.0
-    im = ax.imshow(
+    im = ax_spec.imshow(
         spec,
         origin="lower",
         aspect="auto",
@@ -761,10 +842,10 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         vmax=vmax,
     )
 
-    transform = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+    transform = mtransforms.blended_transform_factory(ax_spec.transData, ax_spec.transAxes)
 
     def _draw_top_arrow(x_value: float, color: str, y_top: float = 1.085, y_tip: float = 1.01) -> None:
-        ax.annotate(
+        ax_spec.annotate(
             "",
             xy=(float(x_value), y_tip),
             xytext=(float(x_value), y_top),
@@ -790,16 +871,49 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         center = 0.5 * (float(start_s) + float(end_s))
         _draw_top_arrow(center, "#219ebc", y_top=1.065, y_tip=1.012)
 
-    ax.set_xlabel("Time within clip (s)")
-    ax.set_ylabel("Frequency (Hz)")
-    ax.grid(False)
+    ax_spec.set_ylabel("Frequency (Hz)")
+    ax_spec.grid(False)
     if len(times) > 1 and float(times[-1]) > float(times[0]):
-        ax.set_xlim(float(times[0]), float(times[-1]))
+        ax_spec.set_xlim(float(times[0]), float(times[-1]))
     else:
         center = float(times[0])
-        ax.set_xlim(center - 0.5, center + 0.5)
-    ax.set_ylim(float(freqs[0]), float(freqs[-1]))
-    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
+        ax_spec.set_xlim(center - 0.5, center + 0.5)
+    ax_spec.set_ylim(float(freqs[0]), float(freqs[-1]))
+    ax_spec.tick_params(labelbottom=False)
+
+    score_mean = np.full(times.shape, np.nan, dtype=np.float32)
+    if candidate.raw_prediction_windows:
+        accum = np.zeros(times.shape, dtype=np.float32)
+        counts = np.zeros(times.shape, dtype=np.float32)
+        for start_s, end_s, score in candidate.raw_prediction_windows:
+            mask = (times >= float(start_s)) & (times <= float(end_s))
+            if not mask.any():
+                continue
+            accum[mask] += float(score)
+            counts[mask] += 1.0
+        valid = counts > 0
+        if valid.any():
+            score_mean[valid] = accum[valid] / counts[valid]
+
+    ax_score.plot(times, score_mean, color="#e76f51", linewidth=1.8)
+    ax_score.fill_between(times, 0.0, score_mean, where=~np.isnan(score_mean), color="#e76f51", alpha=0.18)
+    if candidate.raw_positive_threshold is not None:
+        ax_score.axhline(
+            float(candidate.raw_positive_threshold),
+            color="#6b7280",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.85,
+        )
+    ax_score.set_ylim(0.0, 1.02)
+    ax_score.set_yticks([0.0, 0.5, 1.0])
+    ax_score.set_ylabel("Score")
+    ax_score.set_xlabel("Time within clip (s)")
+    ax_score.grid(False)
+    ax_score.spines["top"].set_visible(False)
+    ax_score.spines["right"].set_visible(False)
+
+    cbar = fig.colorbar(im, ax=[ax_spec, ax_score], fraction=0.03, pad=0.018)
     cbar.set_label("Relative power (dB)", rotation=270, labelpad=14)
     cbar.ax.grid(False)
 
@@ -825,7 +939,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         fontsize=9,
         color="#4a5568",
     )
-    fig.subplots_adjust(left=0.075, right=0.92, bottom=0.14, top=0.73)
+    fig.subplots_adjust(left=0.085, right=0.915, bottom=0.12, top=0.73)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
