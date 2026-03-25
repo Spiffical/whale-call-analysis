@@ -1074,24 +1074,22 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     ax_spec.set_ylim(float(freqs[0]), float(freqs[-1]))
     ax_spec.tick_params(labelbottom=False)
 
-    score_mean = np.full(times.shape, np.nan, dtype=np.float32)
+    score_trace = np.full(times.shape, np.nan, dtype=np.float32)
     if candidate.raw_prediction_windows:
-        accum = np.zeros(times.shape, dtype=np.float32)
-        counts = np.zeros(times.shape, dtype=np.float32)
+        score_max = np.full(times.shape, -np.inf, dtype=np.float32)
         for start_s, end_s, score in candidate.raw_prediction_windows:
             mask = (times >= float(start_s)) & (times <= float(end_s))
             if not mask.any():
                 continue
-            accum[mask] += float(score)
-            counts[mask] += 1.0
-        valid = counts > 0
+            score_max[mask] = np.maximum(score_max[mask], float(score))
+        valid = np.isfinite(score_max)
         if valid.any():
-            score_mean[valid] = accum[valid] / counts[valid]
+            score_trace[valid] = score_max[valid]
 
     is_raw_window_group = candidate.group.startswith("raw_window")
     if is_raw_window_group:
-        ax_score.plot(display_times, score_mean, color="#94a3b8", linewidth=1.2, alpha=0.95)
-        ax_score.fill_between(display_times, 0.0, score_mean, where=~np.isnan(score_mean), color="#cbd5e1", alpha=0.22)
+        ax_score.plot(display_times, score_trace, color="#94a3b8", linewidth=1.2, alpha=0.95)
+        ax_score.fill_between(display_times, 0.0, score_trace, where=~np.isnan(score_trace), color="#cbd5e1", alpha=0.22)
         if candidate.score is not None:
             ax_score.axhline(
                 float(candidate.score),
@@ -1100,8 +1098,8 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
                 zorder=3,
             )
     else:
-        ax_score.plot(display_times, score_mean, color="#e76f51", linewidth=1.8)
-        ax_score.fill_between(display_times, 0.0, score_mean, where=~np.isnan(score_mean), color="#e76f51", alpha=0.18)
+        ax_score.plot(display_times, score_trace, color="#e76f51", linewidth=1.8)
+        ax_score.fill_between(display_times, 0.0, score_trace, where=~np.isnan(score_trace), color="#e76f51", alpha=0.18)
     if candidate.raw_positive_threshold is not None:
         ax_score.axhline(
             float(candidate.raw_positive_threshold),
@@ -1115,7 +1113,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         if candidate.raw_positive_threshold is not None:
             comparator = "<" if float(candidate.score) < float(candidate.raw_positive_threshold) else ">="
             note_bits.append(f"{comparator} thr={float(candidate.raw_positive_threshold):.3f}")
-        note_bits.append("gray=overlap avg")
+        note_bits.append("gray=overlap max")
         ax_score.text(
             0.01,
             0.93,
@@ -1129,7 +1127,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         )
     ax_score.set_ylim(0.0, 1.02)
     ax_score.set_yticks([0.0, 0.5, 1.0])
-    ax_score.set_ylabel("Window score" if is_raw_window_group else "Avg score")
+    ax_score.set_ylabel("Window score" if is_raw_window_group else "Max score")
     ax_score.set_xlabel("Time within clip (s)")
     ax_score.grid(False)
     ax_score.spines["top"].set_visible(False)
