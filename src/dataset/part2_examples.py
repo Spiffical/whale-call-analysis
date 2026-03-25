@@ -817,14 +817,18 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     _configure_plot_style(plt)
     duration = max(1.0, float(times[-1]) - float(times[0]))
     fig_width = min(14.0, max(7.0, 6.0 + 0.045 * duration))
-    fig, (ax_spec, ax_score) = plt.subplots(
+    fig = plt.figure(figsize=(fig_width, 6.2), dpi=220)
+    gs = fig.add_gridspec(
         2,
-        1,
-        figsize=(fig_width, 6.2),
-        dpi=220,
-        sharex=True,
-        gridspec_kw={"height_ratios": [4.6, 1.15], "hspace": 0.06},
+        2,
+        height_ratios=[4.6, 1.15],
+        width_ratios=[40.0, 1.45],
+        hspace=0.06,
+        wspace=0.08,
     )
+    ax_spec = fig.add_subplot(gs[0, 0])
+    ax_score = fig.add_subplot(gs[1, 0], sharex=ax_spec)
+    cax = fig.add_subplot(gs[:, 1])
 
     import numpy as np
 
@@ -913,7 +917,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     ax_score.spines["top"].set_visible(False)
     ax_score.spines["right"].set_visible(False)
 
-    cbar = fig.colorbar(im, ax=[ax_spec, ax_score], fraction=0.03, pad=0.018)
+    cbar = fig.colorbar(im, cax=cax)
     cbar.set_label("Relative power (dB)", rotation=270, labelpad=14)
     cbar.ax.grid(False)
 
@@ -939,7 +943,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         fontsize=9,
         color="#4a5568",
     )
-    fig.subplots_adjust(left=0.085, right=0.915, bottom=0.12, top=0.73)
+    fig.subplots_adjust(left=0.085, right=0.94, bottom=0.12, top=0.73)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
