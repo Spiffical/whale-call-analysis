@@ -782,13 +782,6 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         )
 
     if candidate.prediction_start_s is not None and candidate.prediction_end_s is not None:
-        ax.axvspan(
-            float(candidate.prediction_start_s),
-            float(candidate.prediction_end_s),
-            facecolor="#ffb703",
-            alpha=0.12,
-            linewidth=0,
-        )
         _draw_top_arrow(float(candidate.prediction_start_s), "#fb8500", y_top=1.095, y_tip=1.015)
         _draw_top_arrow(float(candidate.prediction_end_s), "#fb8500", y_top=1.095, y_tip=1.015)
 
@@ -796,9 +789,6 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     if len(arrowable_spans) > 12:
         step = max(1, len(arrowable_spans) // 12)
         arrowable_spans = arrowable_spans[::step][:12]
-
-    for start_s, end_s, _label in candidate.annotation_spans:
-        ax.axvspan(float(start_s), float(end_s), facecolor="#8ecae6", alpha=0.22, linewidth=0)
 
     for start_s, end_s, _label in arrowable_spans:
         center = 0.5 * (float(start_s) + float(end_s))
