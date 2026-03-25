@@ -781,10 +781,6 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
             annotation_clip=False,
         )
 
-    if candidate.prediction_start_s is not None and candidate.prediction_end_s is not None:
-        _draw_top_arrow(float(candidate.prediction_start_s), "#fb8500", y_top=1.095, y_tip=1.015)
-        _draw_top_arrow(float(candidate.prediction_end_s), "#fb8500", y_top=1.095, y_tip=1.015)
-
     arrowable_spans = list(candidate.annotation_spans)
     if len(arrowable_spans) > 12:
         step = max(1, len(arrowable_spans) // 12)
