@@ -94,6 +94,19 @@ Optional:
 USAGE
 }
 
+normalize_job_id() {
+  local raw="${1:-}"
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="${raw%%;*}"
+  raw="$(echo "$raw" | tr -d '[:space:]')"
+  if [[ ! "$raw" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not parse sbatch job id from output: '$1'" >&2
+    return 1
+  fi
+  printf '%s' "$raw"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fine-tune-tar) FINE_TUNE_TAR="$2"; shift 2 ;;
@@ -226,8 +239,9 @@ while IFS=$'\t' read -r RUN_ID SAMPLING_MODE ACTUAL_BUDGET_CALLS TRAIN_FIN_CLIP_
     fi
   fi
 
+  TRAIN_DEP_PLACEHOLDER="__TRAIN_JOB_ID__"
   TEST_CMD=(
-    sbatch --parsable --dependency=afterok:%TRAIN_JOB% "$TEST_SUBMIT"
+    sbatch --parsable --dependency=afterok:${TRAIN_DEP_PLACEHOLDER} "$TEST_SUBMIT"
     --tar-path "$HISTORICAL_BASELINE_TAR"
     --checkpoint "$TRAIN_CHECKPOINT"
     --out-dir "$RETENTION_OUT_DIR"
@@ -246,7 +260,7 @@ while IFS=$'\t' read -r RUN_ID SAMPLING_MODE ACTUAL_BUDGET_CALLS TRAIN_FIN_CLIP_
   fi
 
   PART2_CMD=(
-    sbatch --parsable --dependency=afterok:%TRAIN_JOB% "$PART2_SUBMIT"
+    sbatch --parsable --dependency=afterok:${TRAIN_DEP_PLACEHOLDER} "$PART2_SUBMIT"
     --part2-archive "$PART2_TEST_ARCHIVE"
     --checkpoint "$TRAIN_CHECKPOINT"
     --out-dir "$PART2_OUT_DIR"
@@ -269,9 +283,9 @@ while IFS=$'\t' read -r RUN_ID SAMPLING_MODE ACTUAL_BUDGET_CALLS TRAIN_FIN_CLIP_
   fi
 
   printf '%q ' "${TRAIN_CMD[@]}" >> "$REPLAY_SH"; echo >> "$REPLAY_SH"
-  TEST_CMD_REPLAY=("${TEST_CMD[@]/%TRAIN_JOB%/JOBID}")
+  TEST_CMD_REPLAY=("${TEST_CMD[@]//${TRAIN_DEP_PLACEHOLDER}/JOBID}")
   printf '%q ' "${TEST_CMD_REPLAY[@]}" >> "$REPLAY_SH"; echo >> "$REPLAY_SH"
-  PART2_CMD_REPLAY=("${PART2_CMD[@]/%TRAIN_JOB%/JOBID}")
+  PART2_CMD_REPLAY=("${PART2_CMD[@]//${TRAIN_DEP_PLACEHOLDER}/JOBID}")
   printf '%q ' "${PART2_CMD_REPLAY[@]}" >> "$REPLAY_SH"; echo >> "$REPLAY_SH"
 
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -281,11 +295,14 @@ while IFS=$'\t' read -r RUN_ID SAMPLING_MODE ACTUAL_BUDGET_CALLS TRAIN_FIN_CLIP_
     continue
   fi
 
-  TRAIN_JOB_ID="$("${TRAIN_CMD[@]}")"
-  TEST_CMD_ACTUAL=("${TEST_CMD[@]/%TRAIN_JOB%/$TRAIN_JOB_ID}")
-  PART2_CMD_ACTUAL=("${PART2_CMD[@]/%TRAIN_JOB%/$TRAIN_JOB_ID}")
-  RETENTION_JOB_ID="$("${TEST_CMD_ACTUAL[@]}")"
-  PART2_JOB_ID="$("${PART2_CMD_ACTUAL[@]}")"
+  TRAIN_JOB_RAW="$("${TRAIN_CMD[@]}")"
+  TRAIN_JOB_ID="$(normalize_job_id "$TRAIN_JOB_RAW")"
+  TEST_CMD_ACTUAL=("${TEST_CMD[@]//${TRAIN_DEP_PLACEHOLDER}/$TRAIN_JOB_ID}")
+  PART2_CMD_ACTUAL=("${PART2_CMD[@]//${TRAIN_DEP_PLACEHOLDER}/$TRAIN_JOB_ID}")
+  RETENTION_JOB_RAW="$("${TEST_CMD_ACTUAL[@]}")"
+  RETENTION_JOB_ID="$(normalize_job_id "$RETENTION_JOB_RAW")"
+  PART2_JOB_RAW="$("${PART2_CMD_ACTUAL[@]}")"
+  PART2_JOB_ID="$(normalize_job_id "$PART2_JOB_RAW")"
 
   echo -e "${TRAIN_JOB_ID}\t${RETENTION_JOB_ID}\t${PART2_JOB_ID}\t${RUN_ID}\t${SAMPLING_MODE}\t${ACTUAL_BUDGET_CALLS}\t${TRAIN_FIN_CLIP_COUNT}\t${REPEAT_INDEX}\t${TRAIN_CHECKPOINT}" >> "$SUBMITTED_TSV"
   echo "Submitted $RUN_ID: train=$TRAIN_JOB_ID retention=$RETENTION_JOB_ID part2=$PART2_JOB_ID"

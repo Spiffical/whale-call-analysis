@@ -250,6 +250,11 @@ def build_learning_curve_plan(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, List[FineTuneClipRecord]]]:
     split_map = assign_time_pools(records, train_ratio=train_ratio, val_ratio=val_ratio)
     train_pool = [record for record in split_map["train"] if record.is_fin_positive]
+    train_nonfin_pool = [
+        record
+        for record in split_map["train"]
+        if record.is_annotated_non_fin and not record.is_fin_positive
+    ]
     val_pool = [record for record in split_map["val"] if record.is_fin_positive or record.is_annotated_non_fin]
     test_pool = [record for record in split_map["test"] if record.is_fin_positive or record.is_annotated_non_fin]
 
@@ -265,17 +270,10 @@ def build_learning_curve_plan(
                     sampling_mode=sampling_mode,
                     seed=seed,
                 )
-                train_latest = max((record.timestamp for record in selected_train), default=None)
                 selected_train_clip_names = {record.filename for record in selected_train}
-                selected_train_nonfin = [
-                    record
-                    for record in split_map["train"]
-                    if (
-                        record.is_annotated_non_fin
-                        and not record.is_fin_positive
-                        and (train_latest is None or record.timestamp <= train_latest)
-                    )
-                ]
+                # Keep the non-fin training background fixed across budgets so the
+                # learning-curve question isolates how many new fin-whale calls are needed.
+                selected_train_nonfin = list(train_nonfin_pool)
                 run_id = (
                     f"{sampling_mode}_calls{int(budget_calls):05d}_"
                     f"rep{int(repeat_index):02d}"
@@ -292,7 +290,7 @@ def build_learning_curve_plan(
                         "train_nonfin_clip_count": len(selected_train_nonfin),
                         "val_clip_count": len(val_pool),
                         "test_clip_count": len(test_pool),
-                        "train_last_timestamp": train_latest.isoformat() if train_latest is not None else "",
+                        "train_last_timestamp": max((record.timestamp for record in selected_train), default=None).isoformat() if selected_train else "",
                         "train_fin_clip_names": "|".join(sorted(selected_train_clip_names)),
                         "train_nonfin_clip_names": "|".join(sorted(record.filename for record in selected_train_nonfin)),
                     }

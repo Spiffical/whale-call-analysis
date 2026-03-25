@@ -636,17 +636,6 @@ def main():
     print(f"\nTest: loss {test_loss:.4f} | acc {test_metrics['acc']:.3f} | "
           f"prec {test_metrics['precision']:.3f} | rec {test_metrics['recall']:.3f} | f1 {test_metrics['f1']:.3f} | auc {test_metrics['auc']:.3f}")
 
-    if args.use_wandb:
-        # Log final test metrics
-        log_training_metrics({
-            'ft_test_loss': test_loss,
-            'ft_test_acc': test_metrics['acc'],
-            'ft_test_precision': test_metrics['precision'],
-            'ft_test_recall': test_metrics['recall'],
-            'ft_test_f1': test_metrics['f1'],
-            'ft_test_auc': test_metrics['auc'],
-        }, use_wandb=True)
-
     # Persist local experiment artifacts for sweep-level analysis.
     try:
         train_counts = _dataset_label_counts(train_loader.dataset)  # type: ignore[arg-type]
@@ -706,6 +695,8 @@ def main():
                 "best/main_metric": args.main_metric,
                 f"best/{args.main_metric}": float(best_metric),
                 "best/epoch": int(best_epoch),
+                "test/loss": float(test_loss),
+                "test/acc": float(test_metrics["acc"]),
                 "test/f1": float(test_metrics["f1"]),
                 "test/precision": float(test_metrics["precision"]),
                 "test/recall": float(test_metrics["recall"]),

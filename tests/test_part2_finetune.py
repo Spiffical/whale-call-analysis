@@ -165,14 +165,14 @@ class TestPart2FineTunePlanning(unittest.TestCase):
             manifest_rows.extend(
                 [
                     {
-                        "filename": "ICLISTENHF6016_20250101T120000.000Z.flac",
+                        "filename": "ICLISTENHF6016_20241231T120000.000Z.flac",
                         "fin_call_type_buckets": "",
                         "context_tags": "click_overlap",
                         "is_fin_positive": "0",
                         "is_annotated_non_fin": "1",
                     },
                     {
-                        "filename": "ICLISTENHF6016_20250101T180000.000Z.flac",
+                        "filename": "ICLISTENHF6016_20241231T180000.000Z.flac",
                         "fin_call_type_buckets": "",
                         "context_tags": "click_overlap",
                         "is_fin_positive": "0",
@@ -192,9 +192,9 @@ class TestPart2FineTunePlanning(unittest.TestCase):
                 ["relative_path", "label", "source_audio"],
                 [
                     {"relative_path": "mat_files/ICLISTENHF6016_20250101T000000.000Z.flac_0.0s_40.0s.mat", "label": "1", "source_audio": "ICLISTENHF6016_20250101T000000.000Z.flac"},
-                    {"relative_path": "neg_mat_files/ICLISTENHF6016_20250101T120000.000Z.flac_neg_0.mat", "label": "0", "source_audio": "ICLISTENHF6016_20250101T120000.000Z.flac"},
+                    {"relative_path": "neg_mat_files/ICLISTENHF6016_20241231T120000.000Z.flac_neg_0.mat", "label": "0", "source_audio": "ICLISTENHF6016_20241231T120000.000Z.flac"},
                     {"relative_path": "mat_files/ICLISTENHF6016_20250107T000000.000Z.flac_0.0s_40.0s.mat", "label": "1", "source_audio": "ICLISTENHF6016_20250107T000000.000Z.flac"},
-                    {"relative_path": "neg_mat_files/ICLISTENHF6016_20250101T180000.000Z.flac_neg_0.mat", "label": "0", "source_audio": "ICLISTENHF6016_20250101T180000.000Z.flac"},
+                    {"relative_path": "neg_mat_files/ICLISTENHF6016_20241231T180000.000Z.flac_neg_0.mat", "label": "0", "source_audio": "ICLISTENHF6016_20241231T180000.000Z.flac"},
                     {"relative_path": "mat_files/ICLISTENHF6016_20250108T000000.000Z.flac_0.0s_40.0s.mat", "label": "1", "source_audio": "ICLISTENHF6016_20250108T000000.000Z.flac"},
                 ],
             )
@@ -217,6 +217,9 @@ class TestPart2FineTunePlanning(unittest.TestCase):
             self.assertEqual(run["sampling_mode"], "chronological")
             self.assertGreaterEqual(int(run["actual_budget_calls"]), 6)
             self.assertIn("ICLISTENHF6016_20250101T000000.000Z.flac", run["train_fin_clip_names"])
+            self.assertEqual(int(run["train_nonfin_clip_count"]), 2)
+            self.assertIn("ICLISTENHF6016_20241231T120000.000Z.flac", run["train_nonfin_clip_names"])
+            self.assertIn("ICLISTENHF6016_20241231T180000.000Z.flac", run["train_nonfin_clip_names"])
 
             inventory_rows = inventory_rows_from_dataset(sample_inventory_csv=sample_inventory)
             split_rows = split_inventory_rows(
@@ -227,6 +230,79 @@ class TestPart2FineTunePlanning(unittest.TestCase):
             )
             self.assertTrue(any(row["label"] == "1" for row in split_rows["train"]))
             self.assertTrue(any(row["label"] == "0" for row in split_rows["train"]))
+
+    def test_small_budget_keeps_full_training_nonfin_pool(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fin_annotations = tmp / "fin_annotations.csv"
+            clip_manifest = tmp / "clip_manifest.csv"
+
+            _write_csv(
+                fin_annotations,
+                ["filename", "species"],
+                [{"filename": "ICLISTENHF6016_20250101T000000.000Z.flac", "species": "Bp"} for _ in range(5)]
+                + [{"filename": "ICLISTENHF6016_20250102T000000.000Z.flac", "species": "Bp"} for _ in range(5)],
+            )
+            _write_csv(
+                clip_manifest,
+                ["filename", "fin_call_type_buckets", "context_tags", "is_fin_positive", "is_annotated_non_fin"],
+                [
+                    {
+                        "filename": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "fin_call_type_buckets": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                        "is_fin_positive": "1",
+                        "is_annotated_non_fin": "0",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250102T000000.000Z.flac",
+                        "fin_call_type_buckets": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                        "is_fin_positive": "1",
+                        "is_annotated_non_fin": "0",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20241231T120000.000Z.flac",
+                        "fin_call_type_buckets": "",
+                        "context_tags": "click_overlap",
+                        "is_fin_positive": "0",
+                        "is_annotated_non_fin": "1",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20241231T180000.000Z.flac",
+                        "fin_call_type_buckets": "",
+                        "context_tags": "click_overlap",
+                        "is_fin_positive": "0",
+                        "is_annotated_non_fin": "1",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250103T120000.000Z.flac",
+                        "fin_call_type_buckets": "",
+                        "context_tags": "click_overlap",
+                        "is_fin_positive": "0",
+                        "is_annotated_non_fin": "1",
+                    },
+                ],
+            )
+
+            records = load_finetune_clip_records(
+                fin_annotations_csv=fin_annotations,
+                clip_manifest_csv=clip_manifest,
+            )
+            plan_rows, _ = build_learning_curve_plan(
+                records=records,
+                budgets=[5],
+                sampling_modes=["chronological"],
+                repeats=1,
+                train_ratio=0.7,
+                val_ratio=0.1,
+                base_seed=1337,
+            )
+            run = plan_rows[0]
+            self.assertEqual(int(run["train_fin_clip_count"]), 1)
+            # All pure non-fin clips assigned to the training partition should stay available
+            # even for the smallest fin-call budget.
+            self.assertEqual(int(run["train_nonfin_clip_count"]), 2)
 
 
 if __name__ == "__main__":
