@@ -305,7 +305,12 @@ def _generate_pure_nonfin_negatives(
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build a Part 2 fine-tuning MAT dataset from a VM bundle")
     ap.add_argument("--bundle-dir", type=str, required=True, help="Prepared Part 2 VM bundle directory")
-    ap.add_argument("--dataset-doc", type=str, required=True, help="dataset_documentation.json from the original training dataset")
+    ap.add_argument(
+        "--dataset-doc",
+        type=str,
+        default=None,
+        help="Optional dataset_documentation.json from the original training dataset",
+    )
     ap.add_argument("--output-dir", type=str, required=True, help="Output directory for the fine-tune dataset")
     ap.add_argument("--config", type=str, default=str(REPO_ROOT / "config" / "dataset_config.yaml"), help="Dataset config path")
     ap.add_argument("--selected-clips-file", type=str, default=None, help="Optional text file of clip names to include")
@@ -339,6 +344,11 @@ def main() -> None:
     ap.add_argument("--tar-output", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-progress", action="store_true")
+    ap.add_argument("--window-duration", type=float, default=None, help="Override spectrogram window duration in seconds")
+    ap.add_argument("--overlap", type=float, default=None, help="Override spectrogram overlap ratio")
+    ap.add_argument("--freq-min-hz", type=float, default=None, help="Override minimum spectrogram frequency")
+    ap.add_argument("--freq-max-hz", type=float, default=None, help="Override maximum spectrogram frequency")
+    ap.add_argument("--context-duration", type=float, default=None, help="Override positive/negative context duration in seconds")
     ap.set_defaults(include_pure_nonfin_negatives=True)
     args = ap.parse_args()
 
@@ -373,13 +383,36 @@ def main() -> None:
         selected_clips=selected_pure_nonfin_clips if selected_pure_nonfin_clips is not None else selected_clips,
     )
 
-    dataset_doc = load_dataset_documentation(args.dataset_doc)
-    proc = get_processing_params(dataset_doc=dataset_doc)
-    context_duration = (
-        (dataset_doc.get("processing_parameters", {}) or {})
-        .get("temporal_context", {})
-        .get("context_duration_s", 40.0)
-    )
+    dataset_doc = load_dataset_documentation(args.dataset_doc) if args.dataset_doc else None
+    if dataset_doc:
+        proc = get_processing_params(dataset_doc=dataset_doc)
+        context_duration = (
+            (dataset_doc.get("processing_parameters", {}) or {})
+            .get("temporal_context", {})
+            .get("context_duration_s", 40.0)
+        )
+    else:
+        proc = {
+            "win_dur": 1.0,
+            "overlap": 0.9,
+            "freq_lims": (5.0, 100.0),
+            "clim": (-40.0, 0.0),
+        }
+        context_duration = 40.0
+
+    if args.window_duration is not None:
+        proc["win_dur"] = float(args.window_duration)
+    if args.overlap is not None:
+        proc["overlap"] = float(args.overlap)
+    freq_min = proc["freq_lims"][0]
+    freq_max = proc["freq_lims"][1]
+    if args.freq_min_hz is not None:
+        freq_min = float(args.freq_min_hz)
+    if args.freq_max_hz is not None:
+        freq_max = float(args.freq_max_hz)
+    proc["freq_lims"] = (freq_min, freq_max)
+    if args.context_duration is not None:
+        context_duration = float(args.context_duration)
 
     print_header("BUILDING PART 2 FINE-TUNE DATASET")
     print_status(f"Selected fin calls: {len(whale_calls):,}", "INFO", force=True)
@@ -465,7 +498,7 @@ def main() -> None:
 
     summary = {
         "bundle_dir": str(bundle_dir),
-        "dataset_doc": str(Path(args.dataset_doc).resolve()),
+        "dataset_doc": str(Path(args.dataset_doc).resolve()) if args.dataset_doc else None,
         "selected_clip_count": int(whale_calls["clip id"].nunique()),
         "selected_call_count": int(len(whale_calls)),
         "positive_mat_count": sum(1 for row in sample_inventory if int(row["label"]) == 1),
