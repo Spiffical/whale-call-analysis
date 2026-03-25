@@ -890,22 +890,46 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
 
     transform = mtransforms.blended_transform_factory(ax_spec.transData, ax_spec.transAxes)
 
-    def _draw_top_arrow(x_value: float, color: str, y_top: float = 1.085, y_tip: float = 1.01) -> None:
-        ax_spec.annotate(
-            "",
-            xy=(float(x_value), y_tip),
-            xytext=(float(x_value), y_top),
-            xycoords=transform,
-            textcoords=transform,
-            arrowprops={
-                "arrowstyle": "-|>",
-                "color": color,
-                "linewidth": 1.2,
-                "shrinkA": 0,
-                "shrinkB": 0,
-                "mutation_scale": 10,
-            },
-            annotation_clip=False,
+    def _draw_top_span(start_s: float, end_s: float, color: str, y_line: float = 1.045) -> None:
+        start_v = float(start_s)
+        end_v = float(end_s)
+        if end_v < start_v:
+            start_v, end_v = end_v, start_v
+        if not math.isfinite(start_v) or not math.isfinite(end_v):
+            return
+        center_v = 0.5 * (start_v + end_v)
+        span = max(0.0, end_v - start_v)
+        if span < 0.06:
+            ax_spec.scatter(
+                [center_v],
+                [y_line],
+                transform=transform,
+                marker="v",
+                s=20,
+                color=color,
+                clip_on=False,
+                zorder=5,
+            )
+            return
+        ax_spec.plot(
+            [start_v, end_v],
+            [y_line, y_line],
+            transform=transform,
+            color=color,
+            linewidth=1.5,
+            solid_capstyle="round",
+            clip_on=False,
+            zorder=4,
+        )
+        ax_spec.scatter(
+            [start_v, end_v],
+            [y_line, y_line],
+            transform=transform,
+            marker="v",
+            s=20,
+            color=color,
+            clip_on=False,
+            zorder=5,
         )
 
     arrowable_spans = list(candidate.annotation_spans)
@@ -914,8 +938,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         arrowable_spans = arrowable_spans[::step][:12]
 
     for start_s, end_s, _label in arrowable_spans:
-        center = 0.5 * (float(start_s) + float(end_s))
-        _draw_top_arrow(center, "#219ebc", y_top=1.065, y_tip=1.012)
+        _draw_top_span(float(start_s), float(end_s), "#219ebc", y_line=1.04)
 
     ax_spec.set_ylabel("Frequency (Hz)")
     ax_spec.grid(False)
