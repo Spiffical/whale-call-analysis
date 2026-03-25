@@ -186,6 +186,16 @@ def _annotation_spans_for_rows(rows: Sequence[AnnotationEvent]) -> Tuple[Tuple[f
     return tuple(spans)
 
 
+def _annotation_species_codes(rows: Sequence[AnnotationEvent]) -> Tuple[str, ...]:
+    codes = sorted({str(ann.species).strip() for ann in rows if str(ann.species).strip()})
+    return tuple(codes)
+
+
+def _annotation_context_tags(rows: Sequence[AnnotationEvent]) -> Tuple[str, ...]:
+    tags = sorted({tag for ann in rows for tag in ann.context_tags if tag and tag != UNKNOWN_CONTEXT})
+    return tuple(tags) if tags else (UNKNOWN_CONTEXT,)
+
+
 def _raw_windows_by_file(
     raw_window_predictions: Sequence[PredictedSegment],
 ) -> Dict[str, Tuple[Tuple[float, float, float], ...]]:
@@ -258,8 +268,6 @@ def _raw_window_detail_text(
     duration_s: float,
     local_target_count: int,
     local_any_count: Optional[int],
-    clip_species_codes: Sequence[str],
-    clip_context_tags: Sequence[str],
 ) -> str:
     bits: List[str] = []
     if score is not None:
@@ -268,11 +276,6 @@ def _raw_window_detail_text(
     bits.append(f"local_target_calls={int(local_target_count)}")
     if local_any_count is not None:
         bits.append(f"local_annotations={int(local_any_count)}")
-    interesting_tags = [tag for tag in clip_context_tags if tag != UNKNOWN_CONTEXT]
-    if interesting_tags:
-        bits.append("clip_context=" + ",".join(interesting_tags[:3]))
-    if clip_species_codes:
-        bits.append("clip_species=" + ",".join(clip_species_codes[:3]))
     return " | ".join(bits)
 
 
@@ -395,8 +398,8 @@ def _build_example_candidates(
         matched_annotations = _annotations_for_prediction(pred, annotations_by_file, collar_s)
         clip_row = clip_manifest.get(pred.filename)
         bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in matched_annotations}))
-        context_tags = tuple(sorted({tag for ann in matched_annotations for tag in ann.context_tags} or (clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,))))
-        species_codes = clip_row.species_codes if clip_row else ()
+        context_tags = _annotation_context_tags(matched_annotations)
+        species_codes = _annotation_species_codes(matched_annotations)
         out["merged_tp"].append(
             ExampleCandidate(
                 group="merged_tp",
@@ -453,9 +456,16 @@ def _build_example_candidates(
         )
 
     for pred in merged_unmatched_predictions:
-        clip_row = clip_manifest.get(pred.filename)
-        context_tags = clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,)
-        species_codes = clip_row.species_codes if clip_row else ()
+        local_all_annotations = _annotations_for_prediction(pred, all_annotations_by_file, collar_s)
+        context_tags: Tuple[str, ...] = ()
+        species_codes: Tuple[str, ...] = ()
+        panel_title = "Merged FP | no local annotations" if not local_all_annotations else "Merged FP | non-target overlap"
+        detail_text = _raw_window_detail_text(
+            score=pred.score,
+            duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
+            local_target_count=0,
+            local_any_count=len(local_all_annotations),
+        )
         out["merged_fp"].append(
             ExampleCandidate(
                 group="merged_fp",
@@ -489,19 +499,10 @@ def _build_example_candidates(
                     context_tags=context_tags,
                     species_codes=species_codes,
                 ),
-                panel_title=_prediction_panel_title(
-                    base_label="Merged FP",
-                    buckets=(),
-                    context_tags=context_tags,
-                ),
-                detail_text=_prediction_detail_text(
-                    score=pred.score,
-                    duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
-                    annotation_count=0,
-                    species_codes=species_codes,
-                    context_tags=context_tags,
-                ),
+                panel_title=panel_title,
+                detail_text=detail_text,
                 sort_key=(
+                    0 if not local_all_annotations else 1,
                     -float(pred.score),
                     max(0.0, pred.end_time_s - pred.start_time_s),
                     pred.filename,
@@ -511,9 +512,8 @@ def _build_example_candidates(
         )
 
     for ann in merged_missed_annotations:
-        clip_row = clip_manifest.get(ann.filename)
-        context_tags = ann.context_tags or (clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,))
-        species_codes = clip_row.species_codes if clip_row else ()
+        context_tags = ann.context_tags or (UNKNOWN_CONTEXT,)
+        species_codes = (ann.species,) if ann.species else ()
         display_pad = max(5.0, min(12.0, 0.5 * max(6.0, ann.end_time_s - ann.begin_time_s)))
         out["merged_fn"].append(
             ExampleCandidate(
@@ -589,8 +589,8 @@ def _build_example_candidates(
         local_all_annotations = _annotations_for_prediction(pred, all_annotations_by_file, collar_s)
         clip_row = clip_manifest.get(pred.filename)
         bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in matched_annotations}))
-        context_tags = tuple(sorted({tag for ann in matched_annotations for tag in ann.context_tags} or (clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,))))
-        species_codes = clip_row.species_codes if clip_row else ()
+        context_tags = _annotation_context_tags(matched_annotations) if matched_annotations else ()
+        species_codes = _annotation_species_codes(matched_annotations) if matched_annotations else ()
         target_group = "raw_window_tp" if pred.prediction_id in raw_tp_ids else "raw_window_fp"
         panel_title = (
             _prediction_panel_title(
@@ -615,8 +615,6 @@ def _build_example_candidates(
                 duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
                 local_target_count=0,
                 local_any_count=len(local_all_annotations),
-                clip_species_codes=species_codes,
-                clip_context_tags=clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,),
             )
         )
         out[target_group].append(
@@ -664,9 +662,8 @@ def _build_example_candidates(
         )
 
     for ann in raw_window_missed_annotations:
-        clip_row = clip_manifest.get(ann.filename)
-        context_tags = ann.context_tags or (clip_row.context_tags if clip_row else (UNKNOWN_CONTEXT,))
-        species_codes = clip_row.species_codes if clip_row else ()
+        context_tags = ann.context_tags or (UNKNOWN_CONTEXT,)
+        species_codes = (ann.species,) if ann.species else ()
         mid = 0.5 * (ann.begin_time_s + ann.end_time_s)
         half = 0.5 * raw_window_duration_s
         out["raw_window_fn"].append(
@@ -775,12 +772,11 @@ def _build_example_candidates(
                     duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
                     local_target_count=0,
                     local_any_count=0,
-                    clip_species_codes=species_codes,
-                    clip_context_tags=context_tags,
                 ),
                 sort_key=(
                     tn_priority,
-                    -float(pred.score),
+                    0 if float(pred.score) < 0.3 else 1,
+                    float(pred.score),
                     pred.filename,
                     pred.start_time_s,
                 ),
@@ -1166,6 +1162,10 @@ def export_part2_example_gallery(
     ):
         selected = _select_diverse_examples(candidates_by_group.get(group_name, []), max_examples_per_group)
         group_dir = output_dir / group_name
+        if group_dir.exists():
+            for stale_path in group_dir.glob("*"):
+                if stale_path.is_file():
+                    stale_path.unlink()
         group_dir.mkdir(parents=True, exist_ok=True)
         group_rows: List[Dict[str, Any]] = []
         for idx, candidate in enumerate(selected, start=1):
@@ -1200,7 +1200,7 @@ def export_part2_example_gallery(
                 "detail_text": candidate.detail_text,
                 "short_meta": (
                     candidate.panel_title.split("|", 1)[1].strip()
-                    if candidate.group in {"raw_window_fp", "raw_window_tn"} and not candidate.annotation_spans
+                    if candidate.group in {"merged_fp", "raw_window_fp", "raw_window_tn"} and not candidate.annotation_spans
                     else ",".join(list(candidate.bucket_labels[:1]) + [tag for tag in candidate.context_tags if tag != UNKNOWN_CONTEXT][:1])
                 ),
             }
