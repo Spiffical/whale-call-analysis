@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.dataset.part2_eval import (
     build_clip_confusion,
+    coverage_match_sets,
     coverage_metrics,
     filter_predictions_by_score,
     context_recall_rows,
@@ -237,6 +238,61 @@ class TestPart2Eval(unittest.TestCase):
         self.assertAlmostEqual(metrics["precision"], 1.0, places=6)
         self.assertAlmostEqual(metrics["recall"], 1.0, places=6)
         self.assertAlmostEqual(metrics["f1"], 1.0, places=6)
+
+    def test_coverage_match_sets_ignore_duplicate_predictions_on_same_calls(self):
+        annotations = load_annotations_csv(
+            self._write_temp_annotations(
+                [
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "begin_time_s": "10.0",
+                        "end_time_s": "11.0",
+                        "species": "Bp",
+                        "call_type_bucket": "20Hz",
+                        "call_type_raw": "20 Hz",
+                        "comments": "",
+                        "context_tags": "vessel_or_masking",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "begin_time_s": "20.0",
+                        "end_time_s": "21.0",
+                        "species": "Bp",
+                        "call_type_bucket": "20Hz",
+                        "call_type_raw": "20 Hz",
+                        "comments": "",
+                        "context_tags": "mixed_species",
+                    },
+                ]
+            )
+        )
+        predictions = [
+            PredictedSegment(
+                prediction_id="pred_cover_both",
+                item_id="item_cover_both",
+                filename="ICLISTENHF6016_20250105T000000.000Z.flac",
+                start_time_s=9.0,
+                end_time_s=21.5,
+                score=0.91,
+                source_index=0,
+            ),
+            PredictedSegment(
+                prediction_id="pred_duplicate",
+                item_id="item_duplicate",
+                filename="ICLISTENHF6016_20250105T000000.000Z.flac",
+                start_time_s=9.2,
+                end_time_s=11.2,
+                score=0.77,
+                source_index=0,
+            ),
+        ]
+        useful_prediction_ids, covered_annotation_ids = coverage_match_sets(
+            predictions,
+            annotations,
+            collar_s=1.0,
+        )
+        self.assertEqual(useful_prediction_ids, {"pred_cover_both", "pred_duplicate"})
+        self.assertEqual(len(covered_annotation_ids), 2)
 
     def test_filter_predictions_by_score_and_context_recall_rows(self):
         annotations = load_annotations_csv(

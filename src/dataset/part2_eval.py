@@ -24,9 +24,9 @@ STRICT_EVENT_VIEW = "strict_event"
 MERGED_REGION_VIEW = "merged_region_coverage"
 RAW_WINDOW_VIEW = "raw_window_coverage"
 VIEW_LABELS = {
-    STRICT_EVENT_VIEW: "Strict Call Extraction",
-    MERGED_REGION_VIEW: "Merged Region Coverage",
-    RAW_WINDOW_VIEW: "Raw Window Coverage",
+    MERGED_REGION_VIEW: "Merged Clip Coverage",
+    RAW_WINDOW_VIEW: "Raw Window Detection",
+    STRICT_EVENT_VIEW: "Strict Single-Call Extraction",
 }
 
 
@@ -366,23 +366,11 @@ def coverage_metrics(
     annotations: Sequence[AnnotationEvent],
     collar_s: float,
 ) -> Dict[str, float]:
-    ann_by_file = _group_annotations_by_file(annotations)
-    useful_prediction_ids: set[str] = set()
-    covered_annotation_ids: set[str] = set()
-
-    for pred in predictions:
-        anns = ann_by_file.get(pred.filename, [])
-        if not anns:
-            continue
-        pred_hit = False
-        for ann in anns:
-            overlap_s = _overlap_seconds(pred, ann, collar_s)
-            if overlap_s <= 0:
-                continue
-            pred_hit = True
-            covered_annotation_ids.add(ann.annotation_id)
-        if pred_hit:
-            useful_prediction_ids.add(pred.prediction_id)
+    useful_prediction_ids, covered_annotation_ids = coverage_match_sets(
+        predictions,
+        annotations,
+        collar_s,
+    )
 
     summary = _prediction_review_summary(predictions)
     useful_predictions = len(useful_prediction_ids)
@@ -406,6 +394,32 @@ def coverage_metrics(
         "predictions_per_covered_call": _safe_div(prediction_count, covered_annotations),
         **summary,
     }
+
+
+def coverage_match_sets(
+    predictions: Sequence[PredictedSegment],
+    annotations: Sequence[AnnotationEvent],
+    collar_s: float,
+) -> Tuple[set[str], set[str]]:
+    ann_by_file = _group_annotations_by_file(annotations)
+    useful_prediction_ids: set[str] = set()
+    covered_annotation_ids: set[str] = set()
+
+    for pred in predictions:
+        anns = ann_by_file.get(pred.filename, [])
+        if not anns:
+            continue
+        pred_hit = False
+        for ann in anns:
+            overlap_s = _overlap_seconds(pred, ann, collar_s)
+            if overlap_s <= 0:
+                continue
+            pred_hit = True
+            covered_annotation_ids.add(ann.annotation_id)
+        if pred_hit:
+            useful_prediction_ids.add(pred.prediction_id)
+
+    return useful_prediction_ids, covered_annotation_ids
 
 
 def _safe_div(num: float, den: float) -> float:
@@ -796,9 +810,9 @@ def maybe_plot_sweep_curve(path: Path | str, rows: Sequence[Dict[str, Any]], win
     _configure_plot_style(plt)
 
     panels = [
-        ("Strict Call Extraction", "precision", "recall", "#0f4c81"),
-        ("Merged Region Coverage", "merged_region_precision", "merged_region_recall", "#2a9d8f"),
-        ("Raw Window Coverage", "raw_window_precision", "raw_window_recall", "#e76f51"),
+        ("Merged Clip Coverage", "merged_region_precision", "merged_region_recall", "#2a9d8f"),
+        ("Raw Window Detection", "raw_window_precision", "raw_window_recall", "#e76f51"),
+        ("Strict Single-Call Extraction", "precision", "recall", "#0f4c81"),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(13.8, 4.2), dpi=220, sharex=False, sharey=False)
     if not isinstance(axes, (list, tuple)):
@@ -901,9 +915,9 @@ def maybe_plot_bucket_recall_comparison(
     raw_vals = [float(raw_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
 
     fig, ax = plt.subplots(figsize=(8.4, 4.6), dpi=220)
-    ax.bar(x - width, strict_vals, width=width, label="Strict event recall", color="#0f4c81")
-    ax.bar(x, merged_vals, width=width, label="Merged-region call coverage", color="#2a9d8f")
-    ax.bar(x + width, raw_vals, width=width, label="Raw-window call coverage", color="#e76f51")
+    ax.bar(x - width, merged_vals, width=width, label="Merged clip coverage", color="#2a9d8f")
+    ax.bar(x, raw_vals, width=width, label="Raw-window call coverage", color="#e76f51")
+    ax.bar(x + width, strict_vals, width=width, label="Strict event recall", color="#0f4c81")
     ax.set_xticks(x, labels=PART2_BUCKETS)
     ax.set_ylim(0.0, 1.02)
     ax.set_ylabel("Recall")
@@ -943,21 +957,17 @@ def evaluation_report_lines(
             "",
             "This report shows three complementary views of performance:",
             "",
-            "- `Strict Call Extraction`: one predicted event can match only one annotated call. This is the hardest metric and reflects per-call extraction quality.",
-            "- `Merged Region Coverage`: one merged predicted region can cover many annotated calls. This reflects rapid-review usefulness.",
-            "- `Raw Window Coverage`: pre-merge detector windows above threshold count as positive. This isolates the CNN detector from the event-merging logic.",
+            "- `Merged Clip Coverage` is the primary project metric: any annotated fin-whale calls that fall inside a merged predicted region are counted as detected.",
+            "- `Raw Window Detection` reports whether the underlying CNN fired on 10-second detector views before event merging.",
+            "- `Strict Single-Call Extraction` remains a supplementary diagnostic for one-to-one call isolation.",
             "",
-            f"- Strict event precision: `{strict_event_metrics['precision']:.4f}`",
-            f"- Strict event recall: `{strict_event_metrics['recall']:.4f}`",
-            f"- Strict event F1: `{strict_event_metrics['f1']:.4f}`",
-            f"- Strict event counts: `TP={strict_event_metrics['tp']}`, `FP={strict_event_metrics['fp']}`, `FN={strict_event_metrics['fn']}`",
             f"- Merged-region precision: `{merged_region_metrics['precision']:.4f}`",
             f"- Merged-region call coverage recall: `{merged_region_metrics['recall']:.4f}`",
             f"- Merged-region coverage F1: `{merged_region_metrics['f1']:.4f}`",
             f"- Merged-region review burden: `{int(merged_region_metrics['prediction_count'])}` regions, `{merged_region_metrics['total_review_minutes']:.1f}` review minutes",
+            f"- Rapid-review queue size: `{rapid_review_count}`",
             f"- Clip-level accuracy: `{overall_clip_metrics['accuracy']:.4f}`",
             f"- Clip-level counts: `TP={overall_clip_metrics['tp']}`, `FP={overall_clip_metrics['fp']}`, `FN={overall_clip_metrics['fn']}`, `TN={overall_clip_metrics['tn']}`",
-            f"- Rapid-review queue size: `{rapid_review_count}`",
             "",
         ]
     )
@@ -971,6 +981,15 @@ def evaluation_report_lines(
                 "",
             ]
         )
+    lines.extend(
+        [
+            f"- Strict event precision: `{strict_event_metrics['precision']:.4f}`",
+            f"- Strict event recall: `{strict_event_metrics['recall']:.4f}`",
+            f"- Strict event F1: `{strict_event_metrics['f1']:.4f}`",
+            f"- Strict event counts: `TP={strict_event_metrics['tp']}`, `FP={strict_event_metrics['fp']}`, `FN={strict_event_metrics['fn']}`",
+            "",
+        ]
+    )
 
     if baseline_summary:
         lines.extend(["## Historical Baseline", ""])

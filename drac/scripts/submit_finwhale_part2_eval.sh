@@ -45,6 +45,8 @@ BATCH_SIZE="128"
 NUM_WORKERS="4"
 CROP_SIZE=""
 MERGE_EVENT_MEDIA="false"
+EXPORT_EXAMPLE_IMAGES="true"
+MAX_EXAMPLES_PER_GROUP="8"
 METADATA_RELPATH="metadata.json"
 MAT_DIR_RELPATH="mat_files"
 RAW_AUDIO_RELPATH="raw_audio"
@@ -78,6 +80,8 @@ while [[ $# -gt 0 ]]; do
     --num-workers) NUM_WORKERS="$2"; shift 2 ;;
     --crop-size) CROP_SIZE="$2"; shift 2 ;;
     --merge-event-media) MERGE_EVENT_MEDIA="true"; shift ;;
+    --skip-example-images) EXPORT_EXAMPLE_IMAGES="false"; shift ;;
+    --max-examples-per-group) MAX_EXAMPLES_PER_GROUP="$2"; shift 2 ;;
     --metadata-relpath) METADATA_RELPATH="$2"; shift 2 ;;
     --mat-dir-relpath) MAT_DIR_RELPATH="$2"; shift 2 ;;
     --raw-audio-relpath) RAW_AUDIO_RELPATH="$2"; shift 2 ;;
@@ -279,6 +283,13 @@ for STEP in "${WINDOW_STEP_VALUES[@]}"; do
     --min-members-values "$MIN_MEMBERS_VALUES"
     --max-gap-values "$MAX_GAP_VALUES"
   )
+  if [[ "$EXPORT_EXAMPLE_IMAGES" == "true" ]]; then
+    EVAL_CMD+=(
+      --example-mat-dir "$MAT_DIR"
+      --export-example-images
+      --max-examples-per-group "$MAX_EXAMPLES_PER_GROUP"
+    )
+  fi
   if [[ -n "$CLASS_HIERARCHY" ]]; then
     EVAL_CMD+=( --class-hierarchy "$CLASS_HIERARCHY" )
   fi

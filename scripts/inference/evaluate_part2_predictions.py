@@ -22,6 +22,7 @@ from src.dataset.part2_eval import (
     bucket_coverage_metrics,
     build_clip_confusion,
     context_recall_rows,
+    coverage_match_sets,
     coverage_metrics,
     evaluation_report_lines,
     filter_prediction_items_for_rapid_review,
@@ -41,6 +42,7 @@ from src.dataset.part2_eval import (
     summarize_sweep_rows,
     write_csv,
 )
+from src.dataset.part2_examples import export_part2_example_gallery
 from src.utils.wandb_utils import finish_run, init_wandb_test, save_wandb_files, update_wandb_summary
 
 
@@ -159,15 +161,8 @@ def _overall_view_rows(
 ) -> List[Dict[str, Any]]:
     rows = [
         {
-            "view": "strict_event",
-            "view_label": "Strict Call Extraction",
-            "precision": strict_event_metrics.get("precision", 0.0),
-            "recall": strict_event_metrics.get("recall", 0.0),
-            "f1": strict_event_metrics.get("f1", 0.0),
-        },
-        {
             "view": "merged_region_coverage",
-            "view_label": "Merged Region Coverage",
+            "view_label": "Merged Clip Coverage",
             "precision": merged_region_metrics.get("precision", 0.0),
             "recall": merged_region_metrics.get("recall", 0.0),
             "f1": merged_region_metrics.get("f1", 0.0),
@@ -177,12 +172,21 @@ def _overall_view_rows(
         rows.append(
             {
                 "view": "raw_window_coverage",
-                "view_label": "Raw Window Coverage",
+                "view_label": "Raw Window Detection",
                 "precision": raw_window_metrics.get("precision", 0.0),
                 "recall": raw_window_metrics.get("recall", 0.0),
                 "f1": raw_window_metrics.get("f1", 0.0),
             }
         )
+    rows.append(
+        {
+            "view": "strict_event",
+            "view_label": "Strict Single-Call Extraction",
+            "precision": strict_event_metrics.get("precision", 0.0),
+            "recall": strict_event_metrics.get("recall", 0.0),
+            "f1": strict_event_metrics.get("f1", 0.0),
+        }
+    )
     return rows
 
 
@@ -231,10 +235,15 @@ def evaluate_single_postprocessed_output(
     output_dir: Path,
     match_collar_s: float,
     raw_window_predictions: Optional[Sequence[Any]] = None,
+    raw_window_payload: Optional[Dict[str, Any]] = None,
+    raw_window_json_path: Optional[Path] = None,
     raw_window_threshold: Optional[float] = None,
     baseline_summary: Optional[Dict[str, Any]] = None,
     summary_title: str = "Fin Whale Part 2 Report",
     sweep_summary_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    example_mat_dir: Optional[Path] = None,
+    export_example_images: bool = False,
+    max_examples_per_group: int = 8,
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     payload, prediction_segments = load_prediction_segments(postprocessed_json)
@@ -245,6 +254,17 @@ def evaluate_single_postprocessed_output(
         fin_annotations,
         match_collar_s,
     )
+    coverage_useful_prediction_ids, coverage_covered_annotation_ids = coverage_match_sets(
+        prediction_segments,
+        fin_annotations,
+        match_collar_s,
+    )
+    coverage_unmatched_predictions = [
+        pred for pred in prediction_segments if pred.prediction_id not in coverage_useful_prediction_ids
+    ]
+    coverage_unmatched_annotations = [
+        ann for ann in fin_annotations if ann.annotation_id not in coverage_covered_annotation_ids
+    ]
 
     overall_event = {
         "tp": len(matches),
@@ -277,9 +297,19 @@ def evaluate_single_postprocessed_output(
     predictions_by_id = {pred.prediction_id: pred for pred in prediction_segments}
 
     write_csv(output_dir / "matches.csv", _match_rows(matches, annotations_by_id, predictions_by_id))
-    write_csv(output_dir / "false_negatives.csv", _unmatched_annotation_rows(unmatched_annotations))
-    write_csv(output_dir / "false_positives.csv", _unmatched_prediction_rows(unmatched_predictions, clip_manifest))
-    write_csv(output_dir / "rapid_review.csv", rapid_review_rows(unmatched_predictions, clip_manifest))
+    write_csv(output_dir / "strict_false_negatives.csv", _unmatched_annotation_rows(unmatched_annotations))
+    write_csv(output_dir / "strict_false_positives.csv", _unmatched_prediction_rows(unmatched_predictions, clip_manifest))
+    write_csv(output_dir / "coverage_missed_annotations.csv", _unmatched_annotation_rows(coverage_unmatched_annotations))
+    write_csv(
+        output_dir / "coverage_false_positives.csv",
+        _unmatched_prediction_rows(coverage_unmatched_predictions, clip_manifest),
+    )
+    write_csv(output_dir / "false_negatives.csv", _unmatched_annotation_rows(coverage_unmatched_annotations))
+    write_csv(
+        output_dir / "false_positives.csv",
+        _unmatched_prediction_rows(coverage_unmatched_predictions, clip_manifest),
+    )
+    write_csv(output_dir / "rapid_review.csv", rapid_review_rows(coverage_unmatched_predictions, clip_manifest))
 
     _write_confusion_csv(output_dir / "overall_clip_confusion.csv", overall_clip)
     maybe_plot_confusion_matrix(output_dir / "overall_clip_confusion.png", overall_clip, "Part 2 overall clip confusion")
@@ -342,15 +372,15 @@ def evaluate_single_postprocessed_output(
         )
 
     recommendations = recommendations_from_errors(
-        unmatched_annotations=unmatched_annotations,
-        unmatched_predictions=unmatched_predictions,
+        unmatched_annotations=coverage_unmatched_annotations,
+        unmatched_predictions=coverage_unmatched_predictions,
         clip_manifest=clip_manifest,
     )
     with open(output_dir / "recommendations.md", "w", encoding="utf-8") as handle:
         for line in recommendations:
             handle.write(f"- {line}\n")
 
-    rapid_payload = filter_prediction_items_for_rapid_review(payload, unmatched_predictions)
+    rapid_payload = filter_prediction_items_for_rapid_review(payload, coverage_unmatched_predictions)
     rapid_app_json = output_dir / "rapid_review.app.json"
     rapid_o3_json = output_dir / "rapid_review.o3.json"
     _write_json(rapid_app_json, rapid_payload)
@@ -385,6 +415,27 @@ def evaluate_single_postprocessed_output(
     write_csv(output_dir / "context_recall_metrics.csv", context_rows)
     hardest_rows = hardest_context_rows(context_rows, max_items=8, min_annotation_count=25)
 
+    examples_summary = None
+    if export_example_images and example_mat_dir is not None:
+        examples_summary = export_part2_example_gallery(
+            output_dir=output_dir / "examples",
+            postprocessed_json_path=postprocessed_json,
+            postprocessed_payload=payload,
+            merged_predictions=prediction_segments,
+            merged_useful_prediction_ids=coverage_useful_prediction_ids,
+            merged_unmatched_predictions=coverage_unmatched_predictions,
+            merged_missed_annotations=coverage_unmatched_annotations,
+            raw_window_json_path=raw_window_json_path,
+            raw_window_payload=raw_window_payload,
+            raw_window_predictions=raw_window_predictions,
+            raw_window_threshold=raw_window_threshold,
+            annotations=fin_annotations,
+            clip_manifest=clip_manifest,
+            mat_dir=example_mat_dir,
+            max_examples_per_group=max_examples_per_group,
+            match_collar_s=match_collar_s,
+        )
+
     summary_payload = {
         "postprocessed_json": str(postprocessed_json),
         "match_collar_s": float(match_collar_s),
@@ -397,8 +448,11 @@ def evaluate_single_postprocessed_output(
         "bucket_raw_window_metrics": bucket_raw_window,
         "bucket_clip_metrics": bucket_clips,
         "recommendations": recommendations,
-        "rapid_review_count": len(unmatched_predictions),
+        "rapid_review_count": len(coverage_unmatched_predictions),
         "raw_window_threshold": float(raw_window_threshold) if raw_window_threshold is not None else None,
+        "coverage_false_positive_count": len(coverage_unmatched_predictions),
+        "coverage_missed_annotation_count": len(coverage_unmatched_annotations),
+        "examples_summary": examples_summary,
     }
     _write_json(output_dir / "metrics.json", summary_payload)
 
@@ -413,11 +467,25 @@ def evaluate_single_postprocessed_output(
         bucket_raw_window_metrics_map=bucket_raw_window,
         bucket_clip_metrics_map=bucket_clips,
         recommendations=recommendations,
-        rapid_review_count=len(unmatched_predictions),
+        rapid_review_count=len(coverage_unmatched_predictions),
         baseline_summary=baseline_summary,
         sweep_summary_rows=sweep_summary_rows,
         hardest_context_rows=hardest_rows,
     )
+    if examples_summary is not None:
+        report_lines.extend(
+            [
+                "",
+                "## Example Spectrogram Gallery",
+                "",
+                "Representative merged-region and raw-window spectrogram examples are exported under `examples/`.",
+                "",
+                "- Gallery README: `examples/README.md`",
+                "- Combined example manifest: `examples/examples_index.csv`",
+                "- Contact sheets live in `examples/contact_sheets/`",
+                "",
+            ]
+        )
     report_path = output_dir / "report.md"
     report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
 
@@ -431,9 +499,10 @@ def evaluate_single_postprocessed_output(
         "bucket_raw_window_metrics": bucket_raw_window,
         "bucket_clip_metrics": bucket_clips,
         "recommendations": recommendations,
-        "rapid_review_count": len(unmatched_predictions),
+        "rapid_review_count": len(coverage_unmatched_predictions),
         "metrics_json": str(output_dir / "metrics.json"),
         "report_md": str(report_path),
+        "examples_summary": examples_summary,
     }
 
 
@@ -530,6 +599,8 @@ def _sweep_candidates(
                         output_dir=combo_dir / "eval",
                         match_collar_s=match_collar_s,
                         raw_window_predictions=raw_window_predictions,
+                        raw_window_payload=None,
+                        raw_window_json_path=None,
                         raw_window_threshold=low_threshold,
                         baseline_summary=None,
                         summary_title=f"Part 2 sweep evaluation: {tag}",
@@ -575,14 +646,16 @@ def _select_operating_points(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[s
             key=lambda row: (
                 float(row.get(key, 0.0)),
                 float(row.get(secondary, 0.0)),
-                -float(row.get("fp", 0.0)),
+                -float(row.get("prediction_count", row.get("fp", 0.0))),
             ),
         )
 
     out = {
-        "best_f1": _best("f1", "precision"),
-        "high_recall": _best("recall", "precision"),
-        "high_precision": _best("precision", "recall"),
+        "best_f1": _best("merged_region_f1", "merged_region_precision"),
+        "high_recall": _best("merged_region_recall", "merged_region_precision"),
+        "high_precision": _best("merged_region_precision", "merged_region_recall"),
+        "best_strict_f1": _best("f1", "precision"),
+        "best_window_recall": _best("raw_window_recall", "raw_window_precision"),
     }
 
     unique: Dict[str, Dict[str, Any]] = {}
@@ -685,6 +758,10 @@ def _log_part2_wandb(
                 image_path = output_dir / image_name
                 if image_path.exists():
                     wandb.log({image_name.replace(".png", ""): wandb.Image(str(image_path))})
+            examples_dir = output_dir / "examples" / "contact_sheets"
+            if examples_dir.exists():
+                for image_path in sorted(examples_dir.glob("*.png")):
+                    wandb.log({f"examples/{image_path.stem}": wandb.Image(str(image_path))})
         except Exception as exc:
             print(f"Warning: Could not log rich Part 2 artifacts to wandb: {exc}")
 
@@ -699,6 +776,8 @@ def _log_part2_wandb(
                 output_dir / "sweep_summary.csv",
                 output_dir / "rapid_review.csv",
                 output_dir / "recommendations.md",
+                output_dir / "examples" / "README.md",
+                output_dir / "examples" / "examples_index.csv",
             ],
             base_path=output_dir,
         )
@@ -722,6 +801,9 @@ def main() -> None:
     ap.add_argument("--min-members-values", type=str, default="2,3")
     ap.add_argument("--max-gap-values", type=str, default="auto,10,15")
     ap.add_argument("--merge-event-media", action="store_true")
+    ap.add_argument("--example-mat-dir", type=str, default=None)
+    ap.add_argument("--export-example-images", action="store_true")
+    ap.add_argument("--max-examples-per-group", type=int, default=8)
     ap.add_argument("--use-wandb", action="store_true")
     ap.add_argument("--wandb-project", type=str, default="whale-call-analysis")
     ap.add_argument("--wandb-entity", type=str, default=None)
@@ -740,8 +822,9 @@ def main() -> None:
     baseline_summary = _load_baseline_summary(args.baseline_metrics_json)
 
     raw_window_predictions = None
+    raw_window_payload = None
     if args.window_predictions_json:
-        _, raw_window_predictions = load_prediction_segments(args.window_predictions_json)
+        raw_window_payload, raw_window_predictions = load_prediction_segments(args.window_predictions_json)
 
     if args.postprocessed_json:
         evaluate_single_postprocessed_output(
@@ -751,8 +834,13 @@ def main() -> None:
             output_dir=output_dir,
             match_collar_s=float(args.match_collar_s),
             raw_window_predictions=raw_window_predictions,
+            raw_window_payload=raw_window_payload,
+            raw_window_json_path=Path(args.window_predictions_json) if args.window_predictions_json else None,
             raw_window_threshold=min(_parse_float_list(args.low_thresholds)),
             baseline_summary=baseline_summary,
+            example_mat_dir=Path(args.example_mat_dir) if args.example_mat_dir else None,
+            export_example_images=bool(args.export_example_images),
+            max_examples_per_group=int(args.max_examples_per_group),
         )
         if args.use_wandb:
             _log_part2_wandb(
@@ -804,10 +892,15 @@ def main() -> None:
             output_dir=op_dir,
             match_collar_s=float(args.match_collar_s),
             raw_window_predictions=raw_window_predictions,
+            raw_window_payload=raw_window_payload,
+            raw_window_json_path=Path(args.window_predictions_json),
             raw_window_threshold=float(row["low_threshold"]),
             baseline_summary=baseline_summary,
             summary_title=f"Fin Whale Part 2 Report ({label})",
             sweep_summary_rows=summarize_sweep_rows(sweep_rows),
+            example_mat_dir=Path(args.example_mat_dir) if args.example_mat_dir else None,
+            export_example_images=bool(args.export_example_images),
+            max_examples_per_group=int(args.max_examples_per_group),
         )
         selected_dirs[label] = op_dir
 
@@ -826,6 +919,7 @@ def main() -> None:
         "bucket_metrics.csv",
         "bucket_recall_comparison.png",
         "context_recall_metrics.csv",
+        "examples",
     ]:
         src = best_dir / artifact_name
         if src.exists():
