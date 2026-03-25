@@ -729,6 +729,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
+        import matplotlib.transforms as mtransforms
         from textwrap import fill
     except Exception:
         return None
@@ -742,7 +743,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     _configure_plot_style(plt)
     duration = max(1.0, float(times[-1]) - float(times[0]))
     fig_width = min(14.0, max(7.0, 6.0 + 0.045 * duration))
-    fig, ax = plt.subplots(figsize=(fig_width, 4.8), dpi=220)
+    fig, ax = plt.subplots(figsize=(fig_width, 5.0), dpi=220)
 
     import numpy as np
 
@@ -760,6 +761,26 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         vmax=vmax,
     )
 
+    transform = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+
+    def _draw_top_arrow(x_value: float, color: str, y_top: float = 1.085, y_tip: float = 1.01) -> None:
+        ax.annotate(
+            "",
+            xy=(float(x_value), y_tip),
+            xytext=(float(x_value), y_top),
+            xycoords=transform,
+            textcoords=transform,
+            arrowprops={
+                "arrowstyle": "-|>",
+                "color": color,
+                "linewidth": 1.2,
+                "shrinkA": 0,
+                "shrinkB": 0,
+                "mutation_scale": 10,
+            },
+            annotation_clip=False,
+        )
+
     if candidate.prediction_start_s is not None and candidate.prediction_end_s is not None:
         ax.axvspan(
             float(candidate.prediction_start_s),
@@ -768,22 +789,20 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
             alpha=0.12,
             linewidth=0,
         )
-        ax.axvline(float(candidate.prediction_start_s), color="#fb8500", linewidth=1.5, alpha=0.9)
-        ax.axvline(float(candidate.prediction_end_s), color="#fb8500", linewidth=1.5, alpha=0.9)
+        _draw_top_arrow(float(candidate.prediction_start_s), "#fb8500", y_top=1.095, y_tip=1.015)
+        _draw_top_arrow(float(candidate.prediction_end_s), "#fb8500", y_top=1.095, y_tip=1.015)
 
-    for start_s, end_s, label in candidate.annotation_spans:
+    arrowable_spans = list(candidate.annotation_spans)
+    if len(arrowable_spans) > 12:
+        step = max(1, len(arrowable_spans) // 12)
+        arrowable_spans = arrowable_spans[::step][:12]
+
+    for start_s, end_s, _label in candidate.annotation_spans:
         ax.axvspan(float(start_s), float(end_s), facecolor="#8ecae6", alpha=0.22, linewidth=0)
-        if len(candidate.annotation_spans) <= 8:
-            ax.text(
-                0.5 * (float(start_s) + float(end_s)),
-                float(freqs[-1]) - 1.5,
-                label,
-                ha="center",
-                va="top",
-                fontsize=8,
-                color="#0b1f2a",
-                bbox={"facecolor": "#caf0f8", "edgecolor": "none", "alpha": 0.82, "pad": 1.5},
-            )
+
+    for start_s, end_s, _label in arrowable_spans:
+        center = 0.5 * (float(start_s) + float(end_s))
+        _draw_top_arrow(center, "#219ebc", y_top=1.065, y_tip=1.012)
 
     ax.set_xlabel("Time within clip (s)")
     ax.set_ylabel("Frequency (Hz)")
@@ -820,7 +839,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         fontsize=9,
         color="#4a5568",
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9))
+    fig.subplots_adjust(left=0.075, right=0.92, bottom=0.14, top=0.73)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
