@@ -40,6 +40,7 @@ from src.dataset.part2_eval import (
     recommendations_from_errors,
     strict_o3_subset,
     summarize_sweep_rows,
+    window_level_confusion_from_raw_windows,
     write_csv,
 )
 from src.dataset.part2_examples import export_part2_example_gallery
@@ -138,16 +139,28 @@ def _unmatched_prediction_rows(predictions, clip_manifest) -> List[Dict[str, Any
 
 
 def _write_confusion_csv(path: Path, metrics: Dict[str, Any]) -> None:
+    def _fmt_optional(value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return f"{float(value):.6f}"
+        except (TypeError, ValueError):
+            return str(value)
+
     rows = [
         {
             "tp": metrics.get("tp", 0),
             "fp": metrics.get("fp", 0),
             "fn": metrics.get("fn", 0),
-            "tn": metrics.get("tn", 0),
-            "precision": f"{float(metrics.get('precision', 0.0)):.6f}",
-            "recall": f"{float(metrics.get('recall', 0.0)):.6f}",
-            "f1": f"{float(metrics.get('f1', 0.0)):.6f}",
-            "accuracy": f"{float(metrics.get('accuracy', 0.0)):.6f}",
+            "tn": "" if metrics.get("tn", None) is None else metrics.get("tn", 0),
+            "precision": _fmt_optional(metrics.get("precision")),
+            "recall": _fmt_optional(metrics.get("recall")),
+            "f1": _fmt_optional(metrics.get("f1")),
+            "accuracy": _fmt_optional(metrics.get("accuracy")),
+            "tp_label": metrics.get("tp_label", ""),
+            "fp_label": metrics.get("fp_label", ""),
+            "fn_label": metrics.get("fn_label", ""),
+            "tn_label": metrics.get("tn_label", ""),
         }
     ]
     write_csv(path, rows)
@@ -155,7 +168,6 @@ def _write_confusion_csv(path: Path, metrics: Dict[str, Any]) -> None:
 
 def _overall_view_rows(
     *,
-    strict_event_metrics: Dict[str, Any],
     merged_region_metrics: Dict[str, Any],
     raw_window_metrics: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -178,15 +190,6 @@ def _overall_view_rows(
                 "f1": raw_window_metrics.get("f1", 0.0),
             }
         )
-    rows.append(
-        {
-            "view": "strict_event",
-            "view_label": "Strict Single-Call Extraction",
-            "precision": strict_event_metrics.get("precision", 0.0),
-            "recall": strict_event_metrics.get("recall", 0.0),
-            "f1": strict_event_metrics.get("f1", 0.0),
-        }
-    )
     return rows
 
 
@@ -247,6 +250,10 @@ def evaluate_single_postprocessed_output(
     max_examples_per_group: int = 8,
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale_path in list(output_dir.glob("*_clip_confusion.csv")) + list(output_dir.glob("*_clip_confusion.png")):
+        stale_path.unlink(missing_ok=True)
+    (output_dir / "overall_clip_confusion.csv").unlink(missing_ok=True)
+    (output_dir / "overall_clip_confusion.png").unlink(missing_ok=True)
     payload, prediction_segments = load_prediction_segments(postprocessed_json)
 
     fin_annotations = [ann for ann in annotations if ann.species == "Bp"]
@@ -279,6 +286,7 @@ def evaluate_single_postprocessed_output(
 
     merged_region_metrics = coverage_metrics(prediction_segments, fin_annotations, match_collar_s)
     overall_clip = build_clip_confusion(clip_manifest, prediction_segments)
+    merged_region_confusion = None
     bucket_events = bucket_event_metrics(prediction_segments, fin_annotations, match_collar_s)
     bucket_merged_region = bucket_coverage_metrics(prediction_segments, fin_annotations, match_collar_s)
     bucket_clips = {
@@ -288,10 +296,23 @@ def evaluate_single_postprocessed_output(
 
     raw_window_positive_predictions = None
     raw_window_metrics = None
+    raw_window_confusion = None
     bucket_raw_window = None
     if raw_window_predictions is not None and raw_window_threshold is not None:
         raw_window_positive_predictions = filter_predictions_by_score(raw_window_predictions, float(raw_window_threshold))
         raw_window_metrics = coverage_metrics(raw_window_positive_predictions, fin_annotations, match_collar_s)
+        raw_window_confusion = window_level_confusion_from_raw_windows(
+            raw_window_predictions,
+            fin_annotations,
+            match_collar_s,
+            positive_window_ids={pred.prediction_id for pred in raw_window_positive_predictions},
+        )
+        merged_region_confusion = window_level_confusion_from_raw_windows(
+            raw_window_predictions,
+            fin_annotations,
+            match_collar_s,
+            positive_regions=prediction_segments,
+        )
         bucket_raw_window = bucket_coverage_metrics(raw_window_positive_predictions, fin_annotations, match_collar_s)
 
     annotations_by_id = {ann.annotation_id: ann for ann in fin_annotations}
@@ -312,11 +333,22 @@ def evaluate_single_postprocessed_output(
     )
     write_csv(output_dir / "rapid_review.csv", rapid_review_rows(coverage_unmatched_predictions, clip_manifest))
 
-    _write_confusion_csv(output_dir / "overall_clip_confusion.csv", overall_clip)
-    maybe_plot_confusion_matrix(output_dir / "overall_clip_confusion.png", overall_clip, "Part 2 overall clip confusion")
+    if merged_region_confusion is not None:
+        _write_confusion_csv(output_dir / "merged_region_confusion.csv", merged_region_confusion)
+        maybe_plot_confusion_matrix(
+            output_dir / "merged_region_confusion.png",
+            merged_region_confusion,
+            "Merged-region confusion matrix (detector windows)",
+        )
+    if raw_window_confusion is not None:
+        _write_confusion_csv(output_dir / "raw_window_confusion.csv", raw_window_confusion)
+        maybe_plot_confusion_matrix(
+            output_dir / "raw_window_confusion.png",
+            raw_window_confusion,
+            "Raw-window confusion matrix",
+        )
 
     overall_view_rows = _overall_view_rows(
-        strict_event_metrics=overall_event,
         merged_region_metrics=merged_region_metrics,
         raw_window_metrics=raw_window_metrics,
     )
@@ -329,12 +361,6 @@ def evaluate_single_postprocessed_output(
         event_metrics = bucket_events[bucket]
         merged_metrics = bucket_merged_region[bucket]
         raw_metrics = bucket_raw_window[bucket] if bucket_raw_window is not None else None
-        _write_confusion_csv(output_dir / f"{bucket}_clip_confusion.csv", clip_metrics)
-        maybe_plot_confusion_matrix(
-            output_dir / f"{bucket}_clip_confusion.png",
-            clip_metrics,
-            f"Part 2 {bucket} clip confusion",
-        )
         bucket_metric_rows.append(
             {
                 "bucket": bucket,
@@ -367,7 +393,6 @@ def evaluate_single_postprocessed_output(
     if bucket_raw_window is not None:
         maybe_plot_bucket_recall_comparison(
             output_dir / "bucket_recall_comparison.png",
-            strict_bucket_metrics=bucket_events,
             merged_bucket_metrics=bucket_merged_region,
             raw_bucket_metrics=bucket_raw_window,
         )
@@ -443,7 +468,9 @@ def evaluate_single_postprocessed_output(
         "match_collar_s": float(match_collar_s),
         "overall_event_metrics": overall_event,
         "merged_region_metrics": merged_region_metrics,
+        "merged_region_confusion": merged_region_confusion,
         "raw_window_metrics": raw_window_metrics,
+        "raw_window_confusion": raw_window_confusion,
         "overall_clip_metrics": overall_clip,
         "bucket_event_metrics": bucket_events,
         "bucket_merged_region_metrics": bucket_merged_region,
@@ -494,7 +521,9 @@ def evaluate_single_postprocessed_output(
     return {
         "overall_event_metrics": overall_event,
         "merged_region_metrics": merged_region_metrics,
+        "merged_region_confusion": merged_region_confusion,
         "raw_window_metrics": raw_window_metrics,
+        "raw_window_confusion": raw_window_confusion,
         "overall_clip_metrics": overall_clip,
         "bucket_event_metrics": bucket_events,
         "bucket_merged_region_metrics": bucket_merged_region,
@@ -724,9 +753,6 @@ def _log_part2_wandb(
             "best/merged_region_precision": float(merged_metrics.get("precision", 0.0)),
             "best/merged_region_recall": float(merged_metrics.get("recall", 0.0)),
             "best/merged_region_f1": float(merged_metrics.get("f1", 0.0)),
-            "best/clip_precision": float(clip_metrics.get("precision", 0.0)),
-            "best/clip_recall": float(clip_metrics.get("recall", 0.0)),
-            "best/clip_f1": float(clip_metrics.get("f1", 0.0)),
         }
         if raw_metrics:
             summary.update(
@@ -755,7 +781,8 @@ def _log_part2_wandb(
 
             for image_name in (
                 "overall_view_metrics.png",
-                "overall_clip_confusion.png",
+                "merged_region_confusion.png",
+                "raw_window_confusion.png",
                 "bucket_recall_comparison.png",
                 "sweep_precision_recall.png",
             ):
@@ -780,6 +807,10 @@ def _log_part2_wandb(
                 output_dir / "sweep_summary.csv",
                 output_dir / "rapid_review.csv",
                 output_dir / "recommendations.md",
+                output_dir / "merged_region_confusion.csv",
+                output_dir / "merged_region_confusion.png",
+                output_dir / "raw_window_confusion.csv",
+                output_dir / "raw_window_confusion.png",
                 output_dir / "examples" / "README.md",
                 output_dir / "examples" / "examples_index.csv",
             ],
@@ -914,6 +945,17 @@ def main() -> None:
         selected_dirs[label] = op_dir
 
     best_dir = selected_dirs["best_f1"]
+    for stale_name in [
+        "overall_clip_confusion.csv",
+        "overall_clip_confusion.png",
+        "20Hz_clip_confusion.csv",
+        "20Hz_clip_confusion.png",
+        "40Hz_clip_confusion.csv",
+        "40Hz_clip_confusion.png",
+        "other_fin_clip_confusion.csv",
+        "other_fin_clip_confusion.png",
+    ]:
+        (output_dir / stale_name).unlink(missing_ok=True)
     for artifact_name in [
         "report.md",
         "metrics.json",
@@ -921,8 +963,10 @@ def main() -> None:
         "rapid_review.app.json",
         "rapid_review.o3.json",
         "recommendations.md",
-        "overall_clip_confusion.csv",
-        "overall_clip_confusion.png",
+        "merged_region_confusion.csv",
+        "merged_region_confusion.png",
+        "raw_window_confusion.csv",
+        "raw_window_confusion.png",
         "overall_view_metrics.csv",
         "overall_view_metrics.png",
         "bucket_metrics.csv",

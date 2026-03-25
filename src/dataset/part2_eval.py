@@ -443,6 +443,98 @@ def confusion_metrics(tp: int, fp: int, fn: int, tn: int = 0) -> Dict[str, float
     }
 
 
+def coverage_confusion_summary(
+    metrics: Dict[str, Any],
+    *,
+    tp_label: str,
+    fp_label: str,
+    fn_label: str,
+) -> Dict[str, Any]:
+    return {
+        "tp": int(metrics.get("useful_prediction_count", 0)),
+        "fp": int(metrics.get("unmatched_prediction_count", 0)),
+        "fn": int(metrics.get("uncovered_annotation_count", 0)),
+        "tn": None,
+        "precision": float(metrics.get("precision", 0.0)),
+        "recall": float(metrics.get("recall", 0.0)),
+        "f1": float(metrics.get("f1", 0.0)),
+        "accuracy": None,
+        "tp_label": tp_label,
+        "fp_label": fp_label,
+        "fn_label": fn_label,
+        "tn_label": "Not used",
+    }
+
+
+def _interval_overlaps_any(
+    start_s: float,
+    end_s: float,
+    intervals: Sequence[Tuple[float, float]],
+    cursor: int,
+) -> Tuple[bool, int]:
+    while cursor < len(intervals) and intervals[cursor][1] <= start_s:
+        cursor += 1
+    hit = cursor < len(intervals) and intervals[cursor][0] < end_s and intervals[cursor][1] > start_s
+    return hit, cursor
+
+
+def window_level_confusion_from_raw_windows(
+    raw_windows: Sequence[PredictedSegment],
+    annotations: Sequence[AnnotationEvent],
+    collar_s: float,
+    *,
+    positive_window_ids: Optional[set[str]] = None,
+    positive_regions: Optional[Sequence[PredictedSegment]] = None,
+) -> Dict[str, float]:
+    if positive_window_ids is None and positive_regions is None:
+        raise ValueError("Provide either positive_window_ids or positive_regions")
+
+    ann_by_file = _group_annotations_by_file(annotations)
+    positive_region_by_file: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+    if positive_regions is not None:
+        for pred in positive_regions:
+            positive_region_by_file[pred.filename].append((pred.start_time_s, pred.end_time_s))
+
+    raw_by_file = _group_predictions_by_file(raw_windows)
+    tp = fp = fn = tn = 0
+    for filename, windows in raw_by_file.items():
+        sorted_windows = sorted(windows, key=lambda item: (item.start_time_s, item.end_time_s, item.prediction_id))
+        annotation_intervals = _merge_intervals(
+            [
+                (ann.begin_time_s - collar_s, ann.end_time_s + collar_s)
+                for ann in ann_by_file.get(filename, [])
+            ]
+        )
+        positive_intervals = _merge_intervals(positive_region_by_file.get(filename, []))
+        ann_cursor = 0
+        pos_cursor = 0
+        for window in sorted_windows:
+            actual_positive, ann_cursor = _interval_overlaps_any(
+                window.start_time_s,
+                window.end_time_s,
+                annotation_intervals,
+                ann_cursor,
+            )
+            if positive_window_ids is not None:
+                predicted_positive = window.prediction_id in positive_window_ids
+            else:
+                predicted_positive, pos_cursor = _interval_overlaps_any(
+                    window.start_time_s,
+                    window.end_time_s,
+                    positive_intervals,
+                    pos_cursor,
+                )
+            if predicted_positive and actual_positive:
+                tp += 1
+            elif predicted_positive and not actual_positive:
+                fp += 1
+            elif not predicted_positive and actual_positive:
+                fn += 1
+            else:
+                tn += 1
+    return confusion_metrics(tp=tp, fp=fp, fn=fn, tn=tn)
+
+
 def build_clip_confusion(
     clip_manifest: Dict[str, ClipManifestRow],
     predictions: Sequence[PredictedSegment],
@@ -799,6 +891,73 @@ def maybe_plot_confusion_matrix(path: Path | str, matrix: Dict[str, float], titl
     return out_path
 
 
+def maybe_plot_coverage_confusion_matrix(path: Path | str, matrix: Dict[str, Any], title: str) -> Optional[Path]:
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except Exception:
+        return None
+
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _configure_plot_style(plt)
+
+    values = np.array(
+        [
+            [0.0, float(matrix.get("fp", 0))],
+            [float(matrix.get("fn", 0)), float(matrix.get("tp", 0))],
+        ],
+        dtype=float,
+    )
+    masked = np.ma.masked_array(values, mask=[[True, False], [False, False]])
+
+    fig, ax = plt.subplots(figsize=(5.2, 4.8), dpi=220)
+    heatmap = ax.imshow(masked, cmap="Blues")
+    ax.imshow(np.array([[1, 0], [0, 0]], dtype=float), cmap="Greys", alpha=0.10)
+
+    labels = [
+        [str(matrix.get("tn_label", "Not used")), str(matrix.get("fp_label", "False positive"))],
+        [str(matrix.get("fn_label", "False negative")), str(matrix.get("tp_label", "True positive"))],
+    ]
+    vmax = max(1.0, float(np.max(values)))
+    for i in range(2):
+        for j in range(2):
+            if i == 0 and j == 0:
+                ax.text(
+                    j,
+                    i,
+                    labels[i][j],
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    color="#4b5563",
+                    fontweight="semibold",
+                )
+                continue
+            value = values[i][j]
+            text_color = "white" if float(value) > 0.55 * vmax else "#17324d"
+            ax.text(
+                j,
+                i,
+                f"{labels[i][j]}\n{int(value):,}",
+                ha="center",
+                va="center",
+                fontsize=10,
+                fontweight="semibold",
+                color=text_color,
+            )
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title(title, pad=10)
+    note = "Top-left cell is not used because these report views summarize found review units and covered annotated calls, rather than every possible negative second of audio."
+    fig.text(0.5, 0.02, note, ha="center", va="bottom", fontsize=8.5, color="#4b5563", wrap=True)
+    fig.colorbar(heatmap, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout(rect=[0.0, 0.06, 1.0, 1.0])
+    fig.savefig(out_path, dpi=220)
+    plt.close(fig)
+    return out_path
+
+
 def maybe_plot_sweep_curve(path: Path | str, rows: Sequence[Dict[str, Any]], window_step_label: str) -> Optional[Path]:
     try:
         import matplotlib.pyplot as plt
@@ -812,9 +971,8 @@ def maybe_plot_sweep_curve(path: Path | str, rows: Sequence[Dict[str, Any]], win
     panels = [
         ("Merged Clip Coverage", "merged_region_precision", "merged_region_recall", "#2a9d8f"),
         ("Raw Window Detection", "raw_window_precision", "raw_window_recall", "#e76f51"),
-        ("Strict Single-Call Extraction", "precision", "recall", "#0f4c81"),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(13.8, 4.2), dpi=220, sharex=False, sharey=False)
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.2), dpi=220, sharex=False, sharey=False)
     if not isinstance(axes, (list, tuple)):
         axes = list(axes)
     for ax, (title, p_key, r_key, color) in zip(axes, panels):
@@ -866,26 +1024,31 @@ def maybe_plot_view_summary(path: Path | str, rows: Sequence[Dict[str, Any]]) ->
     out_path.parent.mkdir(parents=True, exist_ok=True)
     _configure_plot_style(plt)
 
-    labels = [row.get("view_label", row.get("view", "")) for row in rows]
-    precisions = [_safe_float(row.get("precision")) for row in rows]
-    recalls = [_safe_float(row.get("recall")) for row in rows]
-    f1s = [_safe_float(row.get("f1")) for row in rows]
+    public_rows = [
+        row
+        for row in rows
+        if str(row.get("view")) in {"merged_region_coverage", "raw_window_coverage"}
+    ]
+    labels = [row.get("view_label", row.get("view", "")) for row in public_rows]
+    precisions = [_safe_float(row.get("precision")) for row in public_rows]
+    recalls = [_safe_float(row.get("recall")) for row in public_rows]
+    f1s = [_safe_float(row.get("f1")) for row in public_rows]
     x = np.arange(len(labels))
     width = 0.24
 
-    fig, ax = plt.subplots(figsize=(8.2, 4.6), dpi=220)
+    fig, ax = plt.subplots(figsize=(8.2, 4.8), dpi=220)
     ax.bar(x - width, precisions, width=width, label="Precision", color="#0f4c81")
     ax.bar(x, recalls, width=width, label="Recall", color="#2a9d8f")
     ax.bar(x + width, f1s, width=width, label="F1", color="#e76f51")
     ax.set_xticks(x, labels=labels)
     ax.set_ylim(0.0, 1.02)
     ax.set_ylabel("Score")
-    ax.set_title("Part 2 Evaluation Views", pad=10)
-    ax.legend(frameon=False, ncol=3, loc="upper center")
+    fig.suptitle("Part 2 Evaluation Views", y=0.98, fontsize=15, fontweight="semibold")
+    ax.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.00))
     ax.grid(True, axis="y", alpha=0.25)
     for container in ax.containers:
         ax.bar_label(container, fmt="%.2f", padding=3, fontsize=9)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.90])
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
     return out_path
@@ -894,7 +1057,6 @@ def maybe_plot_view_summary(path: Path | str, rows: Sequence[Dict[str, Any]]) ->
 def maybe_plot_bucket_recall_comparison(
     path: Path | str,
     *,
-    strict_bucket_metrics: Dict[str, Dict[str, float]],
     merged_bucket_metrics: Dict[str, Dict[str, float]],
     raw_bucket_metrics: Dict[str, Dict[str, float]],
 ) -> Optional[Path]:
@@ -909,25 +1071,23 @@ def maybe_plot_bucket_recall_comparison(
     _configure_plot_style(plt)
 
     x = np.arange(len(PART2_BUCKETS))
-    width = 0.24
-    strict_vals = [float(strict_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
+    width = 0.34
     merged_vals = [float(merged_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
     raw_vals = [float(raw_bucket_metrics[bucket]["recall"]) for bucket in PART2_BUCKETS]
 
-    fig, ax = plt.subplots(figsize=(8.4, 4.6), dpi=220)
-    ax.bar(x - width, merged_vals, width=width, label="Merged clip coverage", color="#2a9d8f")
-    ax.bar(x, raw_vals, width=width, label="Raw-window call coverage", color="#e76f51")
-    ax.bar(x + width, strict_vals, width=width, label="Strict event recall", color="#0f4c81")
+    fig, ax = plt.subplots(figsize=(8.4, 4.8), dpi=220)
+    ax.bar(x - width / 2.0, merged_vals, width=width, label="Merged clip coverage", color="#2a9d8f")
+    ax.bar(x + width / 2.0, raw_vals, width=width, label="Raw-window call coverage", color="#e76f51")
     ax.set_xticks(x, labels=PART2_BUCKETS)
     ax.set_ylim(0.0, 1.02)
     ax.set_ylabel("Recall")
     ax.set_xlabel("Fin-whale call subtype")
-    ax.set_title("Subtype Recall by Evaluation View", pad=10)
-    ax.legend(frameon=False, loc="upper left")
+    fig.suptitle("Subtype Recall by Evaluation View", y=0.98, fontsize=15, fontweight="semibold")
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.00), ncol=2)
     ax.grid(True, axis="y", alpha=0.25)
     for container in ax.containers:
         ax.bar_label(container, fmt="%.2f", padding=3, fontsize=8)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.90])
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
     return out_path
@@ -955,19 +1115,16 @@ def evaluation_report_lines(
         [
             "## Part 2 Summary",
             "",
-            "This report shows three complementary views of performance:",
+            "This report shows the two evaluation views used in the main report:",
             "",
             "- `Merged Clip Coverage` is the primary project metric: any annotated fin-whale calls that fall inside a merged predicted region are counted as detected.",
             "- `Raw Window Detection` reports whether the underlying CNN fired on 10-second detector views before event merging.",
-            "- `Strict Single-Call Extraction` remains a supplementary diagnostic for one-to-one call isolation.",
             "",
             f"- Merged-region precision: `{merged_region_metrics['precision']:.4f}`",
             f"- Merged-region call coverage recall: `{merged_region_metrics['recall']:.4f}`",
             f"- Merged-region coverage F1: `{merged_region_metrics['f1']:.4f}`",
             f"- Merged-region review burden: `{int(merged_region_metrics['prediction_count'])}` regions, `{merged_region_metrics['total_review_minutes']:.1f}` review minutes",
             f"- Rapid-review queue size: `{rapid_review_count}`",
-            f"- Clip-level accuracy: `{overall_clip_metrics['accuracy']:.4f}`",
-            f"- Clip-level counts: `TP={overall_clip_metrics['tp']}`, `FP={overall_clip_metrics['fp']}`, `FN={overall_clip_metrics['fn']}`, `TN={overall_clip_metrics['tn']}`",
             "",
         ]
     )
@@ -981,16 +1138,6 @@ def evaluation_report_lines(
                 "",
             ]
         )
-    lines.extend(
-        [
-            f"- Strict event precision: `{strict_event_metrics['precision']:.4f}`",
-            f"- Strict event recall: `{strict_event_metrics['recall']:.4f}`",
-            f"- Strict event F1: `{strict_event_metrics['f1']:.4f}`",
-            f"- Strict event counts: `TP={strict_event_metrics['tp']}`, `FP={strict_event_metrics['fp']}`, `FN={strict_event_metrics['fn']}`",
-            "",
-        ]
-    )
-
     if baseline_summary:
         lines.extend(["## Historical Baseline", ""])
         for key, value in baseline_summary.items():
@@ -1002,52 +1149,52 @@ def evaluation_report_lines(
             [
                 "## Sweep Summary",
                 "",
-                "| window_step | low | high | min_members | max_gap | strict precision | strict recall | strict f1 | merged recall | raw-window recall |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+                "| window_step | low | high | min_members | max_gap | merged precision | merged recall | merged F1 | raw-window precision | raw-window recall | raw-window F1 |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for row in sweep_summary_rows:
             lines.append(
-                "| {window_step} | {low_threshold} | {high_threshold} | {min_members} | {max_gap_seconds} | {precision:.4f} | {recall:.4f} | {f1:.4f} | {merged_region_recall:.4f} | {raw_window_recall} |".format(
+                "| {window_step} | {low_threshold} | {high_threshold} | {min_members} | {max_gap_seconds} | {merged_precision:.4f} | {merged_recall:.4f} | {merged_f1:.4f} | {raw_precision} | {raw_recall} | {raw_f1} |".format(
                     window_step=row.get("window_step", ""),
                     low_threshold=row.get("low_threshold", ""),
                     high_threshold=row.get("high_threshold", ""),
                     min_members=row.get("min_members", ""),
                     max_gap_seconds=row.get("max_gap_seconds", ""),
-                    precision=_safe_float(row.get("precision")),
-                    recall=_safe_float(row.get("recall")),
-                    f1=_safe_float(row.get("f1")),
-                    merged_region_recall=_safe_float(row.get("merged_region_recall")),
-                    raw_window_recall=f"{_safe_float(row.get('raw_window_recall')):.4f}" if row.get("raw_window_recall", "") != "" else "n/a",
+                    merged_precision=_safe_float(row.get("merged_region_precision")),
+                    merged_recall=_safe_float(row.get("merged_region_recall")),
+                    merged_f1=_safe_float(row.get("merged_region_f1")),
+                    raw_precision=f"{_safe_float(row.get('raw_window_precision')):.4f}" if row.get("raw_window_precision", "") != "" else "n/a",
+                    raw_recall=f"{_safe_float(row.get('raw_window_recall')):.4f}" if row.get("raw_window_recall", "") != "" else "n/a",
+                    raw_f1=f"{_safe_float(row.get('raw_window_f1')):.4f}" if row.get("raw_window_f1", "") != "" else "n/a",
                 )
             )
         lines.append("")
 
     lines.extend(["## Fin Subtype Metrics", ""])
-    lines.append("| bucket | strict recall | merged-region coverage recall | raw-window coverage recall | clip recall | annotations |")
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    lines.append("| bucket | merged-region coverage recall | raw-window coverage recall | annotations |")
+    lines.append("| --- | --- | --- | --- |")
     for bucket in PART2_BUCKETS:
-        event_metrics = bucket_strict_event_metrics_map[bucket]
         merged_metrics = bucket_merged_region_metrics_map[bucket]
         raw_metrics = bucket_raw_window_metrics_map[bucket] if bucket_raw_window_metrics_map is not None else None
-        clip_metrics = bucket_clip_metrics_map[bucket]
         lines.append(
-            "| {bucket} | {strict_recall:.4f} | {merged_recall:.4f} | {raw_recall} | {clip_recall:.4f} | {annotation_count} |".format(
+            "| {bucket} | {merged_recall:.4f} | {raw_recall} | {annotation_count} |".format(
                 bucket=bucket,
-                strict_recall=event_metrics["recall"],
                 merged_recall=merged_metrics["recall"],
                 raw_recall=f"{raw_metrics['recall']:.4f}" if raw_metrics is not None else "n/a",
-                clip_recall=clip_metrics["recall"],
-                annotation_count=int(event_metrics.get("annotation_count", 0)),
+                annotation_count=int(merged_metrics.get("annotation_count", 0)),
             )
         )
     lines.append("")
 
     if hardest_context_rows:
+        filtered_hardest_rows = [
+            row for row in hardest_context_rows if str(row.get("view", "")) in {MERGED_REGION_VIEW, RAW_WINDOW_VIEW}
+        ]
         lines.extend(["## Hardest Contexts", ""])
         lines.append("| view | bucket | context | covered / total | recall |")
         lines.append("| --- | --- | --- | --- | --- |")
-        for row in hardest_context_rows:
+        for row in filtered_hardest_rows:
             lines.append(
                 "| {view} | {bucket} | {context_tag} | {covered_annotation_count} / {annotation_count} | {recall:.4f} |".format(
                     view=VIEW_LABELS.get(str(row.get("view", "")), str(row.get("view", ""))),
