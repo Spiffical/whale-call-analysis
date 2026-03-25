@@ -8,7 +8,9 @@ from typing import Optional, Tuple, List, Iterator
 # (legacy comma-separated form is also supported).
 FILENAME_RE_COMMA = re.compile(r"^(?P<id>[^,]+),(?P<start>[\d\.]+)s,(?P<end>[\d\.]+)s(?:,.*)?$")
 FILENAME_RE_UNDERSCORE = re.compile(r"^(?P<id>.+?)_(?P<start>[\d\.]+)s_(?P<end>[\d\.]+)s(?:_.*)?$")
-NEGATIVE_RE = re.compile(r"^(?P<id>.+?\.[^.]+)_neg_(?P<idx>\d+)(?:_.*)?$")
+NEGATIVE_RE = re.compile(
+    r"^(?P<id>.+?\.[^.]+)_neg(?:_(?P<tag>[A-Za-z0-9-]+))?_(?P<idx>\d+)(?:_.*)?$"
+)
 
 
 def parse_mat_filename(filename: str) -> Tuple[str, Optional[float], Optional[float]]:

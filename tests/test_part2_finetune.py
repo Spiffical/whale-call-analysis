@@ -34,6 +34,12 @@ class TestPart2FineTunePlanning(unittest.TestCase):
         self.assertIsNone(start)
         self.assertIsNone(dur)
 
+    def test_parse_negative_mat_filename_supports_pure_nonfin_suffix(self):
+        src, start, dur = parse_mat_filename("ICLISTENHF6016_20250330T050000.000Z.flac_neg_purenonfin_3.mat")
+        self.assertEqual(src, "ICLISTENHF6016_20250330T050000.000Z.flac")
+        self.assertIsNone(start)
+        self.assertIsNone(dur)
+
     def test_assign_time_pools_uses_fin_positive_boundaries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
