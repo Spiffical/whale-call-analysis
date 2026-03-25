@@ -729,6 +729,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
+        from textwrap import fill
     except Exception:
         return None
 
@@ -786,13 +787,40 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
 
     ax.set_xlabel("Time within clip (s)")
     ax.set_ylabel("Frequency (Hz)")
-    ax.set_title(candidate.panel_title, loc="left", pad=10)
-    ax.set_title(candidate.detail_text, loc="right", fontsize=8, color="#4a5568", pad=10)
-    ax.set_xlim(float(times[0]), float(times[-1]))
+    ax.grid(False)
+    if len(times) > 1 and float(times[-1]) > float(times[0]):
+        ax.set_xlim(float(times[0]), float(times[-1]))
+    else:
+        center = float(times[0])
+        ax.set_xlim(center - 0.5, center + 0.5)
     ax.set_ylim(float(freqs[0]), float(freqs[-1]))
     cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
     cbar.set_label("Relative power (dB)", rotation=270, labelpad=14)
-    fig.tight_layout()
+    cbar.ax.grid(False)
+
+    subtitle_bits = [Path(candidate.filename).name]
+    if candidate.detail_text:
+        subtitle_bits.append(candidate.detail_text)
+    subtitle_text = fill(" | ".join(bit for bit in subtitle_bits if bit), width=max(88, int(fig_width * 12)))
+    fig.suptitle(
+        candidate.panel_title,
+        x=0.01,
+        y=0.985,
+        ha="left",
+        va="top",
+        fontsize=15,
+        fontweight="semibold",
+    )
+    fig.text(
+        0.01,
+        0.94,
+        subtitle_text,
+        ha="left",
+        va="top",
+        fontsize=9,
+        color="#4a5568",
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
