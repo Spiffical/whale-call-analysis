@@ -1144,7 +1144,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     fig.suptitle(
         candidate.panel_title,
         x=0.01,
-        y=0.985,
+        y=0.965,
         ha="left",
         va="top",
         fontsize=15,
@@ -1152,14 +1152,14 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     )
     fig.text(
         0.01,
-        0.94,
+        0.922,
         subtitle_text,
         ha="left",
         va="top",
         fontsize=9,
         color="#4a5568",
     )
-    fig.subplots_adjust(left=0.085, right=0.94, bottom=0.12, top=0.73)
+    fig.subplots_adjust(left=0.085, right=0.94, bottom=0.12, top=0.835)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
