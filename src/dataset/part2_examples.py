@@ -899,8 +899,26 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         if valid.any():
             score_mean[valid] = accum[valid] / counts[valid]
 
-    ax_score.plot(times, score_mean, color="#e76f51", linewidth=1.8)
-    ax_score.fill_between(times, 0.0, score_mean, where=~np.isnan(score_mean), color="#e76f51", alpha=0.18)
+    is_raw_window_group = candidate.group.startswith("raw_window")
+    if is_raw_window_group:
+        ax_score.plot(times, score_mean, color="#94a3b8", linewidth=1.2, alpha=0.95)
+        ax_score.fill_between(times, 0.0, score_mean, where=~np.isnan(score_mean), color="#cbd5e1", alpha=0.22)
+        if (
+            candidate.score is not None
+            and candidate.prediction_start_s is not None
+            and candidate.prediction_end_s is not None
+        ):
+            ax_score.hlines(
+                float(candidate.score),
+                float(candidate.prediction_start_s),
+                float(candidate.prediction_end_s),
+                colors="#e76f51",
+                linewidth=2.6,
+                zorder=3,
+            )
+    else:
+        ax_score.plot(times, score_mean, color="#e76f51", linewidth=1.8)
+        ax_score.fill_between(times, 0.0, score_mean, where=~np.isnan(score_mean), color="#e76f51", alpha=0.18)
     if candidate.raw_positive_threshold is not None:
         ax_score.axhline(
             float(candidate.raw_positive_threshold),
@@ -909,11 +927,12 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
             linewidth=1.0,
             alpha=0.85,
         )
-    if candidate.group.startswith("raw_window") and candidate.score is not None:
+    if is_raw_window_group and candidate.score is not None:
         note_bits = [f"focal={float(candidate.score):.3f}"]
         if candidate.raw_positive_threshold is not None:
             comparator = "<" if float(candidate.score) < float(candidate.raw_positive_threshold) else ">="
             note_bits.append(f"{comparator} thr={float(candidate.raw_positive_threshold):.3f}")
+        note_bits.append("gray=overlap avg")
         ax_score.text(
             0.01,
             0.93,
@@ -927,7 +946,7 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
         )
     ax_score.set_ylim(0.0, 1.02)
     ax_score.set_yticks([0.0, 0.5, 1.0])
-    ax_score.set_ylabel("Avg score")
+    ax_score.set_ylabel("Window score" if is_raw_window_group else "Avg score")
     ax_score.set_xlabel("Time within clip (s)")
     ax_score.grid(False)
     ax_score.spines["top"].set_visible(False)
