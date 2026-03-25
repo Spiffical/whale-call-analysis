@@ -909,9 +909,25 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
             linewidth=1.0,
             alpha=0.85,
         )
+    if candidate.group.startswith("raw_window") and candidate.score is not None:
+        note_bits = [f"focal={float(candidate.score):.3f}"]
+        if candidate.raw_positive_threshold is not None:
+            comparator = "<" if float(candidate.score) < float(candidate.raw_positive_threshold) else ">="
+            note_bits.append(f"{comparator} thr={float(candidate.raw_positive_threshold):.3f}")
+        ax_score.text(
+            0.01,
+            0.93,
+            " | ".join(note_bits),
+            transform=ax_score.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            color="#334155",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.72, "pad": 1.5},
+        )
     ax_score.set_ylim(0.0, 1.02)
     ax_score.set_yticks([0.0, 0.5, 1.0])
-    ax_score.set_ylabel("Score")
+    ax_score.set_ylabel("Avg score")
     ax_score.set_xlabel("Time within clip (s)")
     ax_score.grid(False)
     ax_score.spines["top"].set_visible(False)
