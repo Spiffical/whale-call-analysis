@@ -159,6 +159,21 @@ def _annotations_for_prediction(
     return out
 
 
+def _annotations_in_display_window(
+    *,
+    filename: str,
+    display_start_s: float,
+    display_end_s: float,
+    annotations_by_file: Mapping[str, Sequence[AnnotationEvent]],
+) -> List[AnnotationEvent]:
+    out: List[AnnotationEvent] = []
+    for ann in annotations_by_file.get(filename, []):
+        if float(ann.end_time_s) < float(display_start_s) or float(ann.begin_time_s) > float(display_end_s):
+            continue
+        out.append(ann)
+    return out
+
+
 def _category_labels(
     *,
     bucket_labels: Iterable[str],
@@ -457,17 +472,25 @@ def _build_example_candidates(
         if pred.prediction_id not in merged_tp_ids:
             continue
         matched_annotations = _annotations_for_prediction(pred, annotations_by_file, collar_s)
-        clip_row = clip_manifest.get(pred.filename)
-        bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in matched_annotations}))
-        context_tags = _annotation_context_tags(matched_annotations)
-        species_codes = _annotation_species_codes(matched_annotations)
+        display_start_s = max(pred.start_time_s - 2.0, -12.0)
+        display_end_s = pred.end_time_s + 2.0
+        local_annotations = _annotations_in_display_window(
+            filename=pred.filename,
+            display_start_s=display_start_s,
+            display_end_s=display_end_s,
+            annotations_by_file=annotations_by_file,
+        )
+        bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in local_annotations}))
+        context_tags = _annotation_context_tags(local_annotations)
+        species_codes = _annotation_species_codes(local_annotations)
+        annotation_spans = _annotation_spans_for_rows(local_annotations)
         out["merged_tp"].append(
             ExampleCandidate(
                 group="merged_tp",
                 example_id=pred.prediction_id,
                 filename=pred.filename,
-                display_start_s=max(pred.start_time_s - 2.0, -12.0),
-                display_end_s=pred.end_time_s + 2.0,
+                display_start_s=display_start_s,
+                display_end_s=display_end_s,
                 prediction_start_s=pred.start_time_s,
                 prediction_end_s=pred.end_time_s,
                 score=pred.score,
@@ -481,11 +504,11 @@ def _build_example_candidates(
                 bucket_labels=bucket_labels,
                 context_tags=context_tags,
                 species_codes=species_codes,
-                annotation_spans=_annotation_spans_for_rows(matched_annotations),
+                annotation_spans=annotation_spans,
                 raw_prediction_windows=_raw_windows_for_display(
                     pred.filename,
-                    max(pred.start_time_s - 2.0, -12.0),
-                    pred.end_time_s + 2.0,
+                    display_start_s,
+                    display_end_s,
                     raw_windows_lookup,
                 ),
                 raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
@@ -502,12 +525,12 @@ def _build_example_candidates(
                 detail_text=_prediction_detail_text(
                     score=pred.score,
                     duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
-                    annotation_count=len(matched_annotations),
+                    annotation_count=len(local_annotations),
                     species_codes=species_codes,
                     context_tags=context_tags,
                 ),
                 sort_key=(
-                    -len(matched_annotations),
+                    -len(local_annotations),
                     -float(pred.score),
                     max(0.0, pred.end_time_s - pred.start_time_s),
                     pred.filename,
@@ -573,16 +596,25 @@ def _build_example_candidates(
         )
 
     for ann in merged_missed_annotations:
-        context_tags = ann.context_tags or (UNKNOWN_CONTEXT,)
-        species_codes = (ann.species,) if ann.species else ()
         display_pad = max(5.0, min(12.0, 0.5 * max(6.0, ann.end_time_s - ann.begin_time_s)))
+        display_start_s = max(ann.begin_time_s - display_pad, -12.0)
+        display_end_s = ann.end_time_s + display_pad
+        local_annotations = _annotations_in_display_window(
+            filename=ann.filename,
+            display_start_s=display_start_s,
+            display_end_s=display_end_s,
+            annotations_by_file=annotations_by_file,
+        )
+        context_tags = _annotation_context_tags(local_annotations)
+        species_codes = _annotation_species_codes(local_annotations)
+        annotation_spans = _annotation_spans_for_rows(local_annotations)
         out["merged_fn"].append(
             ExampleCandidate(
                 group="merged_fn",
                 example_id=ann.annotation_id,
                 filename=ann.filename,
-                display_start_s=max(ann.begin_time_s - display_pad, -12.0),
-                display_end_s=ann.end_time_s + display_pad,
+                display_start_s=display_start_s,
+                display_end_s=display_end_s,
                 prediction_start_s=None,
                 prediction_end_s=None,
                 score=None,
@@ -596,11 +628,11 @@ def _build_example_candidates(
                 bucket_labels=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
                 context_tags=context_tags,
                 species_codes=species_codes,
-                annotation_spans=((ann.begin_time_s, ann.end_time_s, ann.call_type_bucket or FIN_BUCKET_OTHER),),
+                annotation_spans=annotation_spans,
                 raw_prediction_windows=_raw_windows_for_display(
                     ann.filename,
-                    max(ann.begin_time_s - display_pad, -12.0),
-                    ann.end_time_s + display_pad,
+                    display_start_s,
+                    display_end_s,
                     raw_windows_lookup,
                 ),
                 raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
@@ -611,13 +643,13 @@ def _build_example_candidates(
                 ),
                 panel_title=_prediction_panel_title(
                     base_label="Merged FN",
-                    buckets=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
+                    buckets=tuple(sorted({item.call_type_bucket or FIN_BUCKET_OTHER for item in local_annotations})),
                     context_tags=context_tags,
                 ),
                 detail_text=_prediction_detail_text(
                     score=None,
                     duration_s=max(0.0, ann.end_time_s - ann.begin_time_s),
-                    annotation_count=1,
+                    annotation_count=len(local_annotations),
                     species_codes=species_codes,
                     context_tags=context_tags,
                 ),
@@ -648,41 +680,46 @@ def _build_example_candidates(
             continue
         matched_annotations = _annotations_for_prediction(pred, annotations_by_file, collar_s)
         local_all_annotations = _annotations_for_prediction(pred, all_annotations_by_file, collar_s)
-        clip_row = clip_manifest.get(pred.filename)
-        bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in matched_annotations}))
-        context_tags = _annotation_context_tags(matched_annotations) if matched_annotations else ()
-        species_codes = _annotation_species_codes(matched_annotations) if matched_annotations else ()
         target_group = "raw_window_tp" if pred.prediction_id in raw_tp_ids else "raw_window_fp"
+        annotation_spans = _annotation_spans_for_rows(matched_annotations)
+        display_start_s, display_end_s = _display_window_with_padding(
+            start_s=pred.start_time_s,
+            end_s=pred.end_time_s,
+            annotation_spans=annotation_spans,
+        )
+        local_target_annotations = _annotations_in_display_window(
+            filename=pred.filename,
+            display_start_s=display_start_s,
+            display_end_s=display_end_s,
+            annotations_by_file=annotations_by_file,
+        )
+        bucket_labels = tuple(sorted({ann.call_type_bucket or FIN_BUCKET_OTHER for ann in local_target_annotations}))
+        context_tags = _annotation_context_tags(local_target_annotations) if local_target_annotations else ()
+        species_codes = _annotation_species_codes(local_target_annotations) if local_target_annotations else ()
         panel_title = (
             _prediction_panel_title(
                 base_label="Raw TP" if target_group == "raw_window_tp" else "Raw FP",
                 buckets=bucket_labels,
                 context_tags=context_tags,
             )
-            if matched_annotations
+            if local_target_annotations
             else ("Raw FP | no local annotations" if not local_all_annotations else "Raw FP | non-target overlap")
         )
         detail_text = (
             _prediction_detail_text(
                 score=pred.score,
                 duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
-                annotation_count=len(matched_annotations),
+                annotation_count=len(local_target_annotations),
                 species_codes=species_codes,
                 context_tags=context_tags,
             )
-            if matched_annotations
+            if local_target_annotations
             else _raw_window_detail_text(
                 score=pred.score,
                 duration_s=max(0.0, pred.end_time_s - pred.start_time_s),
                 local_target_count=0,
                 local_any_count=len(local_all_annotations),
             )
-        )
-        annotation_spans = _annotation_spans_for_rows(matched_annotations)
-        display_start_s, display_end_s = _display_window_with_padding(
-            start_s=pred.start_time_s,
-            end_s=pred.end_time_s,
-            annotation_spans=annotation_spans,
         )
         out[target_group].append(
             ExampleCandidate(
@@ -704,7 +741,7 @@ def _build_example_candidates(
                 bucket_labels=bucket_labels,
                 context_tags=context_tags,
                 species_codes=species_codes,
-                annotation_spans=annotation_spans,
+                annotation_spans=_annotation_spans_for_rows(local_target_annotations),
                 raw_prediction_windows=_raw_windows_for_display(
                     pred.filename,
                     display_start_s,
@@ -720,7 +757,7 @@ def _build_example_candidates(
                 panel_title=panel_title,
                 detail_text=detail_text,
                 sort_key=(
-                    -len(matched_annotations),
+                    -len(local_target_annotations),
                     -float(pred.score),
                     pred.filename,
                     pred.start_time_s,
@@ -729,8 +766,6 @@ def _build_example_candidates(
         )
 
     for ann in raw_window_missed_annotations:
-        context_tags = ann.context_tags or (UNKNOWN_CONTEXT,)
-        species_codes = (ann.species,) if ann.species else ()
         mid = 0.5 * (ann.begin_time_s + ann.end_time_s)
         half = 0.5 * raw_window_duration_s
         annotation_spans = ((ann.begin_time_s, ann.end_time_s, ann.call_type_bucket or FIN_BUCKET_OTHER),)
@@ -739,6 +774,15 @@ def _build_example_candidates(
             end_s=mid + half,
             annotation_spans=annotation_spans,
         )
+        local_annotations = _annotations_in_display_window(
+            filename=ann.filename,
+            display_start_s=display_start_s,
+            display_end_s=display_end_s,
+            annotations_by_file=annotations_by_file,
+        )
+        context_tags = _annotation_context_tags(local_annotations)
+        species_codes = _annotation_species_codes(local_annotations)
+        local_bucket_labels = tuple(sorted({item.call_type_bucket or FIN_BUCKET_OTHER for item in local_annotations}))
         out["raw_window_fn"].append(
             ExampleCandidate(
                 group="raw_window_fn",
@@ -756,10 +800,10 @@ def _build_example_candidates(
                     mat_dir=mat_dir,
                     json_base_dir=raw_window_json_dir,
                 ),
-                bucket_labels=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
+                bucket_labels=local_bucket_labels,
                 context_tags=context_tags,
                 species_codes=species_codes,
-                annotation_spans=annotation_spans,
+                annotation_spans=_annotation_spans_for_rows(local_annotations),
                 raw_prediction_windows=_raw_windows_for_display(
                     ann.filename,
                     display_start_s,
@@ -768,19 +812,19 @@ def _build_example_candidates(
                 ),
                 raw_positive_threshold=float(raw_window_threshold) if raw_window_threshold is not None else None,
                 category_labels=_category_labels(
-                    bucket_labels=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
+                    bucket_labels=local_bucket_labels,
                     context_tags=context_tags,
                     species_codes=species_codes,
                 ),
                 panel_title=_prediction_panel_title(
                     base_label="Raw FN",
-                    buckets=(ann.call_type_bucket or FIN_BUCKET_OTHER,),
+                    buckets=local_bucket_labels,
                     context_tags=context_tags,
                 ),
                 detail_text=_prediction_detail_text(
                     score=None,
                     duration_s=raw_window_duration_s,
-                    annotation_count=1,
+                    annotation_count=len(local_annotations),
                     species_codes=species_codes,
                     context_tags=context_tags,
                 ),
@@ -1048,16 +1092,10 @@ def _render_candidate_png(candidate: ExampleCandidate, out_path: Path) -> Option
     if is_raw_window_group:
         ax_score.plot(display_times, score_mean, color="#94a3b8", linewidth=1.2, alpha=0.95)
         ax_score.fill_between(display_times, 0.0, score_mean, where=~np.isnan(score_mean), color="#cbd5e1", alpha=0.22)
-        if (
-            candidate.score is not None
-            and candidate.prediction_start_s is not None
-            and candidate.prediction_end_s is not None
-        ):
-            ax_score.hlines(
+        if candidate.score is not None:
+            ax_score.axhline(
                 float(candidate.score),
-                float(candidate.prediction_start_s),
-                float(candidate.prediction_end_s),
-                colors="#e76f51",
+                color="#e76f51",
                 linewidth=2.6,
                 zorder=3,
             )
@@ -1164,14 +1202,12 @@ def _build_contact_sheet(
         image = plt.imread(row["image_path"])
         ax.imshow(image)
         ax.axis("off")
-        ax.set_title(row.get("short_meta", row.get("group", "")), fontsize=9, loc="left")
-        ax.set_title(Path(str(row.get("filename", ""))).name, fontsize=8, loc="right", color="#4a5568")
 
     for ax in axes_flat[len(rows):]:
         ax.axis("off")
 
-    fig.suptitle(title, y=0.995)
-    fig.tight_layout()
+    fig.suptitle(title, y=0.985, fontsize=17)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.965], pad=0.4, w_pad=0.6, h_pad=0.8)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
