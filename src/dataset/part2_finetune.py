@@ -97,19 +97,35 @@ def assign_time_pools(
     train_ratio: float = 0.7,
     val_ratio: float = 0.1,
 ) -> Dict[str, List[FineTuneClipRecord]]:
-    fin_positive = [record for record in records if record.is_fin_positive]
-    boundaries = compute_time_boundaries(fin_positive, train_ratio=train_ratio, val_ratio=val_ratio)
-    train_end = boundaries["train_end"]
-    val_end = boundaries["val_end"]
+    def _assign_subset(subset: Sequence[FineTuneClipRecord]) -> Dict[str, List[FineTuneClipRecord]]:
+        boundaries = compute_time_boundaries(subset, train_ratio=train_ratio, val_ratio=val_ratio)
+        train_end = boundaries["train_end"]
+        val_end = boundaries["val_end"]
+        subset_split: Dict[str, List[FineTuneClipRecord]] = {"train": [], "val": [], "test": []}
+        for record in sorted(subset, key=lambda item: (item.timestamp, item.filename)):
+            if train_end is None or record.timestamp <= train_end:
+                subset_split["train"].append(record)
+            elif val_end is None or record.timestamp <= val_end:
+                subset_split["val"].append(record)
+            else:
+                subset_split["test"].append(record)
+        return subset_split
 
-    split_map: Dict[str, List[FineTuneClipRecord]] = {"train": [], "val": [], "test": []}
-    for record in sorted(records, key=lambda item: (item.timestamp, item.filename)):
-        if train_end is None or record.timestamp <= train_end:
-            split_map["train"].append(record)
-        elif val_end is None or record.timestamp <= val_end:
-            split_map["val"].append(record)
-        else:
-            split_map["test"].append(record)
+    fin_positive = [record for record in records if record.is_fin_positive]
+    nonfin_only = [
+        record for record in records if record.is_annotated_non_fin and not record.is_fin_positive
+    ]
+    fin_split = _assign_subset(fin_positive)
+    nonfin_split = _assign_subset(nonfin_only)
+
+    split_map: Dict[str, List[FineTuneClipRecord]] = {}
+    for split_name in ("train", "val", "test"):
+        split_map[f"{split_name}_fin"] = list(fin_split[split_name])
+        split_map[f"{split_name}_nonfin"] = list(nonfin_split[split_name])
+        split_map[split_name] = sorted(
+            fin_split[split_name] + nonfin_split[split_name],
+            key=lambda item: (item.timestamp, item.filename),
+        )
     return split_map
 
 
@@ -249,14 +265,10 @@ def build_learning_curve_plan(
     base_seed: int = 1337,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, List[FineTuneClipRecord]]]:
     split_map = assign_time_pools(records, train_ratio=train_ratio, val_ratio=val_ratio)
-    train_pool = [record for record in split_map["train"] if record.is_fin_positive]
-    train_nonfin_pool = [
-        record
-        for record in split_map["train"]
-        if record.is_annotated_non_fin and not record.is_fin_positive
-    ]
-    val_pool = [record for record in split_map["val"] if record.is_fin_positive or record.is_annotated_non_fin]
-    test_pool = [record for record in split_map["test"] if record.is_fin_positive or record.is_annotated_non_fin]
+    train_pool = list(split_map["train_fin"])
+    train_nonfin_pool = list(split_map["train_nonfin"])
+    val_pool = list(split_map["val"])
+    test_pool = list(split_map["test"])
 
     rows: List[Dict[str, Any]] = []
     for sampling_mode in sampling_modes:
@@ -288,7 +300,11 @@ def build_learning_curve_plan(
                         "actual_budget_calls": sum(record.fin_call_count for record in selected_train),
                         "train_fin_clip_count": len(selected_train),
                         "train_nonfin_clip_count": len(selected_train_nonfin),
+                        "val_fin_clip_count": len(split_map["val_fin"]),
+                        "val_nonfin_clip_count": len(split_map["val_nonfin"]),
                         "val_clip_count": len(val_pool),
+                        "test_fin_clip_count": len(split_map["test_fin"]),
+                        "test_nonfin_clip_count": len(split_map["test_nonfin"]),
                         "test_clip_count": len(test_pool),
                         "train_last_timestamp": max((record.timestamp for record in selected_train), default=None).isoformat() if selected_train else "",
                         "train_fin_clip_names": "|".join(sorted(selected_train_clip_names)),

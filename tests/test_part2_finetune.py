@@ -89,15 +89,16 @@ class TestPart2FineTunePlanning(unittest.TestCase):
                 "ICLISTENHF6016_20250103T000000.000Z.flac",
             ])
             self.assertEqual(
+                [r.filename for r in split_map["train_nonfin"]],
+                ["ICLISTENHF6016_20250106T000000.000Z.flac"],
+            )
+            self.assertEqual(
                 [r.filename for r in split_map["val"]],
                 ["ICLISTENHF6016_20250104T000000.000Z.flac"],
             )
             self.assertEqual(
                 [r.filename for r in split_map["test"]],
-                [
-                    "ICLISTENHF6016_20250105T000000.000Z.flac",
-                    "ICLISTENHF6016_20250106T000000.000Z.flac",
-                ],
+                ["ICLISTENHF6016_20250105T000000.000Z.flac"],
             )
 
     def test_budget_selection_is_clip_based_and_month_stratified_mode_runs(self):
@@ -223,9 +224,9 @@ class TestPart2FineTunePlanning(unittest.TestCase):
             self.assertEqual(run["sampling_mode"], "chronological")
             self.assertGreaterEqual(int(run["actual_budget_calls"]), 6)
             self.assertIn("ICLISTENHF6016_20250101T000000.000Z.flac", run["train_fin_clip_names"])
-            self.assertEqual(int(run["train_nonfin_clip_count"]), 2)
+            self.assertEqual(int(run["train_nonfin_clip_count"]), 1)
             self.assertIn("ICLISTENHF6016_20241231T120000.000Z.flac", run["train_nonfin_clip_names"])
-            self.assertIn("ICLISTENHF6016_20241231T180000.000Z.flac", run["train_nonfin_clip_names"])
+            self.assertEqual(int(run["test_nonfin_clip_count"]), 1)
 
             inventory_rows = inventory_rows_from_dataset(sample_inventory_csv=sample_inventory)
             split_rows = split_inventory_rows(
@@ -236,6 +237,7 @@ class TestPart2FineTunePlanning(unittest.TestCase):
             )
             self.assertTrue(any(row["label"] == "1" for row in split_rows["train"]))
             self.assertTrue(any(row["label"] == "0" for row in split_rows["train"]))
+            self.assertTrue(any(row["label"] == "0" for row in split_rows["test"]))
 
     def test_small_budget_keeps_full_training_nonfin_pool(self):
         with tempfile.TemporaryDirectory() as tmpdir:

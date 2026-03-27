@@ -493,6 +493,14 @@ def main() -> None:
         clip_manifest_csv=clip_manifest_csv,
         call_inventory=call_inventory,
     )
+    nonfin_only_rows = [
+        row
+        for row in sample_inventory
+        if int(row["label"]) == 0
+        and str(row.get("is_fin_positive", "")).strip() == "0"
+        and str(row.get("is_annotated_non_fin", "")).strip() == "1"
+    ]
+    nonfin_only_source_clips = sorted({str(row.get("source_audio", "")).strip() for row in nonfin_only_rows if row.get("source_audio")})
     _write_csv(output_dir / "sample_inventory.csv", sample_inventory)
     _write_csv(output_dir / "call_inventory.csv", call_inventory)
 
@@ -503,6 +511,8 @@ def main() -> None:
         "selected_call_count": int(len(whale_calls)),
         "positive_mat_count": sum(1 for row in sample_inventory if int(row["label"]) == 1),
         "negative_mat_count": sum(1 for row in sample_inventory if int(row["label"]) == 0),
+        "nonfin_only_negative_mat_count": len(nonfin_only_rows),
+        "nonfin_only_negative_source_clip_count": len(nonfin_only_source_clips),
         "failed_count": len(failed),
         "pure_nonfin_negative_summary": pure_nonfin_neg_summary,
         "actual_dimensions": list(dims) if dims else None,
@@ -520,8 +530,24 @@ def main() -> None:
         with open(output_dir / "fine_tune_nonfin_failures.json", "w", encoding="utf-8") as handle:
             json.dump(pure_nonfin_neg_summary["failures"], handle, indent=2, sort_keys=True)
 
+    if (
+        args.include_pure_nonfin_negatives
+        and pure_nonfin_rows
+        and int(pure_nonfin_neg_summary.get("generated_count", 0)) > 0
+        and not nonfin_only_rows
+    ):
+        raise SystemExit(
+            "Pure non-fin negatives were generated, but none were indexed in sample_inventory.csv. "
+            "Please inspect fine_tune_summary.json and the neg_mat_files contents."
+        )
+
     print_status(f"Positive MATs: {summary['positive_mat_count']:,}", "SUCCESS", force=True)
     print_status(f"Negative MATs: {summary['negative_mat_count']:,}", "SUCCESS", force=True)
+    print_status(
+        f"Pure non-fin negative MATs: {summary['nonfin_only_negative_mat_count']:,} from {summary['nonfin_only_negative_source_clip_count']:,} clips",
+        "SUCCESS",
+        force=True,
+    )
     print_status(f"Sample inventory: {output_dir / 'sample_inventory.csv'}", "SUCCESS", force=True)
     if failed:
         print_status(f"Failures logged: {output_dir / 'fine_tune_failures.json'}", "WARNING", force=True)

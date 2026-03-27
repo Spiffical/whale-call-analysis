@@ -104,8 +104,13 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    val_clip_names = {record.filename for record in split_map["val"] if record.is_fin_positive or record.is_annotated_non_fin}
-    test_clip_names = {record.filename for record in split_map["test"] if record.is_fin_positive or record.is_annotated_non_fin}
+    train_background_nonfin_clip_names = {record.filename for record in split_map["train_nonfin"]}
+    val_fin_clip_names = {record.filename for record in split_map["val_fin"]}
+    val_nonfin_clip_names = {record.filename for record in split_map["val_nonfin"]}
+    val_clip_names = {record.filename for record in split_map["val"]}
+    test_fin_clip_names = {record.filename for record in split_map["test_fin"]}
+    test_nonfin_clip_names = {record.filename for record in split_map["test_nonfin"]}
+    test_clip_names = {record.filename for record in split_map["test"]}
 
     for run in plan_rows:
         run_id = str(run["run_id"])
@@ -113,10 +118,10 @@ def main() -> None:
         train_fin_clip_names = {
             token for token in str(run.get("train_fin_clip_names", "")).split("|") if token
         }
-        train_nonfin_clip_names = {
+        run_train_nonfin_clip_names = {
             token for token in str(run.get("train_nonfin_clip_names", "")).split("|") if token
         }
-        train_clip_names = train_fin_clip_names | train_nonfin_clip_names
+        train_clip_names = train_fin_clip_names | run_train_nonfin_clip_names
 
         split_rows = split_inventory_rows(
             inventory_rows,
@@ -127,9 +132,15 @@ def main() -> None:
         for split_name, rows in split_rows.items():
             _write_split_txt(split_dir / f"{split_name}.txt", rows)
 
-        train_records = [record for record in split_map["train"] if record.filename in train_fin_clip_names]
+        train_records = [record for record in split_map["train"] if record.filename in train_clip_names]
+        train_fin_records = [record for record in split_map["train_fin"] if record.filename in train_fin_clip_names]
+        train_nonfin_records = [record for record in split_map["train_nonfin"] if record.filename in run_train_nonfin_clip_names]
         val_records = [record for record in split_map["val"] if record.filename in val_clip_names]
+        val_fin_records = [record for record in split_map["val_fin"] if record.filename in val_fin_clip_names]
+        val_nonfin_records = [record for record in split_map["val_nonfin"] if record.filename in val_nonfin_clip_names]
         test_records = [record for record in split_map["test"] if record.filename in test_clip_names]
+        test_fin_records = [record for record in split_map["test_fin"] if record.filename in test_fin_clip_names]
+        test_nonfin_records = [record for record in split_map["test_nonfin"] if record.filename in test_nonfin_clip_names]
 
         run_summary = {
             "run_id": run_id,
@@ -141,8 +152,14 @@ def main() -> None:
             "train_fin_clip_count": int(run["train_fin_clip_count"]),
             "train_nonfin_clip_count": int(run["train_nonfin_clip_count"]),
             "train_total_clip_count": int(run["train_fin_clip_count"]) + int(run["train_nonfin_clip_count"]),
+            "train_fin_rollup": clip_rollup(train_fin_records),
+            "train_nonfin_rollup": clip_rollup(train_nonfin_records),
             "train_rollup": clip_rollup(train_records),
+            "val_fin_rollup": clip_rollup(val_fin_records),
+            "val_nonfin_rollup": clip_rollup(val_nonfin_records),
             "val_rollup": clip_rollup(val_records),
+            "test_fin_rollup": clip_rollup(test_fin_records),
+            "test_nonfin_rollup": clip_rollup(test_nonfin_records),
             "test_rollup": clip_rollup(test_records),
             "sample_counts": {
                 split_name: {
@@ -156,20 +173,29 @@ def main() -> None:
         with open(split_dir / "run_summary.json", "w", encoding="utf-8") as handle:
             json.dump(run_summary, handle, indent=2, sort_keys=True)
         _write_lines(split_dir / "train_fin_clips.txt", sorted(train_fin_clip_names))
-        _write_lines(split_dir / "train_nonfin_clips.txt", sorted(train_nonfin_clip_names))
+        _write_lines(split_dir / "train_nonfin_clips.txt", sorted(run_train_nonfin_clip_names))
         _write_lines(split_dir / "train_all_clips.txt", sorted(train_clip_names))
 
     _write_csv(output_dir / "learning_curve_plan.csv", plan_rows)
 
     with open(args.fin_annotations_csv, "r", encoding="utf-8", newline="") as handle:
-        fin_annotation_rows = _filter_rows(list(csv.DictReader(handle)), test_clip_names)
+        all_fin_annotation_rows = list(csv.DictReader(handle))
     with open(args.clip_manifest_csv, "r", encoding="utf-8", newline="") as handle:
-        clip_manifest_rows = _filter_rows(list(csv.DictReader(handle)), test_clip_names)
-    eval_dir = output_dir / "part2_eval_test"
-    _write_csv(eval_dir / "fin_annotations.csv", fin_annotation_rows)
-    _write_csv(eval_dir / "clip_manifest.csv", clip_manifest_rows)
-    _write_lines(eval_dir / "test_clips.txt", sorted(test_clip_names))
-    _write_lines(eval_dir / "val_clips.txt", sorted(val_clip_names))
+        all_clip_manifest_rows = list(csv.DictReader(handle))
+
+    eval_specs = [
+        ("part2_eval_val", val_clip_names, val_fin_clip_names, val_nonfin_clip_names, "val_clips.txt"),
+        ("part2_eval_test", test_clip_names, test_fin_clip_names, test_nonfin_clip_names, "test_clips.txt"),
+    ]
+    for dirname, clip_names, fin_clip_names, nonfin_clip_names, main_clip_list_name in eval_specs:
+        eval_dir = output_dir / dirname
+        filtered_fin_rows = _filter_rows(all_fin_annotation_rows, fin_clip_names)
+        filtered_manifest_rows = _filter_rows(all_clip_manifest_rows, clip_names)
+        _write_csv(eval_dir / "fin_annotations.csv", filtered_fin_rows)
+        _write_csv(eval_dir / "clip_manifest.csv", filtered_manifest_rows)
+        _write_lines(eval_dir / main_clip_list_name, sorted(clip_names))
+        _write_lines(eval_dir / "fin_clips.txt", sorted(fin_clip_names))
+        _write_lines(eval_dir / "nonfin_clips.txt", sorted(nonfin_clip_names))
 
     summary = {
         "dataset_dir": str(dataset_dir),
@@ -180,9 +206,15 @@ def main() -> None:
         "train_ratio": float(args.train_ratio),
         "val_ratio": float(args.val_ratio),
         "seed": int(args.seed),
+        "train_nonfin_clip_count": len(train_background_nonfin_clip_names),
+        "val_fin_clip_count": len(val_fin_clip_names),
+        "val_nonfin_clip_count": len(val_nonfin_clip_names),
         "val_clip_count": len(val_clip_names),
+        "test_fin_clip_count": len(test_fin_clip_names),
+        "test_nonfin_clip_count": len(test_nonfin_clip_names),
         "test_clip_count": len(test_clip_names),
-        "part2_eval_test_dir": str(eval_dir),
+        "part2_eval_val_dir": str(output_dir / "part2_eval_val"),
+        "part2_eval_test_dir": str(output_dir / "part2_eval_test"),
     }
     with open(output_dir / "learning_curve_summary.json", "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
