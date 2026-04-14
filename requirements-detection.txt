@@ -1,0 +1,9 @@
+# Optional dependencies for fin-whale bbox detector training and evaluation
+# Includes both the YOLO26 default path and the retained RT-DETR baseline path.
+ultralytics>=8.4.0,<9
+transformers>=4.49,<5
+accelerate>=0.34,<2
+albumentations>=1.4,<3
+pycocotools>=2.0.7,<3
+torchvision>=0.18,<1
+PyYAML>=6,<7

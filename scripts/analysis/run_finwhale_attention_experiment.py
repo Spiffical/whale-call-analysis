@@ -200,7 +200,7 @@ def _draft_recommendation(ranking_rows: Sequence[Mapping[str, Any]]) -> List[str
             "",
             "No valid localization rows were produced, so CAM-style localization is not yet supported by evidence.",
             "",
-            "Recommended fallback: train a dedicated detector, starting with `RT-DETR` for box prediction.",
+            "Recommended fallback: train a dedicated detector, starting with `YOLO26` for box prediction.",
         ]
     best = best_rows[0]
     score = float(best["combined_localization_score"])
@@ -226,7 +226,7 @@ def _draft_recommendation(ranking_rows: Sequence[Mapping[str, Any]]) -> List[str
         )
         lines.append("")
         lines.append(
-            "Recommended fallback: train a dedicated detector next, starting with `RT-DETR`; if masks matter more than boxes, try a lightweight segmentation model after that."
+            "Recommended fallback: train a dedicated detector next, starting with `YOLO26`; keep `RT-DETR` as a baseline if we want a transformer comparison, and only try lightweight segmentation later if masks become the real target."
         )
     return lines
 
