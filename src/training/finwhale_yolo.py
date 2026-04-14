@@ -139,11 +139,12 @@ def build_yolo_dataset_from_coco(
     yaml_dir = yolo_root / "yamls"
     yaml_dir.mkdir(parents=True, exist_ok=True)
 
+    test_split_has_images = int(split_summary.get("test_2025", {}).get("image_count", 0)) > 0
     train_yaml_payload = {
         "path": str(yolo_root),
         "train": "images/train",
         "val": "images/val_2025",
-        "test": "images/test_2025" if (yolo_root / "images" / "test_2025").exists() else None,
+        "test": "images/test_2025" if test_split_has_images else None,
         "names": {YOLO_CLASS_ID: FIN_CLASS_NAME},
     }
     if train_yaml_payload["test"] is None:
@@ -152,9 +153,10 @@ def build_yolo_dataset_from_coco(
     _write_dataset_yaml(train_yaml_path, train_yaml_payload)
 
     eval_yaml_paths: Dict[str, str] = {}
+    skipped_empty_splits: List[str] = []
     for split_name in selected_splits:
-        split_img_dir = yolo_root / "images" / split_name
-        if not split_img_dir.exists():
+        if int(split_summary.get(split_name, {}).get("image_count", 0)) <= 0:
+            skipped_empty_splits.append(str(split_name))
             continue
         payload = {
             "path": str(yolo_root),
@@ -172,6 +174,7 @@ def build_yolo_dataset_from_coco(
         "splits": split_summary,
         "train_yaml": str(train_yaml_path),
         "eval_yamls": eval_yaml_paths,
+        "skipped_empty_splits": skipped_empty_splits,
     }
     summary_path = yolo_root / "summary.json"
     with open(summary_path, "w", encoding="utf-8") as handle:

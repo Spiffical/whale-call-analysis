@@ -75,6 +75,35 @@ class TestFinwhaleYolo(unittest.TestCase):
             self.assertEqual(summary["splits"]["train"]["box_count"], 1)
             self.assertEqual(summary["splits"]["val_2025"]["negative_image_count"], 1)
 
+    def test_build_yolo_dataset_skips_empty_eval_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            coco_root = tmpdir_path / "coco_export"
+            empty_split_dir = coco_root / "val_hist"
+            empty_split_dir.mkdir(parents=True, exist_ok=True)
+            (empty_split_dir / "annotations.coco.json").write_text(
+                json.dumps(
+                    {
+                        "images": [],
+                        "annotations": [],
+                        "categories": [{"id": 1, "name": "fin_call"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = build_yolo_dataset_from_coco(
+                coco_export_dir=coco_root,
+                output_dir=tmpdir_path / "yolo_export",
+                link_mode="copy",
+            )
+
+            yolo_root = tmpdir_path / "yolo_export"
+            summary = json.loads((yolo_root / "summary.json").read_text(encoding="utf-8"))
+            self.assertIn("val_hist", summary["skipped_empty_splits"])
+            self.assertNotIn("val_hist", result["eval_yamls"])
+            self.assertFalse((yolo_root / "yamls" / "data_eval_val_hist.yaml").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

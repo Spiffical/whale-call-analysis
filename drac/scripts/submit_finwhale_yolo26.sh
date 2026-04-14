@@ -284,7 +284,7 @@ fi
 EVAL_YAMLS=""
 for split_name in val_2025 test_2025 val_hist test_hist; do
   yaml_path="$YOLO_DIR/yamls/data_eval_${split_name}.yaml"
-  if [[ -f "$yaml_path" ]]; then
+  if [[ -f "$yaml_path" ]] && compgen -G "$YOLO_DIR/images/$split_name/*" > /dev/null; then
     if [[ -n "$EVAL_YAMLS" ]]; then
       EVAL_YAMLS+=","
     fi
@@ -292,7 +292,7 @@ for split_name in val_2025 test_2025 val_hist test_hist; do
   fi
 done
 
-if [[ "$USE_WANDB" == "true" ]]; then
+if [[ -n "$EVAL_YAMLS" && "$USE_WANDB" == "true" ]]; then
   EVAL_WANDB_NAME="${WANDB_NAME:-$RUN_SLUG-eval}"
   python -u scripts/train/eval_finwhale_yolo26.py \
     --weights "$TRAIN_DIR/best.pt" \
@@ -307,7 +307,7 @@ if [[ "$USE_WANDB" == "true" ]]; then
     --wandb-group "$WANDB_GROUP" \
     --wandb-name "$EVAL_WANDB_NAME" \
     --wandb-tags "$WANDB_TAGS,eval"
-else
+elif [[ -n "$EVAL_YAMLS" ]]; then
   python -u scripts/train/eval_finwhale_yolo26.py \
     --weights "$TRAIN_DIR/best.pt" \
     --eval-yamls "$EVAL_YAMLS" \
@@ -315,6 +315,8 @@ else
     --batch-size "$BATCH_SIZE" \
     --imgsz "$IMAGE_SIZE" \
     --device 0
+else
+  echo "No non-empty eval splits were exported; skipping eval step."
 fi
 
 mkdir -p "$FINAL_DIR/manifests" "$FINAL_DIR/splits" "$FINAL_DIR/export_metadata" "$FINAL_DIR/yolo_dataset" "$FINAL_DIR/train" "$FINAL_DIR/eval_best"
