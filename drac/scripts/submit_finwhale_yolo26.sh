@@ -151,7 +151,7 @@ fi
 mkdir -p "$LOG_DIR" "$OUTPUT_ROOT"
 exec > >(tee -a "$LOG_DIR/fin_yolo26_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$LOG_DIR/fin_yolo26_${SLURM_JOB_ID:-$$}.err" >&2)
 
-module load python/3.11.5
+module load StdEnv/2023 gcc/12.3 python/3.11.5 opencv/4.11.0
 source "$VENV_PATH/bin/activate"
 
 echo "Staging project into $SLURM_TMPDIR ..."
