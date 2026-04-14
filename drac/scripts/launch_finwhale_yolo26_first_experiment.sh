@@ -67,6 +67,9 @@ CMD=(
   --center-bias-sigma-frac 0.25
   --freq-min-hz 1
   --freq-max-hz 200
+  --use-wandb
+  --wandb-project finwhale-bbox
+  --wandb-group finwhale-yolo26-joint-v1
   --install-detection-deps
 )
 

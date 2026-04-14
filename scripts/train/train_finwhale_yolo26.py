@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.training.finwhale_yolo import ultralytics_metrics_to_dict
+from src.training.finwhale_yolo import parse_wandb_tags, ultralytics_metrics_to_dict
 
 
 def main() -> None:
@@ -29,6 +29,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--patience", type=int, default=50)
     ap.add_argument("--project-name", type=str, default="train")
+    ap.add_argument("--use-wandb", action="store_true")
+    ap.add_argument("--wandb-project", type=str, default="finwhale-bbox")
+    ap.add_argument("--wandb-entity", type=str, default="")
+    ap.add_argument("--wandb-group", type=str, default="finwhale-yolo26")
+    ap.add_argument("--wandb-name", type=str, default="")
+    ap.add_argument("--wandb-tags", type=str, default="bbox,yolo26,finwhale")
     args = ap.parse_args()
 
     from ultralytics import YOLO
@@ -37,8 +43,35 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     project_dir = output_dir
     run_name = str(args.project_name)
+    wandb_run = None
+
+    if args.use_wandb:
+        import wandb
+        from wandb.integration.ultralytics import add_wandb_callback
+
+        wandb_run = wandb.init(
+            project=str(args.wandb_project),
+            entity=(str(args.wandb_entity).strip() or None),
+            group=str(args.wandb_group),
+            name=(str(args.wandb_name).strip() or None),
+            tags=parse_wandb_tags(args.wandb_tags),
+            job_type="train",
+            config={
+                "data_yaml": str(Path(args.data_yaml).resolve()),
+                "model_name": str(args.model_name),
+                "epochs": int(args.epochs),
+                "batch_size": int(args.batch_size),
+                "imgsz": int(args.imgsz),
+                "device": str(args.device),
+                "workers": int(args.workers),
+                "seed": int(args.seed),
+                "patience": int(args.patience),
+            },
+        )
 
     model = YOLO(args.model_name)
+    if wandb_run is not None:
+        add_wandb_callback(model, enable_model_checkpointing=True)
     model.train(
         data=str(Path(args.data_yaml).resolve()),
         epochs=int(args.epochs),
@@ -96,6 +129,8 @@ def main() -> None:
         "seed": int(args.seed),
         "best_weights": str(best_path),
         "last_weights": str(last_path),
+        "wandb_enabled": bool(wandb_run is not None),
+        "wandb_run_id": None if wandb_run is None else str(wandb_run.id),
     }
 
     if best_path.exists():
@@ -120,6 +155,18 @@ def main() -> None:
 
     with open(output_dir / "summary.json", "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
+    if wandb_run is not None:
+        import wandb
+
+        wandb_run.summary.update(summary)
+        artifact = wandb.Artifact(f"{wandb_run.name or wandb_run.id}-weights", type="model")
+        if (output_dir / "best.pt").exists():
+            artifact.add_file(str(output_dir / "best.pt"))
+        if (output_dir / "last.pt").exists():
+            artifact.add_file(str(output_dir / "last.pt"))
+        artifact.add_file(str(output_dir / "summary.json"))
+        wandb_run.log_artifact(artifact)
+        wandb.finish()
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

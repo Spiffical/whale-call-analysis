@@ -49,6 +49,12 @@ SEED=42
 QC_LIMIT=24
 INSTALL_DETECTION_DEPS="true"
 SMOKE_MODE="false"
+USE_WANDB="false"
+WANDB_PROJECT="finwhale-bbox"
+WANDB_ENTITY=""
+WANDB_GROUP="finwhale-yolo26"
+WANDB_NAME=""
+WANDB_TAGS="bbox,yolo26,finwhale"
 
 usage() {
   cat <<'USAGE'
@@ -81,6 +87,12 @@ Options:
   --image-size N                       (default: 640)
   --seed N                             (default: 42)
   --qc-limit N                         (default: 24)
+  --use-wandb
+  --wandb-project NAME                 (default: finwhale-bbox)
+  --wandb-entity NAME
+  --wandb-group NAME                   (default: finwhale-yolo26)
+  --wandb-name NAME
+  --wandb-tags CSV                     (default: bbox,yolo26,finwhale)
   --install-detection-deps
   --skip-install-detection-deps
   --smoke-mode                         Use lighter defaults for a quick pilot
@@ -112,6 +124,12 @@ while [[ $# -gt 0 ]]; do
     --image-size) IMAGE_SIZE="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     --qc-limit) QC_LIMIT="$2"; shift 2 ;;
+    --use-wandb) USE_WANDB="true"; shift ;;
+    --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
+    --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
+    --wandb-group) WANDB_GROUP="$2"; shift 2 ;;
+    --wandb-name) WANDB_NAME="$2"; shift 2 ;;
+    --wandb-tags) WANDB_TAGS="$2"; shift 2 ;;
     --install-detection-deps) INSTALL_DETECTION_DEPS="true"; shift ;;
     --skip-install-detection-deps) INSTALL_DETECTION_DEPS="false"; shift ;;
     --smoke-mode) SMOKE_MODE="true"; shift ;;
@@ -153,6 +171,17 @@ exec > >(tee -a "$LOG_DIR/fin_yolo26_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$LOG
 
 module load StdEnv/2023 gcc/12.3 python/3.11.5 opencv/4.11.0
 source "$VENV_PATH/bin/activate"
+
+if [[ "$USE_WANDB" == "true" ]]; then
+  if [[ -z "${WANDB_API_KEY:-}" && -f "$HOME/.wandb_api_key" ]]; then
+    export WANDB_API_KEY
+    WANDB_API_KEY="$(cat "$HOME/.wandb_api_key")"
+  fi
+  if [[ -z "${WANDB_API_KEY:-}" ]]; then
+    echo "Error: --use-wandb was requested but WANDB_API_KEY is not set and ~/.wandb_api_key was not found."
+    exit 1
+  fi
+fi
 
 echo "Staging project into $SLURM_TMPDIR ..."
 rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/whale_project/"
@@ -217,18 +246,40 @@ python -u scripts/data/detection/build_finwhale_yolo_dataset.py \
   --output-dir "$YOLO_DIR" \
   --link-mode hardlink
 
-python -u scripts/train/train_finwhale_yolo26.py \
-  --data-yaml "$YOLO_DIR/yamls/data_train_val2025.yaml" \
-  --output-dir "$TRAIN_DIR" \
-  --model-name "$MODEL_NAME" \
-  --epochs "$EPOCHS" \
-  --batch-size "$BATCH_SIZE" \
-  --imgsz "$IMAGE_SIZE" \
-  --device 0 \
-  --workers "$NUM_WORKERS" \
-  --seed "$SEED" \
-  --patience "$PATIENCE" \
-  --project-name train
+if [[ "$USE_WANDB" == "true" ]]; then
+  TRAIN_WANDB_NAME="${WANDB_NAME:-$RUN_SLUG-train}"
+  python -u scripts/train/train_finwhale_yolo26.py \
+    --data-yaml "$YOLO_DIR/yamls/data_train_val2025.yaml" \
+    --output-dir "$TRAIN_DIR" \
+    --model-name "$MODEL_NAME" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" \
+    --imgsz "$IMAGE_SIZE" \
+    --device 0 \
+    --workers "$NUM_WORKERS" \
+    --seed "$SEED" \
+    --patience "$PATIENCE" \
+    --project-name train \
+    --use-wandb \
+    --wandb-project "$WANDB_PROJECT" \
+    --wandb-entity "$WANDB_ENTITY" \
+    --wandb-group "$WANDB_GROUP" \
+    --wandb-name "$TRAIN_WANDB_NAME" \
+    --wandb-tags "$WANDB_TAGS"
+else
+  python -u scripts/train/train_finwhale_yolo26.py \
+    --data-yaml "$YOLO_DIR/yamls/data_train_val2025.yaml" \
+    --output-dir "$TRAIN_DIR" \
+    --model-name "$MODEL_NAME" \
+    --epochs "$EPOCHS" \
+    --batch-size "$BATCH_SIZE" \
+    --imgsz "$IMAGE_SIZE" \
+    --device 0 \
+    --workers "$NUM_WORKERS" \
+    --seed "$SEED" \
+    --patience "$PATIENCE" \
+    --project-name train
+fi
 
 EVAL_YAMLS=""
 for split_name in val_2025 test_2025 val_hist test_hist; do
@@ -241,13 +292,30 @@ for split_name in val_2025 test_2025 val_hist test_hist; do
   fi
 done
 
-python -u scripts/train/eval_finwhale_yolo26.py \
-  --weights "$TRAIN_DIR/best.pt" \
-  --eval-yamls "$EVAL_YAMLS" \
-  --output-dir "$EVAL_DIR" \
-  --batch-size "$BATCH_SIZE" \
-  --imgsz "$IMAGE_SIZE" \
-  --device 0
+if [[ "$USE_WANDB" == "true" ]]; then
+  EVAL_WANDB_NAME="${WANDB_NAME:-$RUN_SLUG-eval}"
+  python -u scripts/train/eval_finwhale_yolo26.py \
+    --weights "$TRAIN_DIR/best.pt" \
+    --eval-yamls "$EVAL_YAMLS" \
+    --output-dir "$EVAL_DIR" \
+    --batch-size "$BATCH_SIZE" \
+    --imgsz "$IMAGE_SIZE" \
+    --device 0 \
+    --use-wandb \
+    --wandb-project "$WANDB_PROJECT" \
+    --wandb-entity "$WANDB_ENTITY" \
+    --wandb-group "$WANDB_GROUP" \
+    --wandb-name "$EVAL_WANDB_NAME" \
+    --wandb-tags "$WANDB_TAGS,eval"
+else
+  python -u scripts/train/eval_finwhale_yolo26.py \
+    --weights "$TRAIN_DIR/best.pt" \
+    --eval-yamls "$EVAL_YAMLS" \
+    --output-dir "$EVAL_DIR" \
+    --batch-size "$BATCH_SIZE" \
+    --imgsz "$IMAGE_SIZE" \
+    --device 0
+fi
 
 mkdir -p "$FINAL_DIR/manifests" "$FINAL_DIR/splits" "$FINAL_DIR/export_metadata" "$FINAL_DIR/yolo_dataset" "$FINAL_DIR/train" "$FINAL_DIR/eval_best"
 rsync -a "$MANIFEST_DIR/" "$FINAL_DIR/manifests/"
