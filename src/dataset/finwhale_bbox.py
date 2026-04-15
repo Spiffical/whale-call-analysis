@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from .negative_sampler import enumerate_negative_windows_for_file
-from .part2_annotations import parse_filename_timestamp
+from .part2_annotations import normalize_audio_filename, parse_filename_timestamp
 
 
 FIN_SPECIES_CODE = "Bp"
@@ -253,7 +253,7 @@ def parse_historical_workbook(workbook_path: Path | str) -> Tuple[pd.DataFrame, 
 
             sheet_kept = 0
             for idx, row in df.iterrows():
-                filename = _clean_text(row.get(file_col, "")) if file_col else ""
+                filename = normalize_audio_filename(row.get(file_col, "")) if file_col else ""
                 begin_s = _as_float(row.get(begin_col)) if begin_col else None
                 end_s = _as_float(row.get(end_col)) if end_col else None
                 low_hz = _as_float(row.get(low_col)) if low_col else None
@@ -359,7 +359,7 @@ def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataF
 
             kept = 0
             for idx, row in df.iterrows():
-                filename = _clean_text(row.get("filename", ""))
+                filename = normalize_audio_filename(row.get("filename", ""))
                 begin_s = _as_float(row.get("begin_time"))
                 end_s = _as_float(row.get("end_time"))
                 low_hz = _as_float(row.get("low_freq"))
@@ -437,7 +437,7 @@ def collect_mar18_guardrail_filenames(workbook_path: Path | str) -> Tuple[set[st
             df = pd.read_excel(path, sheet_name=sheet_name)
             kept = 0
             for _, row in df.iterrows():
-                filename = _clean_text(row.get("filename", ""))
+                filename = normalize_audio_filename(row.get("filename", ""))
                 species = _clean_text(row.get("species", ""))
                 begin_s = _as_float(row.get("begin_time"))
                 end_s = _as_float(row.get("end_time"))
@@ -479,7 +479,7 @@ def collect_mar26_pure_negative_clips(
             df = pd.read_excel(path, sheet_name=sheet_name)
             kept = 0
             for idx, row in df.iterrows():
-                filename = _clean_text(row.get("filename", ""))
+                filename = normalize_audio_filename(row.get("filename", ""))
                 if not filename:
                     continue
                 verified = _truthy_flag(row.get("verified"))
