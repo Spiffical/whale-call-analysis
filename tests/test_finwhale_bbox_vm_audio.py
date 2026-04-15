@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.dataset.finwhale_bbox_audio_audit import COHORT_2025, COHORT_HISTORICAL
 from src.dataset.finwhale_bbox_vm_audio import (
     materialize_audio_subset,
+    select_missing_required_audio_filenames,
     select_required_audio_filenames,
     summarize_stage_availability,
 )
@@ -51,6 +52,42 @@ class TestFinwhaleBboxVmAudio(unittest.TestCase):
         )
 
         self.assertEqual(selected, ["clip_2025.flac"])
+
+    def test_select_missing_required_audio_filenames_can_filter_roles(self) -> None:
+        requirement_df = pd.DataFrame(
+            [
+                {
+                    "cohort": COHORT_HISTORICAL,
+                    "policy": "current_export_render",
+                    "required_filename": "hist_main.wav",
+                    "role": "main",
+                    "exists": 0,
+                },
+                {
+                    "cohort": COHORT_HISTORICAL,
+                    "policy": "current_export_render",
+                    "required_filename": "hist_prev.wav",
+                    "role": "prev",
+                    "exists": 0,
+                },
+                {
+                    "cohort": COHORT_HISTORICAL,
+                    "policy": "current_export_render",
+                    "required_filename": "hist_present.wav",
+                    "role": "main",
+                    "exists": 1,
+                },
+            ]
+        )
+
+        selected = select_missing_required_audio_filenames(
+            requirement_df,
+            cohort=COHORT_HISTORICAL,
+            policies=["current_export_render"],
+            roles=["main"],
+        )
+
+        self.assertEqual(selected, ["hist_main.wav"])
 
     def test_materialize_audio_subset_hardlinks_existing_source_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

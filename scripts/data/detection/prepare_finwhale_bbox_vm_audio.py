@@ -47,6 +47,7 @@ from src.dataset.finwhale_bbox_vm_audio import (
     download_audio_subset,
     load_env_file,
     materialize_audio_subset,
+    select_missing_required_audio_filenames,
     select_required_audio_filenames,
     summarize_stage_availability,
 )
@@ -77,6 +78,12 @@ def _cohort_source_dir(cohort: str, *, historical_audio_dir: Path, audio_2025_di
     if str(cohort) == COHORT_HISTORICAL:
         return historical_audio_dir
     return audio_2025_dir
+
+
+def _cohort_download_roles(cohort: str) -> list[str]:
+    if str(cohort) == COHORT_HISTORICAL:
+        return ["main"]
+    return ["main", "prev", "next"]
 
 
 def main() -> None:
@@ -219,6 +226,18 @@ def main() -> None:
             materialize_result["missing_source_names"],
         )
 
+        download_candidate_names = select_missing_required_audio_filenames(
+            requirement_df,
+            cohort=cohort,
+            policies=args.required_policies,
+            roles=_cohort_download_roles(cohort),
+        )
+        skipped_missing_names = sorted(
+            set(materialize_result["missing_source_names"]) - set(download_candidate_names)
+        )
+        _write_name_list(lists_dir / "download_candidates.txt", download_candidate_names)
+        _write_name_list(lists_dir / "skipped_missing_download_candidates.txt", skipped_missing_names)
+
         download_result = {
             "requested_count": 0,
             "downloaded_count": 0,
@@ -226,13 +245,13 @@ def main() -> None:
             "downloaded_names": [],
             "failed_names": [],
         }
-        if args.download_missing_audio and materialize_result["missing_source_names"]:
+        if args.download_missing_audio and download_candidate_names:
             _log(
-                f"{cohort}: downloading {len(materialize_result['missing_source_names']):,} missing files from ONC",
+                f"{cohort}: downloading {len(download_candidate_names):,} missing files from ONC",
                 "PROGRESS",
             )
             download_result = download_audio_subset(
-                materialize_result["missing_source_names"],
+                download_candidate_names,
                 target_dir=raw_audio_dir,
                 onc_token=onc_token,
                 show_onc_warnings=bool(args.show_onc_warnings),
@@ -254,6 +273,9 @@ def main() -> None:
             "raw_audio_dir": str(raw_audio_dir),
             "required_file_count": int(len(cohort_required)),
             "materialize_result": materialize_result,
+            "download_candidate_count": int(len(download_candidate_names)),
+            "download_roles": _cohort_download_roles(cohort),
+            "skipped_missing_download_candidate_count": int(len(skipped_missing_names)),
             "download_result": download_result,
             "post_stage_summary": post_stage_summary,
         }

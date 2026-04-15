@@ -80,6 +80,33 @@ def select_required_audio_filenames(
     return sorted(names)
 
 
+def select_missing_required_audio_filenames(
+    requirement_df: pd.DataFrame,
+    *,
+    cohort: str,
+    policies: Sequence[str],
+    roles: Optional[Sequence[str]] = None,
+) -> list[str]:
+    if requirement_df.empty:
+        return []
+    selected = requirement_df[
+        (requirement_df["cohort"].astype(str) == str(cohort))
+        & (requirement_df["policy"].astype(str).isin([str(policy) for policy in policies]))
+        & (pd.to_numeric(requirement_df["exists"], errors="coerce").fillna(0).astype(int) == 0)
+    ].copy()
+    if roles:
+        allowed_roles = {str(role) for role in roles}
+        selected = selected[selected["role"].astype(str).isin(allowed_roles)]
+    if selected.empty:
+        return []
+    names = {
+        str(value).strip()
+        for value in selected["required_filename"].astype(str).tolist()
+        if str(value).strip()
+    }
+    return sorted(names)
+
+
 def _materialize_one_file(source: Path, target: Path, *, mode: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
