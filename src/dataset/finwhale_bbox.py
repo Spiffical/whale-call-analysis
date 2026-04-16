@@ -153,6 +153,18 @@ def _recording_day(filename: str) -> str:
     return ts.strftime("%Y-%m-%d") if ts is not None else ""
 
 
+def _has_valid_audio_filename(filename: str) -> bool:
+    text = _clean_text(filename)
+    if not text:
+        return False
+    suffix = Path(text).suffix.lower()
+    if suffix not in {".wav", ".flac"}:
+        return False
+    if not _device_code(text):
+        return False
+    return parse_filename_timestamp(text) is not None
+
+
 def standardize_fin_call_type(raw_value: Any, species_code: str) -> str:
     raw_text = _clean_text(raw_value)
     if species_code != FIN_SPECIES_CODE:
@@ -260,6 +272,9 @@ def parse_historical_workbook(workbook_path: Path | str) -> Tuple[pd.DataFrame, 
                 high_hz = _as_float(row.get(high_col)) if high_col else None
                 if not filename or begin_s is None or end_s is None or low_hz is None or high_hz is None:
                     continue
+                if not _has_valid_audio_filename(filename):
+                    summary["drop_reasons"]["invalid_filename"] += 1
+                    continue
 
                 summary["parsed_row_count"] += 1
                 begin_fixed, end_fixed, timestamp_fix = _historical_time_fix(begin_s, end_s)
@@ -365,6 +380,9 @@ def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataF
                 low_hz = _as_float(row.get("low_freq"))
                 high_hz = _as_float(row.get("high_freq"))
                 if not filename or begin_s is None or end_s is None or low_hz is None or high_hz is None:
+                    continue
+                if not _has_valid_audio_filename(filename):
+                    summary["drop_reasons"]["invalid_filename"] += 1
                     continue
 
                 summary["parsed_row_count"] += 1
@@ -481,6 +499,9 @@ def collect_mar26_pure_negative_clips(
             for idx, row in df.iterrows():
                 filename = normalize_audio_filename(row.get("filename", ""))
                 if not filename:
+                    continue
+                if not _has_valid_audio_filename(filename):
+                    summary["drop_reasons"]["invalid_filename"] += 1
                     continue
                 verified = _truthy_flag(row.get("verified"))
                 if verified != 1:

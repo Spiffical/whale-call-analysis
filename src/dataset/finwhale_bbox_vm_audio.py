@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 import shutil
 from collections import Counter
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Sequence
 
 import pandas as pd
 
 from .finwhale_bbox_audio_audit import COHORT_2025, COHORT_HISTORICAL
+from .finwhale_bbox_export import build_context_manifest
+from .part2_annotations import parse_filename_timestamp
 
 
 REQUIRED_AUDIO_POLICIES = (
@@ -22,6 +25,16 @@ COHORT_STAGE_DIRS = {
     COHORT_HISTORICAL: "clayoquot_2018_2019",
     COHORT_2025: "clayoquot_2025",
 }
+
+
+def adjacent_audio_filename(filename: str, *, delta_seconds: float = 300.0) -> str:
+    ts = parse_filename_timestamp(filename)
+    if ts is None:
+        return ""
+    path = Path(filename)
+    device_code = str(filename).split("_", 1)[0]
+    adj_ts = ts + timedelta(seconds=float(delta_seconds))
+    return f"{device_code}_{adj_ts.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z{path.suffix}"
 
 
 def load_env_file(path: Path | str) -> None:
@@ -78,6 +91,63 @@ def select_required_audio_filenames(
         if str(value).strip()
     }
     return sorted(names)
+
+
+def build_export_required_audio_filenames(
+    annotation_df: pd.DataFrame,
+    clip_df: pd.DataFrame,
+    assignments_df: pd.DataFrame,
+    *,
+    context_duration_s: float = 40.0,
+    clip_duration_s: float = 300.0,
+    edge_buffer_s: float = 2.0,
+    pure_zero_ratio: float = 0.5,
+    negative_margin_s: float = 2.0,
+    allowed_filenames: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    context_df, context_summary = build_context_manifest(
+        annotation_df,
+        clip_df,
+        assignments_df,
+        context_duration_s=float(context_duration_s),
+        pure_zero_ratio=float(pure_zero_ratio),
+        negative_margin_s=float(negative_margin_s),
+        allowed_filenames=allowed_filenames,
+    )
+
+    required_filenames: set[str] = set()
+    role_counts: Counter[str] = Counter()
+    split_counts: Counter[str] = Counter()
+    for row in context_df.to_dict("records"):
+        filename = str(row["filename"]).strip()
+        if not filename:
+            continue
+        required_filenames.add(filename)
+        role_counts["main"] += 1
+        split_counts[str(row["split_name"])] += 1
+
+        if float(row["context_start_s"]) < float(edge_buffer_s):
+            prev_name = adjacent_audio_filename(filename, delta_seconds=-float(clip_duration_s))
+            if prev_name:
+                required_filenames.add(prev_name)
+                role_counts["prev"] += 1
+
+        if float(row["context_end_s"]) > float(clip_duration_s) - float(edge_buffer_s):
+            next_name = adjacent_audio_filename(filename, delta_seconds=float(clip_duration_s))
+            if next_name:
+                required_filenames.add(next_name)
+                role_counts["next"] += 1
+
+    return {
+        "context_df": context_df,
+        "required_filenames": sorted(required_filenames),
+        "summary": {
+            "context_summary": context_summary,
+            "required_file_count": int(len(required_filenames)),
+            "requirement_role_counts": dict(role_counts),
+            "split_context_counts": dict(split_counts),
+        },
+    }
 
 
 def select_missing_required_audio_filenames(

@@ -9,8 +9,10 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.dataset.finwhale_bbox import FIN_SPECIES_CODE, HISTORICAL_DATASET, PURE_NEGATIVE_DATASET
 from src.dataset.finwhale_bbox_audio_audit import COHORT_2025, COHORT_HISTORICAL
 from src.dataset.finwhale_bbox_vm_audio import (
+    build_export_required_audio_filenames,
     materialize_audio_subset,
     select_missing_required_audio_filenames,
     select_required_audio_filenames,
@@ -149,6 +151,73 @@ class TestFinwhaleBboxVmAudio(unittest.TestCase):
             self.assertEqual(summary["unique_required_file_count"], 2)
             self.assertEqual(summary["unique_available_file_count"], 1)
             self.assertEqual(summary["missing_by_role"], {"next": 1})
+
+    def test_build_export_required_audio_filenames_matches_context_policy(self) -> None:
+        annotation_df = pd.DataFrame(
+            [
+                {
+                    "annotation_id": "ann_hist_edge",
+                    "source_dataset": HISTORICAL_DATASET,
+                    "filename": "ICLISTENHF1353_20180701T000000.000Z.wav",
+                    "recording_day_utc": "2018-07-01",
+                    "species_code": FIN_SPECIES_CODE,
+                    "call_type_std": "20Hz",
+                    "begin_time_s": 5.0,
+                    "end_time_s": 6.0,
+                    "low_freq_hz": 18.0,
+                    "high_freq_hz": 24.0,
+                }
+            ]
+        )
+        clip_df = pd.DataFrame(
+            [
+                {
+                    "source_dataset": HISTORICAL_DATASET,
+                    "filename": "ICLISTENHF1353_20180701T000000.000Z.wav",
+                    "recording_day_utc": "2018-07-01",
+                    "is_pure_negative_candidate": 0,
+                },
+                {
+                    "source_dataset": PURE_NEGATIVE_DATASET,
+                    "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                    "recording_day_utc": "2025-01-05",
+                    "is_pure_negative_candidate": 1,
+                },
+            ]
+        )
+        assignments_df = pd.DataFrame(
+            [
+                {
+                    "source_dataset": HISTORICAL_DATASET,
+                    "filename": "ICLISTENHF1353_20180701T000000.000Z.wav",
+                    "split_name": "train",
+                },
+                {
+                    "source_dataset": PURE_NEGATIVE_DATASET,
+                    "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                    "split_name": "train",
+                },
+            ]
+        )
+
+        result = build_export_required_audio_filenames(
+            annotation_df,
+            clip_df,
+            assignments_df,
+            context_duration_s=40.0,
+            clip_duration_s=300.0,
+            edge_buffer_s=2.0,
+            pure_zero_ratio=2.0,
+            negative_margin_s=2.0,
+        )
+
+        required = set(result["required_filenames"])
+        self.assertIn("ICLISTENHF1353_20180701T000000.000Z.wav", required)
+        self.assertIn("ICLISTENHF1353_20180630T235500.000Z.wav", required)
+        self.assertIn("ICLISTENHF6016_20250105T000000.000Z.flac", required)
+        self.assertGreaterEqual(result["summary"]["context_summary"]["context_count"], 2)
+        self.assertGreaterEqual(result["summary"]["requirement_role_counts"]["main"], 2)
+        self.assertGreaterEqual(result["summary"]["requirement_role_counts"]["prev"], 1)
 
 
 if __name__ == "__main__":

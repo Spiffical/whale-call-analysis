@@ -33,6 +33,7 @@ CONFIG_PATH="${CONFIG_PATH:-config/dataset_config.yaml}"
 AUDIO_DIR=""
 AUDIO_BUNDLE_TAR=""
 ALLOWED_FILENAMES_TXT=""
+AVAILABLE_AUDIO_FILENAMES_TXT=""
 RUN_TAG="joint_v1"
 MODEL_NAME="yolo26m.pt"
 EPOCHS=30
@@ -75,6 +76,7 @@ Options:
   --venv-path PATH
   --config-path PATH
   --allowed-filenames-txt PATH
+  --available-audio-filenames-txt PATH
   --model-name NAME                    (default: yolo26m.pt)
   --epochs N                           (default: 30)
   --batch-size N                       (default: 8)
@@ -113,6 +115,7 @@ while [[ $# -gt 0 ]]; do
     --venv-path) VENV_PATH="$2"; shift 2 ;;
     --config-path) CONFIG_PATH="$2"; shift 2 ;;
     --allowed-filenames-txt) ALLOWED_FILENAMES_TXT="$2"; shift 2 ;;
+    --available-audio-filenames-txt) AVAILABLE_AUDIO_FILENAMES_TXT="$2"; shift 2 ;;
     --model-name) MODEL_NAME="$2"; shift 2 ;;
     --epochs) EPOCHS="$2"; shift 2 ;;
     --batch-size) BATCH_SIZE="$2"; shift 2 ;;
@@ -163,6 +166,10 @@ if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
 fi
 if [[ -n "$ALLOWED_FILENAMES_TXT" && ! -f "$ALLOWED_FILENAMES_TXT" ]]; then
   echo "Error: --allowed-filenames-txt must exist: $ALLOWED_FILENAMES_TXT"
+  exit 1
+fi
+if [[ -n "$AVAILABLE_AUDIO_FILENAMES_TXT" && ! -f "$AVAILABLE_AUDIO_FILENAMES_TXT" ]]; then
+  echo "Error: --available-audio-filenames-txt must exist: $AVAILABLE_AUDIO_FILENAMES_TXT"
   exit 1
 fi
 
@@ -223,13 +230,23 @@ python -u scripts/data/detection/build_finwhale_bbox_splits.py \
 
 if [[ -n "$AUDIO_BUNDLE_TAR" ]]; then
   AUDIO_EXTRACT_ARGS=(
+    --annotation-manifest "$MANIFEST_DIR/unified_annotations.csv"
     --clip-manifest "$MANIFEST_DIR/clip_manifest.csv"
     --split-assignments "$SPLIT_DIR/assignments.csv"
     --output-path "$TMP_ROOT/audio_extract_members.txt"
     --tar-prefix raw_audio
+    --context-duration-s 40.0
+    --clip-duration-s 300.0
+    --edge-buffer-s "$EDGE_BUFFER_S"
+    --pure-zero-ratio "$PURE_ZERO_RATIO"
+    --negative-margin-s "$NEGATIVE_MARGIN_S"
+    --summary-path "$TMP_ROOT/audio_extract_summary.json"
   )
   if [[ -n "$ALLOWED_FILENAMES_TXT" ]]; then
     AUDIO_EXTRACT_ARGS+=(--allowed-filenames-txt "$ALLOWED_FILENAMES_TXT")
+  fi
+  if [[ -n "$AVAILABLE_AUDIO_FILENAMES_TXT" ]]; then
+    AUDIO_EXTRACT_ARGS+=(--available-audio-filenames-txt "$AVAILABLE_AUDIO_FILENAMES_TXT")
   fi
   python -u scripts/data/detection/build_finwhale_bbox_audio_extract_list.py "${AUDIO_EXTRACT_ARGS[@]}"
   tar -xf "$AUDIO_BUNDLE_TAR" -C "$EXTRACT_DIR" -T "$TMP_ROOT/audio_extract_members.txt"
@@ -339,6 +356,12 @@ fi
 mkdir -p "$FINAL_DIR/manifests" "$FINAL_DIR/splits" "$FINAL_DIR/export_metadata" "$FINAL_DIR/yolo_dataset" "$FINAL_DIR/train" "$FINAL_DIR/eval_best"
 rsync -a "$MANIFEST_DIR/" "$FINAL_DIR/manifests/"
 rsync -a "$SPLIT_DIR/" "$FINAL_DIR/splits/"
+if [[ -f "$TMP_ROOT/audio_extract_members.txt" ]]; then
+  cp "$TMP_ROOT/audio_extract_members.txt" "$FINAL_DIR/export_metadata/audio_extract_members.txt"
+fi
+if [[ -f "$TMP_ROOT/audio_extract_summary.json" ]]; then
+  cp "$TMP_ROOT/audio_extract_summary.json" "$FINAL_DIR/export_metadata/audio_extract_summary.json"
+fi
 rsync -a \
   --include='*/' \
   --include='summary.json' \
@@ -363,6 +386,7 @@ cat > "$FINAL_DIR/run_info.json" <<EOF
   "audio_dir": "$AUDIO_DIR",
   "audio_bundle_tar": "${AUDIO_BUNDLE_TAR:-}",
   "allowed_filenames_txt": "${ALLOWED_FILENAMES_TXT:-}",
+  "available_audio_filenames_txt": "${AVAILABLE_AUDIO_FILENAMES_TXT:-}",
   "project_path": "$PROJECT_PATH",
   "model_name": "$MODEL_NAME",
   "epochs": $EPOCHS,

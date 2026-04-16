@@ -105,6 +105,34 @@ class TestFinwhaleBbox(unittest.TestCase):
             self.assertEqual(sei_row["species_code"], "Bb")
             self.assertEqual(sei_row["call_type_std"], "")
 
+    def test_parse_historical_workbook_drops_invalid_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workbook_path = Path(tmpdir) / "historical_invalid.xlsx"
+            _write_workbook(
+                workbook_path,
+                {
+                    "July 2018": pd.DataFrame(
+                        {
+                            "Clip ID": [
+                                "ICLISTENHF1353_20180701T000000.000Z.wav",
+                                "random+M614+614:636+614:A638631+614:632",
+                            ],
+                            "begin time (s)": [10.0, 12.0],
+                            "end time (s)": [11.0, 13.0],
+                            "low freq": [18.0, 19.0],
+                            "high freq": [24.0, 25.0],
+                            "call type": ["20Hz", "20Hz"],
+                        }
+                    )
+                },
+            )
+
+            parsed, summary = parse_historical_workbook(workbook_path)
+
+            self.assertEqual(len(parsed), 1)
+            self.assertEqual(summary["drop_reasons"]["invalid_filename"], 1)
+            self.assertEqual(parsed.iloc[0]["filename"], "ICLISTENHF1353_20180701T000000.000Z.wav")
+
     def test_build_joint_manifests_excludes_guardrailed_pure_negatives(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
