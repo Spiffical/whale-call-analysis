@@ -20,12 +20,20 @@ from .part2_annotations import normalize_audio_filename, parse_filename_timestam
 
 FIN_SPECIES_CODE = "Bp"
 HISTORICAL_DATASET = "historical_2018_2019"
-SPECIES_TEMPORAL_DATASET = "species_temporal_2025"
+ANNOTATIONS_2025_DATASET = "clayoquot_2025_final_annotations"
+SPECIES_TEMPORAL_DATASET = ANNOTATIONS_2025_DATASET
 PURE_NEGATIVE_DATASET = "mar26_verified_pure_negative_2025"
 SEI_SPECIES_CODE = "Bb"
+INSTRUMENT_SIGNAL_CODE = "INSTRUMENT"
+EARTHQUAKE_SIGNAL_CODE = "EQ"
+UNKNOWN_SIGNAL_CODE = "UNKNOWN"
+SONAR_SIGNAL_CODE = "SONAR"
 
 HISTORICAL_WORKBOOK_DEFAULT = "data/finwhales/Clayoquot_Call_Library_copy.xlsx"
-SPECIES_TEMPORAL_WORKBOOK_DEFAULT = "data/finwhales/Clayoquot_2025_SpeciesTemporalAnalysis.xlsx"
+ANNOTATIONS_2025_WORKBOOK_DEFAULT = (
+    "data/finwhales/ONC_ClayoquotSlope2025_Annotations_Cetaceans_Instrument_EQ_Sonar_Unknown.xlsx"
+)
+SPECIES_TEMPORAL_WORKBOOK_DEFAULT = ANNOTATIONS_2025_WORKBOOK_DEFAULT
 MAR26_WORKBOOK_DEFAULT = "data/finwhales/Clayoquot_2025_Analysis_Mar26_Final.xlsx"
 MAR18_WORKBOOK_DEFAULT = "data/finwhales/Clayoquot_2025_annotations_Mar18.xlsx"
 
@@ -101,7 +109,11 @@ CLIP_COLUMNS = [
 
 
 def _clean_text(value: Any) -> str:
-    return " ".join(str(value or "").strip().split())
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    return " ".join(str(value).strip().split())
 
 
 def _normalize_colname(name: Any) -> str:
@@ -189,6 +201,36 @@ def standardize_fin_call_type(raw_value: Any, species_code: str) -> str:
     if re.search(r"\b40\s*hz\b", lowered):
         return FIN_LABEL_40
     return FIN_LABEL_OTHER
+
+
+def normalize_species_code(raw_value: Any) -> str:
+    text = _clean_text(raw_value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    alias_map = {
+        "bp": FIN_SPECIES_CODE,
+        "bm": "Bm",
+        "bb": "Bb",
+        "mn": "Mn",
+        "pm": "Pm",
+        "oo": "Oo",
+        "lo": "Lo",
+        "od": "OD",
+        "ce": "CE",
+        "un": "UN",
+        "ma": "MA",
+        "ba": "BA",
+        "p": "P",
+        "eq": EARTHQUAKE_SIGNAL_CODE,
+        "earthquake": EARTHQUAKE_SIGNAL_CODE,
+        "sonar": SONAR_SIGNAL_CODE,
+        "unknown": UNKNOWN_SIGNAL_CODE,
+        "instrument": INSTRUMENT_SIGNAL_CODE,
+        "hydrophone_thud": INSTRUMENT_SIGNAL_CODE,
+        "hydrophone thud": INSTRUMENT_SIGNAL_CODE,
+    }
+    return alias_map.get(lowered, text)
 
 
 def _historical_time_fix(begin_s: float, end_s: float) -> Tuple[float, float, str]:
@@ -342,15 +384,39 @@ def parse_historical_workbook(workbook_path: Path | str) -> Tuple[pd.DataFrame, 
     return out, summary
 
 
-def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def parse_2025_annotations_workbook(workbook_path: Path | str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     path = Path(workbook_path)
-    sheet_species = {
-        "Bp_all": FIN_SPECIES_CODE,
-        "Bm": "Bm",
-        "Bb": "Bb",
-        "Mn": "Mn",
-        "Pm": "Pm",
-        "OD_all": "OD",
+    sheet_configs = {
+        "Cetaceans": {
+            "row_type": "cetacean",
+            "default_species_code": "",
+            "default_call_type": "",
+            "default_context_tags": "",
+        },
+        "hydrophone_thuds": {
+            "row_type": "non_biological",
+            "default_species_code": INSTRUMENT_SIGNAL_CODE,
+            "default_call_type": "hydrophone_thud",
+            "default_context_tags": "non_biological|instrument_noise",
+        },
+        "earthquakes": {
+            "row_type": "non_biological",
+            "default_species_code": EARTHQUAKE_SIGNAL_CODE,
+            "default_call_type": "earthquake",
+            "default_context_tags": "non_biological|earthquake",
+        },
+        "unknown": {
+            "row_type": "non_biological",
+            "default_species_code": UNKNOWN_SIGNAL_CODE,
+            "default_call_type": "unknown",
+            "default_context_tags": "non_biological|unknown_signal",
+        },
+        "sonar": {
+            "row_type": "non_biological",
+            "default_species_code": SONAR_SIGNAL_CODE,
+            "default_call_type": "sonar",
+            "default_context_tags": "non_biological|sonar",
+        },
     }
     rows: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {
@@ -358,19 +424,22 @@ def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataF
         "kept_row_count": 0,
         "sheet_counts": {},
         "drop_reasons": Counter(),
+        "species_counts": Counter(),
+        "non_biological_sheet_counts": Counter(),
     }
 
     with pd.ExcelFile(path) as excel:
-        for sheet_name, species_code in sheet_species.items():
+        for sheet_name, config in sheet_configs.items():
             if sheet_name not in excel.sheet_names:
                 continue
             df = pd.read_excel(path, sheet_name=sheet_name)
-            comments_col = _find_column(df.columns, "comments")
+            comments_col = _find_column(df.columns, "comments", "comment")
             annotator_col = _find_column(df.columns, "annotator")
             granularity_col = _find_column(df.columns, "granularity")
             peak_col = _find_column(df.columns, "peak freq")
             power_col = _find_column(df.columns, "peak power")
-            type_col = _find_column(df.columns, "call type")
+            type_col = _find_column(df.columns, "call type", "signal type")
+            species_col = _find_column(df.columns, "species", "signal source")
 
             kept = 0
             for idx, row in df.iterrows():
@@ -395,7 +464,15 @@ def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataF
                     summary["drop_reasons"]["nonpositive_freq_span"] += 1
                     continue
 
+                raw_species = _clean_text(row.get(species_col, "")) if species_col else ""
+                species_code = normalize_species_code(raw_species) or str(config["default_species_code"])
                 raw_type = _clean_text(row.get(type_col, "")) if type_col else ""
+                if not raw_type:
+                    raw_type = str(config["default_call_type"])
+                context_tags = str(config["default_context_tags"])
+                if not species_code:
+                    summary["drop_reasons"]["missing_species_code"] += 1
+                    continue
                 rows.append(
                     {
                         "annotation_id": _annotation_id(
@@ -430,18 +507,25 @@ def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataF
                         "vessel_flag": 0,
                         "granularity": _clean_text(row.get(granularity_col, "")) if granularity_col else "",
                         "comments": _clean_text(row.get(comments_col, "")) if comments_col else "",
-                        "context_tags": "",
+                        "context_tags": context_tags,
                         "timestamp_fix": "none",
                         "quality_flags": "",
                     }
                 )
                 kept += 1
+                summary["species_counts"][species_code] += 1
+                if str(config["row_type"]) == "non_biological":
+                    summary["non_biological_sheet_counts"][sheet_name] += 1
 
             summary["sheet_counts"][sheet_name] = int(kept)
             summary["kept_row_count"] += int(kept)
 
     out = pd.DataFrame(rows, columns=ANNOTATION_COLUMNS)
     return out, summary
+
+
+def parse_species_temporal_workbook(workbook_path: Path | str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    return parse_2025_annotations_workbook(workbook_path)
 
 
 def collect_mar18_guardrail_filenames(workbook_path: Path | str) -> Tuple[set[str], Dict[str, Any]]:
@@ -599,7 +683,7 @@ def build_joint_bbox_manifests(
     mar18_workbook: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     historical_df, historical_summary = parse_historical_workbook(historical_workbook)
-    species_temporal_df, species_temporal_summary = parse_species_temporal_workbook(species_temporal_workbook)
+    species_temporal_df, species_temporal_summary = parse_2025_annotations_workbook(species_temporal_workbook)
 
     guardrail_filenames: set[str] = set()
     mar18_summary: Dict[str, Any] = {"kept_row_count": 0, "sheet_counts": {}}
@@ -624,6 +708,7 @@ def build_joint_bbox_manifests(
 
     summary = {
         "historical_workbook": str(Path(historical_workbook).resolve()),
+        "annotations_2025_workbook": str(Path(species_temporal_workbook).resolve()),
         "species_temporal_workbook": str(Path(species_temporal_workbook).resolve()),
         "mar26_workbook": str(Path(mar26_workbook).resolve()),
         "mar18_guardrail_workbook": str(Path(mar18_workbook).resolve()) if mar18_workbook else "",
@@ -653,6 +738,16 @@ def build_joint_bbox_manifests(
             "kept_row_count": int(species_temporal_summary["kept_row_count"]),
             "sheet_counts": species_temporal_summary["sheet_counts"],
             "drop_reasons": dict(species_temporal_summary["drop_reasons"]),
+            "species_counts": dict(species_temporal_summary.get("species_counts", {})),
+            "non_biological_sheet_counts": dict(species_temporal_summary.get("non_biological_sheet_counts", {})),
+        },
+        "annotations_2025_summary": {
+            "parsed_row_count": int(species_temporal_summary["parsed_row_count"]),
+            "kept_row_count": int(species_temporal_summary["kept_row_count"]),
+            "sheet_counts": species_temporal_summary["sheet_counts"],
+            "drop_reasons": dict(species_temporal_summary["drop_reasons"]),
+            "species_counts": dict(species_temporal_summary.get("species_counts", {})),
+            "non_biological_sheet_counts": dict(species_temporal_summary.get("non_biological_sheet_counts", {})),
         },
         "mar18_guardrail_summary": mar18_summary,
         "mar26_pure_negative_summary": {

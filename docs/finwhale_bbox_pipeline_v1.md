@@ -8,12 +8,12 @@ It replaces the earlier CAM-localization experiment as the main localization tra
 V1 decisions:
 
 - Joint training over historical `2018/2019` plus `2025`
-- Canonical 2025 row-level bbox source: `Clayoquot_2025_SpeciesTemporalAnalysis.xlsx`
+- Canonical 2025 row-level bbox source: `ONC_ClayoquotSlope2025_Annotations_Cetaceans_Instrument_EQ_Sonar_Unknown.xlsx`
 - Pure-negative 2025 listened/analyzed inventory: `Clayoquot_2025_Analysis_Mar26_Final.xlsx`
 - `Clayoquot_2025_annotations_Mar18.xlsx` is used only as a guardrail to avoid mining false pure negatives
 - `Clayoquot_2025_analysis_Mar9.xlsx` is not used
 - First detector is single-class `fin_call` with YOLO26
-- Unified manifest keeps all species so the same source can later support multispecies detection
+- Unified manifest keeps all biological and non-biological labels so the same source can later support broader multispecies / nuisance-event detection
 
 ## Unified Annotation Schema
 
@@ -26,6 +26,12 @@ One row equals one annotation event with:
 - species and fin subtype: `species_code`, `call_type_raw`, `call_type_std`
 - box coordinates in clip space: begin/end time and low/high frequency
 - QC fields: `timestamp_fix`, comments, tags, vessel flag, annotator
+
+2025 workbook handling:
+
+- `Cetaceans` contributes mixed-species biological annotations with per-row `species` and `call_type`
+- `hydrophone_thuds`, `earthquakes`, `unknown`, and `sonar` contribute annotated non-biological events
+- non-biological rows are preserved in the same manifest and act as background negatives for the v1 fin detector
 
 Fin subtype normalization is intentionally conservative:
 
@@ -86,7 +92,7 @@ Negative sources:
 
 - gap negatives from annotated clips with a `2 s` exclusion margin
 - annotated non-fin contexts centered on other species events, exported as background-only for V1 COCO
-- pure-zero 2025 negatives from Mar26 `verified=1` rows with no species flags and no overlap with SpeciesTemporal or Mar18 filenames
+- pure-zero 2025 negatives from Mar26 `verified=1` rows with no species flags and no overlap with the final 2025 annotation workbook or Mar18 filenames
 
 COCO V1 output:
 

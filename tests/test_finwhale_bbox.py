@@ -9,6 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.dataset.finwhale_bbox import (
+    ANNOTATIONS_2025_DATASET,
     ANNOTATION_COLUMNS,
     CLIP_COLUMNS,
     FIN_LABEL_20,
@@ -18,10 +19,12 @@ from src.dataset.finwhale_bbox import (
     FIN_LABEL_SONG,
     FIN_SPECIES_CODE,
     HISTORICAL_DATASET,
+    INSTRUMENT_SIGNAL_CODE,
     PURE_NEGATIVE_DATASET,
     SPECIES_TEMPORAL_DATASET,
     build_bbox_splits,
     build_joint_bbox_manifests,
+    parse_2025_annotations_workbook,
     parse_historical_workbook,
     standardize_fin_call_type,
 )
@@ -133,6 +136,87 @@ class TestFinwhaleBbox(unittest.TestCase):
             self.assertEqual(summary["drop_reasons"]["invalid_filename"], 1)
             self.assertEqual(parsed.iloc[0]["filename"], "ICLISTENHF1353_20180701T000000.000Z.wav")
 
+    def test_parse_2025_annotations_workbook_mixed_sheets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workbook_path = Path(tmpdir) / "annotations_2025.xlsx"
+            _write_workbook(
+                workbook_path,
+                {
+                    "Cetaceans": pd.DataFrame(
+                        {
+                            "filename": [
+                                "ICLISTENHF6016_20250105T000000.000Z.flac",
+                                "ICLISTENHF6016_20250105T000500.000Z.flac",
+                            ],
+                            "begin_time": [5.0, 20.0],
+                            "end_time": [6.0, 24.0],
+                            "low_freq": [17.0, 500.0],
+                            "high_freq": [24.0, 1200.0],
+                            "peak_freq": [20.0, 900.0],
+                            "peak_power": [-19.0, -15.0],
+                            "species": ["BP", "CE"],
+                            "call_type": ["20 Hz", ""],
+                            "comment": ["", "too high for Mn?"],
+                            "annotator": ["a", "b"],
+                            "granularity": ["call", "call"],
+                        }
+                    ),
+                    "hydrophone_thuds": pd.DataFrame(
+                        {
+                            "filename": ["ICLISTENHF6016_20250105T001000.000Z.flac"],
+                            "begin_time": [30.0],
+                            "end_time": [31.0],
+                            "low_freq": [0.0],
+                            "high_freq": [200.0],
+                            "peak_freq": [80.0],
+                            "peak_power": [-30.0],
+                            "signal_source": [""],
+                            "signal_type": [""],
+                            "comment": ["hydrophone thud"],
+                            "annotator": ["c"],
+                            "granularity": [""],
+                        }
+                    ),
+                    "sonar": pd.DataFrame(
+                        {
+                            "filename": ["ICLISTENHF6016_20250105T001500.000Z.flac"],
+                            "begin_time": [40.0],
+                            "end_time": [44.0],
+                            "low_freq": [900.0],
+                            "high_freq": [1000.0],
+                            "peak_freq": [960.0],
+                            "peak_power": [-40.0],
+                            "signal_source": ["sonar"],
+                            "signal_type": ["upsweep"],
+                            "comment": ["active sonar"],
+                            "annotator": ["d"],
+                            "granularity": ["call"],
+                        }
+                    ),
+                },
+            )
+
+            parsed, summary = parse_2025_annotations_workbook(workbook_path)
+
+            self.assertEqual(len(parsed), 4)
+            self.assertEqual(summary["sheet_counts"]["Cetaceans"], 2)
+            self.assertEqual(summary["sheet_counts"]["hydrophone_thuds"], 1)
+            self.assertEqual(summary["sheet_counts"]["sonar"], 1)
+            self.assertEqual(summary["species_counts"][FIN_SPECIES_CODE], 1)
+            self.assertEqual(summary["species_counts"]["CE"], 1)
+            self.assertEqual(summary["species_counts"][INSTRUMENT_SIGNAL_CODE], 1)
+
+            fin_row = parsed.loc[parsed["species_code"] == FIN_SPECIES_CODE].iloc[0]
+            self.assertEqual(fin_row["source_dataset"], ANNOTATIONS_2025_DATASET)
+            self.assertEqual(fin_row["call_type_std"], FIN_LABEL_20)
+
+            hydro_row = parsed.loc[parsed["species_code"] == INSTRUMENT_SIGNAL_CODE].iloc[0]
+            self.assertEqual(hydro_row["call_type_raw"], "hydrophone_thud")
+            self.assertIn("non_biological", hydro_row["context_tags"])
+
+            sonar_row = parsed.loc[parsed["species_code"] == "SONAR"].iloc[0]
+            self.assertEqual(sonar_row["call_type_raw"], "upsweep")
+
     def test_build_joint_manifests_excludes_guardrailed_pure_negatives(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
@@ -163,40 +247,27 @@ class TestFinwhaleBbox(unittest.TestCase):
                 },
             )
 
-            species_temporal_path = tmpdir_path / "species_temporal.xlsx"
+            species_temporal_path = tmpdir_path / "annotations_2025.xlsx"
             _write_workbook(
                 species_temporal_path,
                 {
-                    "Bp_all": pd.DataFrame(
+                    "Cetaceans": pd.DataFrame(
                         {
-                            "filename": ["ICLISTENHF6016_20250105T000000.000Z.flac"],
-                            "begin_time": [5.0],
-                            "end_time": [6.0],
-                            "low_freq": [17.0],
-                            "high_freq": [24.0],
-                            "peak_freq": [20.0],
-                            "peak_power": [-19.0],
-                            "species": ["Bp"],
-                            "call_type": ["20 Hz"],
-                            "comments": [""],
-                            "annotator": ["a"],
-                            "granularity": ["call"],
-                        }
-                    ),
-                    "Bm": pd.DataFrame(
-                        {
-                            "filename": ["ICLISTENHF6016_20250105T000500.000Z.flac"],
-                            "begin_time": [20.0],
-                            "end_time": [22.0],
-                            "low_freq": [55.0],
-                            "high_freq": [90.0],
-                            "peak_freq": [70.0],
-                            "peak_power": [-15.0],
-                            "species": ["Bm"],
-                            "call_type": ["Bm"],
-                            "comments": [""],
-                            "annotator": ["a"],
-                            "granularity": ["call"],
+                            "filename": [
+                                "ICLISTENHF6016_20250105T000000.000Z.flac",
+                                "ICLISTENHF6016_20250105T000500.000Z.flac",
+                            ],
+                            "begin_time": [5.0, 20.0],
+                            "end_time": [6.0, 22.0],
+                            "low_freq": [17.0, 55.0],
+                            "high_freq": [24.0, 90.0],
+                            "peak_freq": [20.0, 70.0],
+                            "peak_power": [-19.0, -15.0],
+                            "species": ["Bp", "Bm"],
+                            "call_type": ["20 Hz", "Bm"],
+                            "comment": ["", ""],
+                            "annotator": ["a", "a"],
+                            "granularity": ["call", "call"],
                         }
                     ),
                 },

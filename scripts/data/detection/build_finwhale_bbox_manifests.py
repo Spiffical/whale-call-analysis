@@ -13,10 +13,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.dataset.finwhale_bbox import (
+    ANNOTATIONS_2025_WORKBOOK_DEFAULT,
     HISTORICAL_WORKBOOK_DEFAULT,
     MAR18_WORKBOOK_DEFAULT,
     MAR26_WORKBOOK_DEFAULT,
-    SPECIES_TEMPORAL_WORKBOOK_DEFAULT,
     build_joint_bbox_manifests,
     write_joint_bbox_manifests,
 )
@@ -25,7 +25,14 @@ from src.dataset.finwhale_bbox import (
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build unified fin-whale bbox manifests")
     ap.add_argument("--historical-workbook", type=str, default=HISTORICAL_WORKBOOK_DEFAULT)
-    ap.add_argument("--species-temporal-workbook", type=str, default=SPECIES_TEMPORAL_WORKBOOK_DEFAULT)
+    ap.add_argument(
+        "--annotations-2025-workbook",
+        "--species-temporal-workbook",
+        dest="annotations_2025_workbook",
+        type=str,
+        default=ANNOTATIONS_2025_WORKBOOK_DEFAULT,
+        help="Canonical 2025 annotation workbook (mixed cetacean + non-biological sheets)",
+    )
     ap.add_argument("--mar26-workbook", type=str, default=MAR26_WORKBOOK_DEFAULT)
     ap.add_argument(
         "--mar18-workbook",
@@ -43,7 +50,7 @@ def main() -> None:
 
     manifests = build_joint_bbox_manifests(
         historical_workbook=args.historical_workbook,
-        species_temporal_workbook=args.species_temporal_workbook,
+        species_temporal_workbook=args.annotations_2025_workbook,
         mar26_workbook=args.mar26_workbook,
         mar18_workbook=args.mar18_workbook,
     )
