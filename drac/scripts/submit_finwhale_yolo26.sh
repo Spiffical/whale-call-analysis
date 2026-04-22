@@ -66,7 +66,7 @@ Usage:
 Required:
   One of:
     --audio-dir PATH
-    --audio-bundle-tar PATH        Tar archive containing raw_audio/<clip> files
+    --audio-bundle-tar PATH        Archive containing raw_audio/<clip> files (.tar, .tar.gz, .tar.zst)
 
 Options:
   --run-tag TAG
@@ -249,7 +249,17 @@ if [[ -n "$AUDIO_BUNDLE_TAR" ]]; then
     AUDIO_EXTRACT_ARGS+=(--available-audio-filenames-txt "$AVAILABLE_AUDIO_FILENAMES_TXT")
   fi
   python -u scripts/data/detection/build_finwhale_bbox_audio_extract_list.py "${AUDIO_EXTRACT_ARGS[@]}"
-  tar -xf "$AUDIO_BUNDLE_TAR" -C "$EXTRACT_DIR" -T "$TMP_ROOT/audio_extract_members.txt"
+  case "$AUDIO_BUNDLE_TAR" in
+    *.tar.zst|*.tzst)
+      tar --zstd -xf "$AUDIO_BUNDLE_TAR" -C "$EXTRACT_DIR" -T "$TMP_ROOT/audio_extract_members.txt"
+      ;;
+    *.tar.gz|*.tgz)
+      tar -xzf "$AUDIO_BUNDLE_TAR" -C "$EXTRACT_DIR" -T "$TMP_ROOT/audio_extract_members.txt"
+      ;;
+    *)
+      tar -xf "$AUDIO_BUNDLE_TAR" -C "$EXTRACT_DIR" -T "$TMP_ROOT/audio_extract_members.txt"
+      ;;
+  esac
   AUDIO_DIR="$EXTRACT_DIR/raw_audio"
 fi
 
