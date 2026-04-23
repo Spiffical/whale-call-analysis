@@ -26,7 +26,7 @@ else
 fi
 
 PROJECT_PATH="${PROJECT_PATH:-$REPO_ROOT}"
-VENV_PATH="${VENV_PATH:-$REPO_ROOT/.venv}"
+VENV_PATH="${VENV_PATH:-${SCRATCH:-/scratch/$USER}/whale-call-analysis/.venvs/finwhale_yolo26}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${SCRATCH:-/scratch/$USER}/whale-call-analysis/finwhale_bbox_runs}"
 LOG_DIR="${LOG_DIR:-$OUTPUT_ROOT/logs}"
 CONFIG_PATH="${CONFIG_PATH:-config/dataset_config.yaml}"
@@ -181,20 +181,13 @@ exec > >(tee -a "$LOG_DIR/fin_yolo26_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$LOG
 
 module load StdEnv/2023 gcc/12.3 python/3.11.5 opencv/4.11.0
 
-BOOTSTRAPPED_VENV="false"
 if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
   echo "Bootstrapping Python venv at $VENV_PATH ..."
   mkdir -p "$(dirname "$VENV_PATH")"
   python -m venv "$VENV_PATH"
-  BOOTSTRAPPED_VENV="true"
 fi
 
 source "$VENV_PATH/bin/activate"
-
-if [[ "$BOOTSTRAPPED_VENV" == "true" ]]; then
-  python -m pip install --upgrade pip setuptools wheel
-  pip install -r "$PROJECT_PATH/requirements.txt"
-fi
 
 if [[ "$USE_WANDB" == "true" ]]; then
   if [[ -z "${WANDB_API_KEY:-}" && -f "$HOME/.wandb_api_key" ]]; then
@@ -212,8 +205,27 @@ rsync -a --delete --exclude='.git' "$PROJECT_PATH/" "$SLURM_TMPDIR/whale_project
 export PYTHONPATH="${PYTHONPATH:-}:$SLURM_TMPDIR/whale_project/src"
 cd "$SLURM_TMPDIR/whale_project"
 
+REQ_STAMP_PATH="$VENV_PATH/.finwhale_yolo26_requirements.sha256"
+REQ_FILES=("$SLURM_TMPDIR/whale_project/requirements.txt")
 if [[ "$INSTALL_DETECTION_DEPS" == "true" ]]; then
-  pip install -r "$SLURM_TMPDIR/whale_project/requirements-detection.txt"
+  REQ_FILES+=("$SLURM_TMPDIR/whale_project/requirements-detection.txt")
+fi
+REQ_HASH="$(cat "${REQ_FILES[@]}" | sha256sum | awk '{print $1}')"
+INSTALLED_REQ_HASH=""
+if [[ -f "$REQ_STAMP_PATH" ]]; then
+  INSTALLED_REQ_HASH="$(cat "$REQ_STAMP_PATH")"
+fi
+
+if [[ "$INSTALLED_REQ_HASH" != "$REQ_HASH" ]]; then
+  echo "Installing Python requirements into $VENV_PATH ..."
+  python -m pip install --upgrade pip setuptools wheel
+  pip install -r "$SLURM_TMPDIR/whale_project/requirements.txt"
+  if [[ "$INSTALL_DETECTION_DEPS" == "true" ]]; then
+    pip install -r "$SLURM_TMPDIR/whale_project/requirements-detection.txt"
+  fi
+  printf '%s\n' "$REQ_HASH" > "$REQ_STAMP_PATH"
+else
+  echo "Python requirements already match stamp $REQ_HASH; reusing $VENV_PATH"
 fi
 
 RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
