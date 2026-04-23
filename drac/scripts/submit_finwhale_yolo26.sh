@@ -160,10 +160,6 @@ if [[ -n "$AUDIO_BUNDLE_TAR" && ! -f "$AUDIO_BUNDLE_TAR" ]]; then
   echo "Error: --audio-bundle-tar must exist: $AUDIO_BUNDLE_TAR"
   exit 1
 fi
-if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
-  echo "Error: venv not found at $VENV_PATH/bin/activate"
-  exit 1
-fi
 if [[ -n "$ALLOWED_FILENAMES_TXT" && ! -f "$ALLOWED_FILENAMES_TXT" ]]; then
   echo "Error: --allowed-filenames-txt must exist: $ALLOWED_FILENAMES_TXT"
   exit 1
@@ -184,7 +180,21 @@ mkdir -p "$LOG_DIR" "$OUTPUT_ROOT"
 exec > >(tee -a "$LOG_DIR/fin_yolo26_${SLURM_JOB_ID:-$$}.out") 2> >(tee -a "$LOG_DIR/fin_yolo26_${SLURM_JOB_ID:-$$}.err" >&2)
 
 module load StdEnv/2023 gcc/12.3 python/3.11.5 opencv/4.11.0
+
+BOOTSTRAPPED_VENV="false"
+if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
+  echo "Bootstrapping Python venv at $VENV_PATH ..."
+  mkdir -p "$(dirname "$VENV_PATH")"
+  python -m venv "$VENV_PATH"
+  BOOTSTRAPPED_VENV="true"
+fi
+
 source "$VENV_PATH/bin/activate"
+
+if [[ "$BOOTSTRAPPED_VENV" == "true" ]]; then
+  python -m pip install --upgrade pip setuptools wheel
+  pip install -r "$PROJECT_PATH/requirements.txt"
+fi
 
 if [[ "$USE_WANDB" == "true" ]]; then
   if [[ -z "${WANDB_API_KEY:-}" && -f "$HOME/.wandb_api_key" ]]; then
