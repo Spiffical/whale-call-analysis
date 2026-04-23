@@ -31,5 +31,6 @@ torch>=2.0.0
 torchvision>=0.15.0
 scikit-learn>=1.0.0
 wandb>=0.15.0
+typing_extensions>=4.8.0
 einops>=0.6.0
 grad-cam>=1.5.5
