@@ -250,6 +250,64 @@ python -u scripts/data/detection/build_finwhale_bbox_splits.py \
   --clip-manifest "$MANIFEST_DIR/clip_manifest.csv" \
   --output-dir "$SPLIT_DIR"
 
+if [[ "$SMOKE_MODE" == "true" && -z "$ALLOWED_FILENAMES_TXT" ]]; then
+  ALLOWED_FILENAMES_TXT="$TMP_ROOT/smoke_allowed_filenames.txt"
+  python - "$SPLIT_DIR/assignments.csv" "$ALLOWED_FILENAMES_TXT" "${AVAILABLE_AUDIO_FILENAMES_TXT:-}" <<'PY'
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+assignments_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+available_path = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+
+assignments = pd.read_csv(assignments_path)
+if available_path and available_path.exists():
+    available = {line.strip() for line in available_path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    assignments = assignments[assignments["filename"].astype(str).isin(available)].copy()
+
+quotas = {
+    "train": 16,
+    "val_2025": 6,
+    "test_2025": 6,
+    "val_hist": 4,
+    "test_hist": 4,
+}
+chosen: list[str] = []
+seen: set[str] = set()
+
+for split_name, quota in quotas.items():
+    group = assignments[assignments["split_name"].astype(str) == split_name].copy()
+    if group.empty:
+        continue
+    group["_priority"] = (
+        1000 * group["is_fin_positive"].fillna(0).astype(int)
+        + 100 * group["is_annotated_non_fin"].fillna(0).astype(int)
+        + group["fin_annotation_count"].fillna(0).astype(int)
+    )
+    group = group.sort_values(
+        ["_priority", "fin_annotation_count", "non_fin_annotation_count", "filename"],
+        ascending=[False, False, False, True],
+        kind="mergesort",
+    )
+    for filename in group["filename"].astype(str).tolist():
+        if filename in seen:
+            continue
+        chosen.append(filename)
+        seen.add(filename)
+        if sum(1 for item in chosen if item in set(group["filename"].astype(str))) >= int(quota):
+            break
+
+if not chosen:
+    raise SystemExit("smoke-mode filename allowlist is empty")
+
+output_path.parent.mkdir(parents=True, exist_ok=True)
+output_path.write_text("\n".join(chosen) + "\n", encoding="utf-8")
+print(f"Wrote {len(chosen)} smoke-mode allowed filenames to {output_path}")
+PY
+fi
+
 if [[ -n "$AUDIO_BUNDLE_TAR" ]]; then
   AUDIO_EXTRACT_ARGS=(
     --annotation-manifest "$MANIFEST_DIR/unified_annotations.csv"
