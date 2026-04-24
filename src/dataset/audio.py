@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import threading
 import soundfile as sf
 import numpy as np
@@ -31,38 +32,62 @@ def cleanup_audio_files(downloaded_files: Dict[str, str]) -> int:
         print_status(f"🗑️ Cleaned up {deleted_count} audio files, freed {total_size_mb:.1f} MB", "SUCCESS")
     return deleted_count
 
+_CLIP_FILENAME_RE = re.compile(
+    r"^(?P<device>[^_]+)_(?P<timestamp>\d{8}T\d{6}\.\d+Z)(?P<tail>.*)$"
+)
+
+
+def _clip_filename_parts(clip_id: str) -> Tuple[Optional[str], Optional[datetime], str, str]:
+    """Parse a clip filename into device code, timestamp, tail, and extension."""
+    try:
+        clip_name = Path(clip_id).name
+        extension = Path(clip_name).suffix or ".wav"
+        match = _CLIP_FILENAME_RE.match(clip_name)
+        if match is None:
+            return None, None, extension, extension
+        device = match.group("device")
+        dt = datetime.strptime(match.group("timestamp").replace("Z", ""), "%Y%m%dT%H%M%S.%f")
+        tail = match.group("tail") or extension
+        return device, dt, tail, extension
+    except Exception:
+        extension = Path(clip_id).suffix or ".wav"
+        return None, None, extension, extension
+
+
 def get_adjacent_filenames(clip_id: str, device_code: str) -> Tuple[Optional[str], Optional[str]]:
     """Estimate previous and next filenames based on the 5-minute naming convention."""
     try:
-        # Expected format: DEVICE_YYYYMMDDTHHMMSS.mmmZ.wav
-        base_name = clip_id.replace('.wav', '')
-        parts = base_name.split('_')
-        if len(parts) < 2:
+        parsed_device, dt, filename_tail, _ = _clip_filename_parts(clip_id)
+        if dt is None:
             return None, None
-            
-        time_str = parts[1]
-        # Remove 'Z' for parsing
-        dt = datetime.strptime(time_str.replace('Z', ''), '%Y%m%dT%H%M%S.%f')
-        
+        resolved_device = parsed_device or device_code
+
         # ONC files are typically 5 minutes (300 seconds)
         prev_dt = dt - timedelta(minutes=5)
         next_dt = dt + timedelta(minutes=5)
-        
-        prev_filename = f"{device_code}_{prev_dt.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
-        next_filename = f"{device_code}_{next_dt.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z.wav"
-        
+
+        prev_filename = f"{resolved_device}_{prev_dt.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z{filename_tail}"
+        next_filename = f"{resolved_device}_{next_dt.strftime('%Y%m%dT%H%M%S.%f')[:-3]}Z{filename_tail}"
+
         return prev_filename, next_filename
     except Exception:
         return None, None
 
-def download_adjacent_file(onc: ONC, device_code: str, timestamp: datetime, audio_dir: Path) -> Optional[Path]:
+def download_adjacent_file(
+    onc: ONC,
+    device_code: str,
+    timestamp: datetime,
+    audio_dir: Path,
+    extension: str = "wav",
+) -> Optional[Path]:
     """Download an adjacent audio file if needed."""
     try:
+        extension = str(extension or "wav").lstrip(".")
         filters = {
             'deviceCode': device_code,
             'dateFrom': (timestamp - timedelta(seconds=1)).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
             'dateTo': (timestamp + timedelta(seconds=1)).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-            'extension': 'wav'
+            'extension': extension,
         }
         
         result = onc.getListByDevice(filters)
@@ -118,9 +143,12 @@ def stitch_audio_files(
             thread_onc.outPath = str(audio_dir)
         
         # Get timestamp of current file to find neighbors
-        time_str = clip_id.replace('.wav', '').split('_')[1].replace('Z', '')
-        dt = datetime.strptime(time_str, '%Y%m%dT%H%M%S.%f')
-        
+        parsed_device, dt, _, extension_suffix = _clip_filename_parts(clip_id)
+        if dt is None:
+            return None
+        extension = extension_suffix.lstrip(".") or "wav"
+        device_code = parsed_device or device_code
+
         full_audio_list = []
         
         prev_filename, next_filename = get_adjacent_filenames(clip_id, device_code)
@@ -133,7 +161,13 @@ def stitch_audio_files(
                 if prev_candidate.exists():
                     prev_path = prev_candidate
             if prev_path is None and allow_downloads and thread_onc is not None:
-                prev_path = download_adjacent_file(thread_onc, device_code, dt - timedelta(minutes=5), audio_dir)
+                prev_path = download_adjacent_file(
+                    thread_onc,
+                    device_code,
+                    dt - timedelta(minutes=5),
+                    audio_dir,
+                    extension=extension,
+                )
             if prev_path and prev_path.exists():
                 with sf.SoundFile(prev_path) as f:
                     p_fs = f.samplerate
@@ -166,7 +200,13 @@ def stitch_audio_files(
                 if next_candidate.exists():
                     next_path = next_candidate
             if next_path is None and allow_downloads and thread_onc is not None:
-                next_path = download_adjacent_file(thread_onc, device_code, dt + timedelta(minutes=5), audio_dir)
+                next_path = download_adjacent_file(
+                    thread_onc,
+                    device_code,
+                    dt + timedelta(minutes=5),
+                    audio_dir,
+                    extension=extension,
+                )
             if next_path and next_path.exists():
                 with sf.SoundFile(next_path) as f:
                     needed_next = desired_end - main_duration
