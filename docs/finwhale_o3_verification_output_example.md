@@ -11,8 +11,10 @@ Generate two JSON artifacts from one inference run:
 
 1. `predictions_postprocessed.app.json`
 2. `predictions_postprocessed.o3.json`
+3. `predictions.json` as a copy of the strict O3 JSON
 
-Use the first file in the verification app. Use the second file for strict O3.0 ingest.
+Use the first file when you need rich review/event lineage. Use the second file,
+or canonical `predictions.json`, for strict O3.0 ingest.
 
 Reason: the app can use richer event metadata (`events`, merged media lineage), while strict O3.0 schema has `additionalProperties: false` and rejects extra root/item/model-output fields.
 
@@ -22,7 +24,7 @@ Reason: the app can use richer event metadata (`events`, merged media lineage), 
 2018-07-01/
   ICLISTENHF1353/
     full_spectrograms/
-    predictions.json
+    predictions.json                 # strict O3-compatible copy
     predictions_postprocessed.app.json
     predictions_postprocessed.o3.json
     predictions_postprocessed_events_media/
@@ -117,6 +119,12 @@ This supports concatenated/clustered event review and keeps lineage back to orig
 ## 2) O3.0 Ingest JSON (Strict)
 
 This version should only contain fields allowed by `OCEANS3_JSON_SCHEMA.md`.
+If an app-facing event spans multiple raw source files, split it into one strict
+O3 item per source file. Keep the app event id as the prefix and suffix the
+strict `item_id` with source information. The strict items may point to the same
+merged review media in `paths`, but each item should have its own
+`source_audio.file_name`, `audio_start_time`, `audio_end_time`, and per-source
+score.
 
 ```json
 {
@@ -139,7 +147,7 @@ This version should only contain fields allowed by `OCEANS3_JSON_SCHEMA.md`.
   ],
   "items": [
     {
-      "item_id": "fw-ICLISTENHF1353-20180701T002740000Z-20180701T002757700Z-gb9f63f34",
+      "item_id": "fw-ICLISTENHF1353-20180701T002740000Z-20180701T002757700Z-gb9f63f34__source_01_ICLISTENHF1353-20180701T002500-000Z",
       "data_source_id": "ICLISTENHF1353_2018-07-01",
       "audio_start_time": "2018-07-01T00:27:40+00:00",
       "audio_end_time": "2018-07-01T00:27:57.700000+00:00",
@@ -149,6 +157,12 @@ This version should only contain fields allowed by `OCEANS3_JSON_SCHEMA.md`.
           "score": 0.9983
         }
       ],
+      "source_audio": {
+        "file_name": "ICLISTENHF1353_20180701T002500.000Z.wav",
+        "format": "wav",
+        "recording_start_time": "2018-07-01T00:25:00+00:00",
+        "recording_end_time": "2018-07-01T00:30:00+00:00"
+      },
       "verifications": [
         {
           "verified_at": "2026-02-13T02:10:00Z",
@@ -203,25 +217,15 @@ Keep these stable during the review cycle:
 
 ## If You Need Event Lineage Inside O3 JSON
 
-Strict schema currently rejects custom fields (`additionalProperties: false`).
+Do not put event lineage inside strict O3 JSON unless the schema is formally
+changed. Current strict schema rejects custom fields (`additionalProperties:
+false`). Keep lineage in `predictions_postprocessed.app.json`, especially:
 
-Minimal schema change that preserves strictness:
-
-1. Add optional root `extensions` object (`additionalProperties: true`)
-2. Add optional item `extensions` object (`additionalProperties: true`)
-3. Add optional model_output `extensions` object (`additionalProperties: true`)
-
-Then store event lineage under:
-
-```json
-"extensions": {
-  "finwhale": {
-    "event_id": "fw-ICLISTENHF1353-20180701T002740000Z-20180701T002757700Z-gb9f63f34",
-    "parent_source_audio_files": ["ICLISTENHF1353_20180701T002558.726Z.wav"],
-    "source_segments": ["...window ids..."]
-  }
-}
-```
+1. root `events[]`
+2. root `postprocessing`
+3. item `source_segments`
+4. item `parent_source_audio_files`
+5. model output `metadata`
 
 ## Optional Transform: Extended -> Strict O3
 
@@ -237,9 +241,9 @@ jq '
           data_source_id: $i.data_source_id,
           audio_start_time: $i.audio_start_time,
           audio_end_time: $i.audio_end_time,
-          segment_index: $i.segment_index,
           model_outputs: (($i.model_outputs // []) | map({class_hierarchy, class_id, score})),
           verifications: ($i.verifications // []),
+          source_audio: $i.source_audio,
           paths: ($i.paths // {})
         }
       | with_entries(select(.value != null))

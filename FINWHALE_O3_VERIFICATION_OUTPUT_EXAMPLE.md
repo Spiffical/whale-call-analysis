@@ -5,7 +5,9 @@ This document shows a concrete JSON output pattern that is:
 - compatible with the labeling verification app
 - suitable for O3.0 ingestion/querying (find calls, source files, and approximate call time in 5-minute audio)
 
-It uses the unified predictions format (`schema_version: "2.1"`), with event-level items created by postprocessing.
+It uses the unified predictions format (`schema_version: "2.1"`), with event-level
+items created by postprocessing for app review and source-file-scoped items for
+strict O3.0 ingestion.
 
 ---
 
@@ -14,6 +16,16 @@ Use postprocessing with:
 - merged event media
 - one item per event
 - optional cross-5min grouping
+
+Write three JSON artifacts:
+- `predictions_postprocessed.app.json`: rich app review JSON with event lineage
+- `predictions_postprocessed.o3.json`: strict O3 JSON
+- `predictions.json`: canonical strict O3 JSON copy
+
+Strict O3 JSON has `additionalProperties: false`. Keep rich event lineage such
+as `events`, `source_segments`, `parent_source_audio_files`,
+`aggregation_method`, and model-output `metadata` in the app JSON/sidecars, not
+in `predictions.json`.
 
 Example inference/postprocess flags:
 
@@ -176,52 +188,30 @@ Use:
   - `items[].data_source_id` -> `data_sources[]`
 - event absolute time bounds:
   - `items[].audio_start_time`, `items[].audio_end_time`
-- source 5-minute file(s) and approximate offsets:
-  - `items[].model_outputs[].metadata.parent_source_audio_files`
-  - `items[].model_outputs[].metadata.windows[].source_audio`
-  - `items[].model_outputs[].metadata.windows[].time_start_sec`
-  - `items[].model_outputs[].metadata.windows[].time_end_sec`
+- source 5-minute file:
+  - `items[].source_audio.file_name`
+  - for app-only lineage, use `predictions_postprocessed.app.json` root `events[]` and item `source_segments[]`
 
 ---
 
 ## Strict Ingestion Profile (If Needed)
 
-Current postprocessed output may include extra root keys (for diagnostics), e.g. `events`, `postprocessing`.
-
-If O3.0 ingestion requires a strict subset, create an ingest-specific file:
+The app-facing postprocessed output includes extra root keys (for diagnostics),
+e.g. `events`, `postprocessing`, plus item-level lineage fields. O3.0 ingestion
+requires a strict subset, and cross-source events should be split by source
+audio file. Use:
 
 ```bash
-jq '{
-  schema_version,
-  created_at,
-  updated_at,
-  task_type,
-  model,
-  data_sources,
-  spectrogram_config,
-  pipeline,
-  items: [.items[] | {
-    item_id,
-    data_source_id,
-    audio_start_time,
-    audio_end_time,
-    segment_index,
-    model_outputs,
-    verifications,
-    paths
-  }]
-}' predictions_postprocessed.json > predictions_o3_ingest.json
+python scripts/inference/transform_predictions_to_o3.py \
+  --input-json predictions_postprocessed.app.json \
+  --output-json predictions_postprocessed.o3.json \
+  --overwrite
+
+cp predictions_postprocessed.o3.json predictions.json
 ```
 
-This preserves event-level whale-call information and expert verifications while dropping non-core root diagnostics.
-
----
-
-## Minimal Schema Edits (Only If Required)
-
-If the O3.0 validator is strict and rejects the above metadata, minimal useful extensions are:
-- allow `items[].model_outputs[].aggregation_method` (string)
-- allow `items[].model_outputs[].metadata` (object)
-- optionally allow root `postprocessing` and `events` as optional diagnostic blocks
-
-These extensions are enough to support event-level merged outputs and source-window traceability without changing core ingestion logic.
+This preserves whale-call information and expert verifications while dropping
+non-schema diagnostics. For a merged app event spanning two five-minute source
+files, the transformer emits two strict O3 items with the same app event id
+prefix, separate `source_audio.file_name` values, and per-source scores/time
+bounds.

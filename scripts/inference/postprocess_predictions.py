@@ -733,7 +733,7 @@ def _extract_event_audio_from_parent(
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     out_path = audio_dir / f"{event_id}.wav"
-    sf.write(str(out_path), wav.astype(np.float32), sr)
+    sf.write(str(out_path), wav.astype(np.float32), sr, subtype="FLOAT")
     return _to_output_rel(out_path, output_json)
 
 
@@ -997,7 +997,7 @@ def _merge_event_audio(
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     out_path = audio_dir / f"{event_id}.wav"
-    sf.write(str(out_path), merged, sr)
+    sf.write(str(out_path), merged.astype(np.float32), sr, subtype="FLOAT")
     return _to_output_rel(out_path, output_json)
 
 
@@ -1059,7 +1059,7 @@ def _align_audio_to_spectrogram_duration(audio_path: Path, mat_path: Path) -> No
         wav = wav[:target_samples]
     elif wav.shape[0] < target_samples:
         wav = np.pad(wav, (0, target_samples - wav.shape[0]))
-    sf.write(str(audio_path), wav.astype(np.float32), sr)
+    sf.write(str(audio_path), wav.astype(np.float32), sr, subtype="FLOAT")
 
 
 @dataclass
