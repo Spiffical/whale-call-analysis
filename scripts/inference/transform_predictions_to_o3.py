@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _now_iso() -> str:
@@ -36,6 +37,52 @@ def _as_float(value: Any) -> Optional[float]:
 
 def _prune_none(d: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in d.items() if v is not None}
+
+
+def _datetime_to_schema_iso(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat()
+
+
+def _parse_audio_file_start(file_name: Optional[str]) -> Optional[datetime]:
+    if not file_name:
+        return None
+    match = re.search(r"_(\d{8}T\d{6})(?:\.(\d+))?Z", Path(str(file_name)).name)
+    if not match:
+        return None
+    dt = datetime.strptime(match.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    fraction = match.group(2)
+    if fraction:
+        micro = int((fraction + "000000")[:6])
+        dt = dt.replace(microsecond=micro)
+    return dt
+
+
+def _is_epoch_seconds(value: Optional[float]) -> bool:
+    return value is not None and value > 946684800.0
+
+
+def _seconds_to_iso(value: Optional[float]) -> Optional[str]:
+    if value is None:
+        return None
+    return _datetime_to_schema_iso(datetime.fromtimestamp(float(value), tz=timezone.utc))
+
+
+def _source_format_from_name(file_name: Optional[str]) -> Optional[str]:
+    if not file_name:
+        return None
+    suffix = Path(file_name).suffix.lower().lstrip(".")
+    return suffix or None
+
+
+def _safe_item_id_token(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "-" for ch in value).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned or "source"
 
 
 def _clean_model(model: Any) -> Optional[Dict[str, Any]]:
@@ -328,21 +375,98 @@ def _clean_paths(paths: Any, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return out if out else None
 
 
-def _clean_item(item: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(item, dict):
-        return None
-    item_id = _as_str(item.get("item_id"))
-    if item_id is None:
-        return None
+def _source_audio_from_name(source_name: str, segments: List[Dict[str, Any]]) -> Dict[str, Any]:
+    del segments  # Source audio describes the raw file; item times describe the event segment.
+    source_start = _parse_audio_file_start(source_name)
+    return _prune_none(
+        {
+            "file_name": Path(source_name).name,
+            "format": _source_format_from_name(source_name),
+            "recording_start_time": _datetime_to_schema_iso(source_start) if source_start else None,
+        }
+    )
+
+
+def _source_segment_time_bounds(
+    segments: List[Dict[str, Any]],
+    source_name: Optional[str],
+    fallback_start: Optional[str],
+    fallback_end: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    starts: List[float] = []
+    ends: List[float] = []
+    for segment in segments:
+        start = _as_float(segment.get("time_start_sec"))
+        end = _as_float(segment.get("time_end_sec"))
+        if start is not None:
+            starts.append(start)
+        if end is not None:
+            ends.append(end)
+
+    if starts and ends:
+        start = min(starts)
+        end = max(ends)
+        if _is_epoch_seconds(start) or _is_epoch_seconds(end):
+            return _seconds_to_iso(start), _seconds_to_iso(end)
+
+        source_start = _parse_audio_file_start(source_name)
+        if source_start is not None:
+            return (
+                _datetime_to_schema_iso(source_start + timedelta(seconds=float(start))),
+                _datetime_to_schema_iso(source_start + timedelta(seconds=float(end))),
+            )
+
+    return fallback_start, fallback_end
+
+
+def _split_source_segments(item: Dict[str, Any]) -> List[Tuple[Optional[str], List[Dict[str, Any]]]]:
+    segments = item.get("source_segments")
+    if not isinstance(segments, list):
+        return []
+
+    grouped: List[Tuple[Optional[str], List[Dict[str, Any]]]] = []
+    index_by_source: Dict[Optional[str], int] = {}
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        source = _as_str(segment.get("source_audio"))
+        key = source or None
+        if key not in index_by_source:
+            index_by_source[key] = len(grouped)
+            grouped.append((key, []))
+        grouped[index_by_source[key]][1].append(segment)
+    return grouped
+
+
+def _score_for_source_segments(segments: List[Dict[str, Any]], fallback: Optional[float]) -> Optional[float]:
+    scores = [_as_float(segment.get("score")) for segment in segments]
+    scores = [score for score in scores if score is not None]
+    return max(scores) if scores else fallback
+
+
+def _clean_item_base(
+    item: Dict[str, Any],
+    *,
+    item_id: str,
+    source_audio: Optional[Dict[str, Any]],
+    audio_start_time: Optional[str],
+    audio_end_time: Optional[str],
+    model_score_override: Optional[float] = None,
+) -> Dict[str, Any]:
+    model_outputs = _clean_model_outputs(item.get("model_outputs"))
+    if model_score_override is not None:
+        for output in model_outputs:
+            output["score"] = float(model_score_override)
+
     out = _prune_none(
         {
             "item_id": item_id,
             "data_source_id": _as_str(item.get("data_source_id")),
-            "audio_start_time": _as_str(item.get("audio_start_time")),
-            "audio_end_time": _as_str(item.get("audio_end_time")),
-            "model_outputs": _clean_model_outputs(item.get("model_outputs")),
+            "audio_start_time": audio_start_time,
+            "audio_end_time": audio_end_time,
+            "model_outputs": model_outputs,
             "verifications": _clean_verifications(item.get("verifications")),
-            "source_audio": _clean_source_audio(item.get("source_audio")),
+            "source_audio": source_audio,
             "paths": _clean_paths(item.get("paths"), item),
         }
     )
@@ -351,6 +475,59 @@ def _clean_item(item: Any) -> Optional[Dict[str, Any]]:
     if "verifications" not in out:
         out["verifications"] = []
     return out
+
+
+def _clean_items(item: Any) -> List[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return []
+    item_id = _as_str(item.get("item_id"))
+    if item_id is None:
+        return []
+
+    fallback_start = _as_str(item.get("audio_start_time"))
+    fallback_end = _as_str(item.get("audio_end_time"))
+    fallback_score = None
+    for output in _clean_model_outputs(item.get("model_outputs")):
+        fallback_score = _as_float(output.get("score"))
+        if fallback_score is not None:
+            break
+
+    source_groups = _split_source_segments(item)
+    source_groups = [(source, segments) for source, segments in source_groups if source and segments]
+    if source_groups:
+        out_items: List[Dict[str, Any]] = []
+        split_count = len(source_groups)
+        for idx, (source_name, segments) in enumerate(source_groups, start=1):
+            start_iso, end_iso = _source_segment_time_bounds(
+                segments,
+                source_name,
+                fallback_start if split_count == 1 else None,
+                fallback_end if split_count == 1 else None,
+            )
+            split_item_id = item_id
+            if split_count > 1:
+                split_item_id = f"{item_id}__source_{idx:02d}_{_safe_item_id_token(Path(source_name).stem)[:48]}"
+            out_items.append(
+                _clean_item_base(
+                    item,
+                    item_id=split_item_id,
+                    source_audio=_source_audio_from_name(source_name, segments),
+                    audio_start_time=start_iso,
+                    audio_end_time=end_iso,
+                    model_score_override=_score_for_source_segments(segments, fallback_score),
+                )
+            )
+        return out_items
+
+    return [
+        _clean_item_base(
+            item,
+            item_id=item_id,
+            source_audio=_clean_source_audio(item.get("source_audio")),
+            audio_start_time=fallback_start,
+            audio_end_time=fallback_end,
+        )
+    ]
 
 
 def transform_to_o3(input_data: Dict[str, Any], *, keep_updated_at: bool = True) -> Dict[str, Any]:
@@ -385,9 +562,7 @@ def transform_to_o3(input_data: Dict[str, Any], *, keep_updated_at: bool = True)
 
     items: List[Dict[str, Any]] = []
     for item in input_data.get("items", []) if isinstance(input_data.get("items"), list) else []:
-        cleaned = _clean_item(item)
-        if cleaned is not None:
-            items.append(cleaned)
+        items.extend(_clean_items(item))
     out["items"] = items
 
     return out

@@ -340,6 +340,16 @@ def _event_absolute_times(member_items: Sequence[Dict[str, Any]]) -> Tuple[Optio
     return start_iso, end_iso
 
 
+def _absolute_time_bounds_seconds(item: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    start = _safe_epoch_seconds(item.get("audio_start_time") or item.get("audio_timestamp"))
+    end = _safe_epoch_seconds(item.get("audio_end_time"))
+    if start is not None and end is None:
+        duration = _safe_float(item.get("duration_sec"))
+        if duration is not None and duration >= 0:
+            end = start + duration
+    return start, end
+
+
 def _compact_utc_timestamp(value: Optional[str]) -> Optional[str]:
     dt = _parse_iso(value)
     if dt is None:
@@ -733,7 +743,7 @@ def _extract_event_audio_from_parent(
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     out_path = audio_dir / f"{event_id}.wav"
-    sf.write(str(out_path), wav.astype(np.float32), sr)
+    sf.write(str(out_path), wav.astype(np.float32), sr, subtype="FLOAT")
     return _to_output_rel(out_path, output_json)
 
 
@@ -753,7 +763,11 @@ def _merge_event_spectrogram(
             spec, spec_kind, freq, t = _load_mat_spectrogram(mat_path)
         except Exception:
             continue
-        start, end = _infer_window_times(item, spec.shape[1])
+        rel_start, rel_end = _infer_window_times(item, spec.shape[1])
+        abs_start, abs_end = _absolute_time_bounds_seconds(item)
+        start = abs_start if abs_start is not None else rel_start
+        end = abs_end if abs_end is not None else rel_end
+        uses_absolute_timeline = abs_start is not None
         if start is None:
             continue
         # Prefer actual clipped audio duration when available so merged spectrogram
@@ -775,8 +789,9 @@ def _merge_event_spectrogram(
         t_vec: Optional[np.ndarray] = None
         dt: Optional[float] = None
 
-        # Prefer MAT time bins when available. These preserve the true hop used
-        # during spectrogram generation and avoid seam artifacts when stitching.
+        # Prefer MAT time bins when available. For cross-file stitching, put
+        # every crop on an absolute timeline so adjacent source clips sort and
+        # overlap-trim correctly.
         if t is not None and np.asarray(t).size == n_cols:
             t_raw = np.asarray(t, dtype=np.float64).ravel()
             if t_raw.size >= 2:
@@ -785,7 +800,10 @@ def _merge_event_spectrogram(
                 if diffs.size:
                     dt = float(np.median(diffs))
             if dt is not None and dt > 0 and np.all(np.isfinite(t_raw)):
-                t_vec = t_raw
+                if uses_absolute_timeline:
+                    t_vec = float(start) + (t_raw - float(t_raw[0]))
+                else:
+                    t_vec = t_raw
 
         # Fallback when MAT has no usable time axis.
         if t_vec is None and end is not None and end > start:
@@ -816,6 +834,7 @@ def _merge_event_spectrogram(
                 "start": float(start),
                 "dt": float(dt),
                 "win_duration": float(win_duration) if win_duration is not None else None,
+                "uses_absolute_timeline": bool(uses_absolute_timeline),
             }
         )
     if not rows:
@@ -892,6 +911,8 @@ def _merge_event_spectrogram(
         merged_power = None
         merged = np.minimum(merged_spec, 0.0).astype(np.float32)
     timeline = merged_times.astype(np.float64)
+    if any(bool(row.get("uses_absolute_timeline")) for row in rows) and timeline.size:
+        timeline = timeline - float(timeline[0])
     freq = rows[0]["freq"]
     if freq is None or np.asarray(freq).size != freq_bins:
         freq = np.arange(freq_bins, dtype=np.float32)
@@ -935,7 +956,10 @@ def _merge_event_audio(
         audio_path = _resolve_media_path(input_json, _item_path(item, "audio_path"))
         if audio_path is None or not audio_path.exists():
             continue
-        start, end = _infer_window_times(item, 0)
+        rel_start, rel_end = _infer_window_times(item, 0)
+        abs_start, abs_end = _absolute_time_bounds_seconds(item)
+        start = abs_start if abs_start is not None else rel_start
+        end = abs_end if abs_end is not None else rel_end
         if start is None:
             continue
         try:
@@ -997,7 +1021,7 @@ def _merge_event_audio(
     audio_dir = output_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     out_path = audio_dir / f"{event_id}.wav"
-    sf.write(str(out_path), merged, sr)
+    sf.write(str(out_path), merged.astype(np.float32), sr, subtype="FLOAT")
     return _to_output_rel(out_path, output_json)
 
 
@@ -1059,7 +1083,7 @@ def _align_audio_to_spectrogram_duration(audio_path: Path, mat_path: Path) -> No
         wav = wav[:target_samples]
     elif wav.shape[0] < target_samples:
         wav = np.pad(wav, (0, target_samples - wav.shape[0]))
-    sf.write(str(audio_path), wav.astype(np.float32), sr)
+    sf.write(str(audio_path), wav.astype(np.float32), sr, subtype="FLOAT")
 
 
 @dataclass
