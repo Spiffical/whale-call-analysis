@@ -168,12 +168,13 @@ def _sample_inventory_rows(
                     "fin_call_type_buckets": str(clip_row.get("fin_call_type_buckets", "")),
                     "is_fin_positive": str(clip_row.get("is_fin_positive", "")),
                     "is_annotated_non_fin": str(clip_row.get("is_annotated_non_fin", "")),
+                    "is_pure_negative_candidate": str(clip_row.get("is_pure_negative_candidate", "")),
                 }
             )
     return rows
 
 
-def _pure_nonfin_clip_rows(
+def _extra_negative_clip_rows(
     *,
     clip_manifest_csv: Path,
     selected_clips: Optional[set[str]],
@@ -188,7 +189,8 @@ def _pure_nonfin_clip_rows(
             continue
         is_fin_positive = str(row.get("is_fin_positive", "0")).strip() == "1"
         is_annotated_non_fin = str(row.get("is_annotated_non_fin", "0")).strip() == "1"
-        if is_annotated_non_fin and not is_fin_positive:
+        is_pure_negative_candidate = str(row.get("is_pure_negative_candidate", "0")).strip() == "1"
+        if (is_annotated_non_fin and not is_fin_positive) or is_pure_negative_candidate:
             selected.append(dict(row))
     return selected
 
@@ -378,7 +380,7 @@ def main() -> None:
         fin_annotations_csv=fin_annotations_csv,
         selected_clips=selected_clips,
     )
-    pure_nonfin_rows = _pure_nonfin_clip_rows(
+    pure_nonfin_rows = _extra_negative_clip_rows(
         clip_manifest_csv=clip_manifest_csv,
         selected_clips=selected_pure_nonfin_clips if selected_pure_nonfin_clips is not None else selected_clips,
     )
@@ -501,6 +503,13 @@ def main() -> None:
         and str(row.get("is_annotated_non_fin", "")).strip() == "1"
     ]
     nonfin_only_source_clips = sorted({str(row.get("source_audio", "")).strip() for row in nonfin_only_rows if row.get("source_audio")})
+    pure_negative_rows = [
+        row
+        for row in sample_inventory
+        if int(row["label"]) == 0
+        and str(row.get("is_pure_negative_candidate", "")).strip() == "1"
+    ]
+    pure_negative_source_clips = sorted({str(row.get("source_audio", "")).strip() for row in pure_negative_rows if row.get("source_audio")})
     _write_csv(output_dir / "sample_inventory.csv", sample_inventory)
     _write_csv(output_dir / "call_inventory.csv", call_inventory)
 
@@ -513,6 +522,8 @@ def main() -> None:
         "negative_mat_count": sum(1 for row in sample_inventory if int(row["label"]) == 0),
         "nonfin_only_negative_mat_count": len(nonfin_only_rows),
         "nonfin_only_negative_source_clip_count": len(nonfin_only_source_clips),
+        "pure_negative_mat_count": len(pure_negative_rows),
+        "pure_negative_source_clip_count": len(pure_negative_source_clips),
         "failed_count": len(failed),
         "pure_nonfin_negative_summary": pure_nonfin_neg_summary,
         "actual_dimensions": list(dims) if dims else None,
@@ -545,6 +556,11 @@ def main() -> None:
     print_status(f"Negative MATs: {summary['negative_mat_count']:,}", "SUCCESS", force=True)
     print_status(
         f"Pure non-fin negative MATs: {summary['nonfin_only_negative_mat_count']:,} from {summary['nonfin_only_negative_source_clip_count']:,} clips",
+        "SUCCESS",
+        force=True,
+    )
+    print_status(
+        f"Pure-negative MATs: {summary['pure_negative_mat_count']:,} from {summary['pure_negative_source_clip_count']:,} clips",
         "SUCCESS",
         force=True,
     )

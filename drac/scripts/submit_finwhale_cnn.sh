@@ -69,6 +69,7 @@ MIN_GAP_SECONDS=120
 MODEL="SmallCNN"
 MAIN_METRIC="f1"
 CENTER_BIAS_SIGMA_FRAC=0.25
+POSITIVE_CROP_MODE="centered_gaussian"
 RUN_TAG=""
 INIT_CHECKPOINT=""
 SPLITS_DIR=""
@@ -111,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --model) MODEL="$2"; shift 2 ;;
     --main-metric) MAIN_METRIC="$2"; shift 2 ;;
     --center-bias-sigma-frac) CENTER_BIAS_SIGMA_FRAC="$2"; shift 2 ;;
+    --positive-crop-mode) POSITIVE_CROP_MODE="$2"; shift 2 ;;
     --run-tag) RUN_TAG="$2"; shift 2 ;;
     --init-checkpoint) INIT_CHECKPOINT="$2"; shift 2 ;;
     --splits-dir) SPLITS_DIR="$2"; shift 2 ;;
@@ -140,7 +142,7 @@ echo "  neg-dir: $NEG_DIR"
 echo "  project: $WANDB_PROJECT | group: $WANDB_GROUP | entity: ${WANDB_ENTITY:-<default>}"
 echo "  epochs: $EPOCHS | batch: $BATCH_SIZE | lr: $LR | balance: $BALANCE"
 echo "  train_ratio: $TRAIN_RATIO | val_ratio: $VAL_RATIO | crop: $CROP_SIZE"
-echo "  split: $SPLIT_STRATEGY | min_gap: $MIN_GAP_SECONDS | center_bias_sigma_frac: $CENTER_BIAS_SIGMA_FRAC"
+echo "  split: $SPLIT_STRATEGY | min_gap: $MIN_GAP_SECONDS | center_bias_sigma_frac: $CENTER_BIAS_SIGMA_FRAC | positive_crop_mode: $POSITIVE_CROP_MODE"
 echo "  splits_dir: ${SPLITS_DIR:-<generated>} | init_checkpoint: ${INIT_CHECKPOINT:-<none>}"
 echo "  copy_to_tmp: $COPY_TO_TMP"
 
@@ -263,7 +265,8 @@ METRIC_TAG=$(echo "$MAIN_METRIC" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//
 LR_TAG=$(echo "$LR" | tr '+.' 'pp' | tr -cs '[:alnum:]_-' '_')
 GAP_TAG=$(printf '%.3f' "$MIN_GAP_SECONDS" | sed 's/0*$//' | sed 's/\.$//' | tr '.' 'p')
 CBS_TAG=$(printf '%.3f' "$CENTER_BIAS_SIGMA_FRAC" | sed 's/0*$//' | sed 's/\.$//' | tr '.' 'p')
-BASE_FOLDER="finwhale-${MODEL_TAG}-b${BATCH_SIZE}-lr${LR_TAG}-tr$(printf '%.1f' ${TRAIN_RATIO})-${BAL_TAG}-${SPLIT_TAG}-gap${GAP_TAG}-cbs${CBS_TAG}-seed${SEED}-m${METRIC_TAG}"
+PCM_TAG=$(echo "$POSITIVE_CROP_MODE" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
+BASE_FOLDER="finwhale-${MODEL_TAG}-b${BATCH_SIZE}-lr${LR_TAG}-tr$(printf '%.1f' ${TRAIN_RATIO})-${BAL_TAG}-${SPLIT_TAG}-gap${GAP_TAG}-cbs${CBS_TAG}-pcm${PCM_TAG}-seed${SEED}-m${METRIC_TAG}"
 if [[ -n "$RUN_TAG" ]]; then
   RUN_TAG_SAFE=$(echo "$RUN_TAG" | tr -cs '[:alnum:]_-' '_' | sed 's/^_//;s/_$//')
   BASE_FOLDER="${BASE_FOLDER}-${RUN_TAG_SAFE}"
@@ -287,6 +290,7 @@ PYTHON_CMD=(
   --split-strategy "$SPLIT_STRATEGY" --min-gap-seconds "$MIN_GAP_SECONDS" --model "$MODEL"
   --main-metric "$MAIN_METRIC"
   --center-bias-sigma-frac "$CENTER_BIAS_SIGMA_FRAC"
+  --positive-crop-mode "$POSITIVE_CROP_MODE"
 )
 
 # WandB arguments

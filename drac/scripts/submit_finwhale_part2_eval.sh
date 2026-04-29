@@ -56,6 +56,7 @@ BASELINE_TAR=""
 BASELINE_POS_DIR=""
 BASELINE_NEG_DIR=""
 BASELINE_SPLITS_DIR=""
+BASELINE_EVAL_SPLIT="test"
 USE_WANDB="false"
 WANDB_PROJECT="whale-call-analysis"
 WANDB_ENTITY=""
@@ -91,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --baseline-pos-dir) BASELINE_POS_DIR="$2"; shift 2 ;;
     --baseline-neg-dir) BASELINE_NEG_DIR="$2"; shift 2 ;;
     --baseline-splits-dir) BASELINE_SPLITS_DIR="$2"; shift 2 ;;
+    --baseline-eval-split) BASELINE_EVAL_SPLIT="$2"; shift 2 ;;
     --use-wandb) USE_WANDB="true"; shift ;;
     --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
     --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
@@ -221,7 +223,7 @@ if [[ -n "$BASELINE_TAR" || ( -n "$BASELINE_POS_DIR" && -n "$BASELINE_NEG_DIR" )
     --device "$DEVICE"
   )
   if [[ -n "$BASELINE_SPLITS_DIR" ]]; then
-    BASELINE_CMD+=( --splits-dir "$BASELINE_SPLITS_DIR" --eval-split test )
+    BASELINE_CMD+=( --splits-dir "$BASELINE_SPLITS_DIR" --eval-split "$BASELINE_EVAL_SPLIT" )
   fi
   if [[ -n "$CROP_SIZE" ]]; then
     BASELINE_CMD+=( --crop-size "$CROP_SIZE" )

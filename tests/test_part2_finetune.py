@@ -12,6 +12,7 @@ from src.dataset.part2_finetune import (
     build_learning_curve_plan,
     inventory_rows_from_dataset,
     load_finetune_clip_records,
+    load_finetune_clip_records_from_dataset,
     order_train_pool,
     select_budget_clips,
     split_inventory_rows,
@@ -311,6 +312,197 @@ class TestPart2FineTunePlanning(unittest.TestCase):
             # All pure non-fin clips assigned to the training partition should stay available
             # even for the smallest fin-call budget.
             self.assertEqual(int(run["train_nonfin_clip_count"]), 2)
+
+    def test_load_finetune_clip_records_from_dataset_uses_call_inventory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            sample_inventory = tmp / "sample_inventory.csv"
+            call_inventory = tmp / "call_inventory.csv"
+
+            _write_csv(
+                sample_inventory,
+                [
+                    "relative_path",
+                    "label",
+                    "source_audio",
+                    "call_type_bucket",
+                    "context_tags",
+                    "is_fin_positive",
+                    "is_annotated_non_fin",
+                ],
+                [
+                    {
+                        "relative_path": "mat_files/ICLISTENHF6016_20250101T000000.000Z.flac_0.0s_40.0s.mat",
+                        "label": "1",
+                        "source_audio": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "call_type_bucket": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                        "is_fin_positive": "1",
+                        "is_annotated_non_fin": "0",
+                    },
+                    {
+                        "relative_path": "neg_mat_files/ICLISTENHF6016_20250102T000000.000Z.flac_neg_purenonfin_0.mat",
+                        "label": "0",
+                        "source_audio": "ICLISTENHF6016_20250102T000000.000Z.flac",
+                        "call_type_bucket": "",
+                        "context_tags": "sonar|unknown_signal",
+                        "is_fin_positive": "0",
+                        "is_annotated_non_fin": "1",
+                    },
+                ],
+            )
+            _write_csv(
+                call_inventory,
+                ["filename", "begin_time_s", "end_time_s", "call_type_bucket", "context_tags"],
+                [
+                    {
+                        "filename": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "begin_time_s": "10.0",
+                        "end_time_s": "20.0",
+                        "call_type_bucket": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "begin_time_s": "60.0",
+                        "end_time_s": "70.0",
+                        "call_type_bucket": "40Hz",
+                        "context_tags": "click_overlap",
+                    },
+                ],
+            )
+
+            records = load_finetune_clip_records_from_dataset(
+                sample_inventory_csv=sample_inventory,
+                call_inventory_csv=call_inventory,
+            )
+            self.assertEqual([record.filename for record in records], [
+                "ICLISTENHF6016_20250101T000000.000Z.flac",
+                "ICLISTENHF6016_20250102T000000.000Z.flac",
+            ])
+            self.assertEqual(records[0].fin_call_count, 2)
+            self.assertEqual(records[0].fin_call_type_buckets, ("20Hz", "40Hz"))
+            self.assertTrue(records[0].is_fin_positive)
+            self.assertEqual(records[1].context_tags, ("sonar", "unknown_signal"))
+            self.assertTrue(records[1].is_annotated_non_fin)
+
+    def test_load_finetune_clip_records_from_dataset_falls_back_to_sample_inventory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            sample_inventory = tmp / "sample_inventory.csv"
+
+            _write_csv(
+                sample_inventory,
+                [
+                    "relative_path",
+                    "label",
+                    "source_audio",
+                    "call_type_bucket",
+                    "context_tags",
+                    "is_fin_positive",
+                    "is_annotated_non_fin",
+                ],
+                [
+                    {
+                        "relative_path": "mat_files/ICLISTENHF6016_20250101T000000.000Z.flac_0.0s_40.0s.mat",
+                        "label": "1",
+                        "source_audio": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "call_type_bucket": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                        "is_fin_positive": "1",
+                        "is_annotated_non_fin": "0",
+                    },
+                    {
+                        "relative_path": "mat_files/ICLISTENHF6016_20250101T000000.000Z.flac_40.0s_80.0s.mat",
+                        "label": "1",
+                        "source_audio": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "call_type_bucket": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                        "is_fin_positive": "1",
+                        "is_annotated_non_fin": "0",
+                    },
+                ],
+            )
+
+            records = load_finetune_clip_records_from_dataset(sample_inventory_csv=sample_inventory)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].fin_call_count, 2)
+            self.assertEqual(records[0].fin_call_type_buckets, ("20Hz",))
+            self.assertTrue(records[0].is_fin_positive)
+
+    def test_assign_time_pools_keeps_pure_negative_clips_in_train_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fin_annotations = tmp / "fin_annotations.csv"
+            clip_manifest = tmp / "clip_manifest.csv"
+
+            _write_csv(
+                fin_annotations,
+                ["filename", "species"],
+                [
+                    {"filename": f"ICLISTENHF6016_2025010{i}T000000.000Z.flac", "species": "Bp"}
+                    for i in range(1, 5)
+                ],
+            )
+            _write_csv(
+                clip_manifest,
+                [
+                    "filename",
+                    "fin_call_type_buckets",
+                    "context_tags",
+                    "is_fin_positive",
+                    "is_annotated_non_fin",
+                    "is_pure_negative_candidate",
+                ],
+                [
+                    {
+                        "filename": f"ICLISTENHF6016_2025010{i}T000000.000Z.flac",
+                        "fin_call_type_buckets": "20Hz",
+                        "context_tags": "vessel_or_masking",
+                        "is_fin_positive": "1",
+                        "is_annotated_non_fin": "0",
+                        "is_pure_negative_candidate": "0",
+                    }
+                    for i in range(1, 5)
+                ]
+                + [
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "fin_call_type_buckets": "",
+                        "context_tags": "pure_negative",
+                        "is_fin_positive": "0",
+                        "is_annotated_non_fin": "0",
+                        "is_pure_negative_candidate": "1",
+                    },
+                    {
+                        "filename": "ICLISTENHF6016_20250106T000000.000Z.flac",
+                        "fin_call_type_buckets": "",
+                        "context_tags": "pure_negative",
+                        "is_fin_positive": "0",
+                        "is_annotated_non_fin": "0",
+                        "is_pure_negative_candidate": "1",
+                    },
+                ],
+            )
+
+            records = load_finetune_clip_records(
+                fin_annotations_csv=fin_annotations,
+                clip_manifest_csv=clip_manifest,
+            )
+            split_map = assign_time_pools(records, train_ratio=0.5, val_ratio=0.25)
+            self.assertEqual(
+                [record.filename for record in split_map["train_pure_negative"]],
+                [
+                    "ICLISTENHF6016_20250105T000000.000Z.flac",
+                    "ICLISTENHF6016_20250106T000000.000Z.flac",
+                ],
+            )
+            self.assertEqual(split_map["val_pure_negative"], [])
+            self.assertEqual(split_map["test_pure_negative"], [])
+            self.assertNotIn(
+                "ICLISTENHF6016_20250105T000000.000Z.flac",
+                {record.filename for record in split_map["val"] + split_map["test"]},
+            )
 
 
 if __name__ == "__main__":

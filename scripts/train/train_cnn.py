@@ -3,7 +3,7 @@
 Train a simple CNN baseline on Fin Whale MAT spectrograms.
 
 Uses the FinWhaleMatDataset to read .mat spectrograms directly from disk,
-apply center-jitter augmentation for positives, square crop, and normalization.
+apply crop-position augmentation for positives, square crop, and normalization.
 
 Supports class imbalance via either:
  - WeightedRandomSampler (balance='weighted' or 'oversample'), or
@@ -33,7 +33,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score
 
 # Import from reorganized src.training package
-from src.training.mat_dataset import make_dataloaders, FinWhaleMatDataset
+from src.training.mat_dataset import POSITIVE_CROP_MODES, make_dataloaders, FinWhaleMatDataset
 from src.training.splits import build_entries, split_group_by_source, split_time_separated
 from src.models.fin_models import create_model
 from src.utils.wandb_utils import (
@@ -312,7 +312,14 @@ def main():
     ap.add_argument('--split-strategy', type=str, default='time_separated', choices=['internal', 'group_by_source', 'time_separated'])
     ap.add_argument('--min-gap-seconds', type=float, default=120.0, help='For time_separated strategy')
     ap.add_argument('--center-bias-sigma-frac', type=float, default=0.25,
-                    help='Positive crop jitter strength in train/eval-augment mode (fraction of half-range)')
+                    help='Positive crop jitter strength in centered mode, or edge-band width in edge-oriented modes')
+    ap.add_argument(
+        '--positive-crop-mode',
+        type=str,
+        default='centered_gaussian',
+        choices=list(POSITIVE_CROP_MODES),
+        help='How positive crops are positioned inside the training window',
+    )
     # Model selection
     ap.add_argument('--model', type=str, default='SmallCNN', help='Model name: SmallCNN, DeepCNN[:w64:d8], resnet18/34/50')
     # Main metric selection
@@ -402,18 +409,21 @@ def main():
         train_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='train', crop_size=crop_size,
                                       min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                       center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                      positive_crop_mode=args.positive_crop_mode,
                                       crop_time_seconds=args.crop_time_seconds,
                                       crop_freq_range_hz=crop_freq_range_hz,
                                       file_list=train_items)
         val_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='val', crop_size=crop_size,
                                     min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                     center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                    positive_crop_mode=args.positive_crop_mode,
                                     crop_time_seconds=args.crop_time_seconds,
                                     crop_freq_range_hz=crop_freq_range_hz,
                                     file_list=val_items)
         test_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='test', crop_size=crop_size,
                                      min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                      center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                     positive_crop_mode=args.positive_crop_mode,
                                      crop_time_seconds=args.crop_time_seconds,
                                      crop_freq_range_hz=crop_freq_range_hz,
                                      file_list=test_items)
@@ -449,6 +459,7 @@ def main():
             balance=args.balance,
             seed=args.seed,
             center_bias_sigma_frac=args.center_bias_sigma_frac,
+            positive_crop_mode=args.positive_crop_mode,
         )
     else:
         # Build leakage-safe splits
@@ -474,18 +485,21 @@ def main():
         train_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='train', crop_size=crop_size,
                                       min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                       center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                      positive_crop_mode=args.positive_crop_mode,
                                       crop_time_seconds=args.crop_time_seconds,
                                       crop_freq_range_hz=crop_freq_range_hz,
                                       file_list=to_list(sp['train']))
         val_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='val', crop_size=crop_size,
                                     min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                     center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                    positive_crop_mode=args.positive_crop_mode,
                                     crop_time_seconds=args.crop_time_seconds,
                                     crop_freq_range_hz=crop_freq_range_hz,
                                     file_list=to_list(sp['val']))
         test_ds = FinWhaleMatDataset(args.pos_dir, args.neg_dir, split='test', crop_size=crop_size,
                                      min_db=args.min_db, max_db=args.max_db, seed=args.seed,
                                      center_bias_sigma_frac=args.center_bias_sigma_frac,
+                                     positive_crop_mode=args.positive_crop_mode,
                                      crop_time_seconds=args.crop_time_seconds,
                                      crop_freq_range_hz=crop_freq_range_hz,
                                      file_list=to_list(sp['test']))

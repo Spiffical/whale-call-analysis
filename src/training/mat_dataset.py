@@ -20,6 +20,12 @@ POWER_KEYS: Sequence[str] = ('P', 'Sxx', 'PSD', 'psd', 'power_spectrogram')
 DB_KEYS: Sequence[str] = ('PdB_norm', 'power_db_norm', 'PdB', 'P_db')
 FREQ_KEYS: Sequence[str] = ('frequencies', 'F', 'freqs', 'freq', 'f')
 TIME_KEYS: Sequence[str] = ('times', 'T', 'time', 't')
+POSITIVE_CROP_MODES: Sequence[str] = (
+    'centered_gaussian',
+    'uniform',
+    'edge',
+    'edge_mix',
+)
 
 
 def _list_mat_files(folder: Path) -> List[Path]:
@@ -73,8 +79,56 @@ def _start_from_fraction(T: int, crop: int, frac_in_crop: float) -> int:
     return max(0, min(start, max(0, T - crop)))
 
 
+def _sample_centered_fraction(
+    rng: np.random.Generator,
+    center_bias_sigma_frac: float,
+) -> float:
+    sigma = max(1e-3, float(center_bias_sigma_frac)) * 0.5
+    frac = None
+    for _ in range(10):
+        candidate = 0.5 + float(rng.normal(0.0, sigma))
+        if 0.0 <= candidate <= 1.0:
+            frac = candidate
+            break
+    if frac is None:
+        frac = 0.5
+    return float(frac)
+
+
+def _sample_edge_fraction(
+    rng: np.random.Generator,
+    edge_band_frac: float,
+) -> float:
+    band = float(np.clip(edge_band_frac, 1e-3, 0.49))
+    if float(rng.random()) < 0.5:
+        return float(rng.uniform(0.0, band))
+    return float(rng.uniform(1.0 - band, 1.0))
+
+
+def _sample_positive_crop_fraction(
+    rng: np.random.Generator,
+    center_bias_sigma_frac: float,
+    positive_crop_mode: str,
+) -> float:
+    mode = str(positive_crop_mode).strip().lower()
+    if mode == 'centered_gaussian':
+        return _sample_centered_fraction(rng, center_bias_sigma_frac)
+    if mode == 'uniform':
+        return float(rng.uniform(0.0, 1.0))
+    if mode == 'edge':
+        return _sample_edge_fraction(rng, center_bias_sigma_frac)
+    if mode == 'edge_mix':
+        if float(rng.random()) < 0.7:
+            return _sample_edge_fraction(rng, center_bias_sigma_frac)
+        return _sample_centered_fraction(rng, center_bias_sigma_frac)
+    raise ValueError(
+        f"positive_crop_mode must be one of {tuple(POSITIVE_CROP_MODES)}, got {positive_crop_mode!r}"
+    )
+
+
 def _choose_start_idx(T: int, crop: int, split: str, is_positive: bool,
                       center_bias_sigma_frac: float = 0.25,
+                      positive_crop_mode: str = 'centered_gaussian',
                       rng: Optional[np.random.Generator] = None,
                       augment_eval: bool = False) -> int:
     if T <= crop:
@@ -84,17 +138,11 @@ def _choose_start_idx(T: int, crop: int, split: str, is_positive: bool,
     if is_positive:
         # Keep the call in view by selecting a fraction position inside the crop.
         if split == 'train' or (split != 'train' and augment_eval):
-            # Gaussian jitter around center (0.5), sigma is fraction of half-range
-            sigma = max(1e-3, float(center_bias_sigma_frac)) * 0.5
-            frac = None
-            # Truncate to [0,1]
-            for _ in range(10):
-                f = 0.5 + float(rng.normal(0.0, sigma))
-                if 0.0 <= f <= 1.0:
-                    frac = f
-                    break
-            if frac is None:
-                frac = 0.5
+            frac = _sample_positive_crop_fraction(
+                rng,
+                center_bias_sigma_frac=center_bias_sigma_frac,
+                positive_crop_mode=positive_crop_mode,
+            )
             return _start_from_fraction(T, crop, frac)
         else:
             # Deterministic center for val/test without augmentation
@@ -167,6 +215,7 @@ class FinWhaleMatDataset(Dataset):
         min_db: float = -80.0,
         max_db: float = 0.0,
         center_bias_sigma_frac: float = 0.25,
+        positive_crop_mode: str = 'centered_gaussian',
         transform: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         return_path: bool = False,
         seed: int = 0,
@@ -185,6 +234,8 @@ class FinWhaleMatDataset(Dataset):
                 crop_size time bins when provided and a valid MAT time axis exists).
             crop_freq_range_hz: Optional physical frequency crop limits [min_hz, max_hz]
                 applied before bin-based cropping. `None` keeps the full MAT frequency axis.
+            positive_crop_mode: Positive crop placement strategy. For `edge` and
+                `edge_mix`, `center_bias_sigma_frac` controls the edge-band width.
         """
         if sio is None:
             raise RuntimeError("scipy is required to load .mat files. Please install scipy.")
@@ -196,6 +247,12 @@ class FinWhaleMatDataset(Dataset):
         self.min_db = float(min_db)
         self.max_db = float(max_db)
         self.center_bias_sigma_frac = float(center_bias_sigma_frac)
+        self.positive_crop_mode = str(positive_crop_mode).strip().lower()
+        if self.positive_crop_mode not in POSITIVE_CROP_MODES:
+            raise ValueError(
+                f"positive_crop_mode must be one of {tuple(POSITIVE_CROP_MODES)}, "
+                f"got {positive_crop_mode!r}"
+            )
         self.transform = transform
         self.return_path = return_path
         self.rng = np.random.default_rng(seed)
@@ -340,6 +397,7 @@ class FinWhaleMatDataset(Dataset):
         # Time axis: crop with augmentation
         start = _choose_start_idx(T, target_t, self.split, is_positive,
                                   center_bias_sigma_frac=self.center_bias_sigma_frac,
+                                  positive_crop_mode=self.positive_crop_mode,
                                   rng=self.rng,
                                   augment_eval=self.augment_eval)
         if T < target_t:
@@ -409,6 +467,7 @@ def make_dataloaders(
     min_db: float = -80.0,
     max_db: float = 0.0,
     center_bias_sigma_frac: float = 0.25,
+    positive_crop_mode: str = 'centered_gaussian',
     seed: int = 0,
     balance: str = 'weighted',  # 'weighted' | 'oversample' | 'none'
     augment_test: bool = False,
@@ -422,23 +481,27 @@ def make_dataloaders(
             - [freq, time]: Different crop for each axis
         crop_time_seconds: Optional physical time span for time crop.
         crop_freq_range_hz: Optional physical frequency limits [min_hz, max_hz].
+        positive_crop_mode: Positive crop placement strategy.
     """
     train_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='train', train_ratio=train_ratio, val_ratio=val_ratio,
         crop_size=crop_size, min_db=min_db, max_db=max_db,
         center_bias_sigma_frac=center_bias_sigma_frac, seed=seed,
+        positive_crop_mode=positive_crop_mode,
         crop_time_seconds=crop_time_seconds, crop_freq_range_hz=crop_freq_range_hz,
     )
     val_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='val', train_ratio=train_ratio, val_ratio=val_ratio,
         crop_size=crop_size, min_db=min_db, max_db=max_db,
         center_bias_sigma_frac=center_bias_sigma_frac, seed=seed,
+        positive_crop_mode=positive_crop_mode,
         crop_time_seconds=crop_time_seconds, crop_freq_range_hz=crop_freq_range_hz,
     )
     test_ds = FinWhaleMatDataset(
         pos_dir, neg_dir, split='test', train_ratio=train_ratio, val_ratio=val_ratio,
         crop_size=crop_size, min_db=min_db, max_db=max_db,
         center_bias_sigma_frac=center_bias_sigma_frac, seed=seed, augment_eval=augment_test,
+        positive_crop_mode=positive_crop_mode,
         crop_time_seconds=crop_time_seconds, crop_freq_range_hz=crop_freq_range_hz,
     )
 

@@ -33,14 +33,38 @@ NS = {
 }
 
 FIN_SPECIES_CODE = "Bp"
+ANNOTATIONS_2025_DATASET = "clayoquot_2025_final_annotations"
+PURE_NEGATIVE_DATASET = "mar26_verified_pure_negative_2025"
 READ_ME_SHEET = "READ ME"
 INVENTORY_SHEET = "file_list"
+ANNOTATIONS_2025_WORKBOOK_DEFAULT = (
+    "data/finwhales/ONC_ClayoquotSlope2025_Annotations_Cetaceans_Instrument_EQ_Sonar_Unknown.xlsx"
+)
+MAR26_WORKBOOK_DEFAULT = "data/finwhales/Clayoquot_2025_Analysis_Mar26_Final.xlsx"
+MAR18_WORKBOOK_DEFAULT = "data/finwhales/Clayoquot_2025_annotations_Mar18.xlsx"
 FIN_BUCKET_20 = "20Hz"
 FIN_BUCKET_40 = "40Hz"
 FIN_BUCKET_OTHER = "other_fin"
 UNKNOWN_CONTEXT = "unknown_other"
 DEFAULT_CLIP_DURATION_S = 300.0
 DEFAULT_ADJACENT_BOUNDARY_SECONDS = 20.0
+INSTRUMENT_SIGNAL_CODE = "INSTRUMENT"
+EARTHQUAKE_SIGNAL_CODE = "EQ"
+UNKNOWN_SIGNAL_CODE = "UNKNOWN"
+SONAR_SIGNAL_CODE = "SONAR"
+PURE_NEGATIVE_FLAG_COLUMNS = (
+    "bp",
+    "bm",
+    "mn",
+    "bb",
+    "od",
+    "od_ck",
+    "od_ck_low",
+    "od_ck_high",
+    "od_w",
+    "od_bp",
+    "ce_unknown",
+)
 
 _CELL_REF_RE = re.compile(r"([A-Z]+)(\d+)")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -204,8 +228,47 @@ def _as_int_flag(*values: str) -> int:
     return 0
 
 
+def _truthy_flag(value: object) -> int:
+    text = _clean_text(value)
+    if not text or text.lower() == "nan":
+        return 0
+    lowered = text.lower()
+    if lowered in {"1", "true", "yes", "y"}:
+        return 1
+    try:
+        return 1 if float(text) > 0 else 0
+    except ValueError:
+        return 0
+
+
 def _normalize_species(value: str) -> str:
-    return _clean_text(value)
+    text = _clean_text(value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    alias_map = {
+        "bp": FIN_SPECIES_CODE,
+        "bm": "Bm",
+        "bb": "Bb",
+        "mn": "Mn",
+        "pm": "Pm",
+        "oo": "Oo",
+        "lo": "Lo",
+        "od": "OD",
+        "ce": "CE",
+        "un": "UN",
+        "ma": "MA",
+        "ba": "BA",
+        "p": "P",
+        "eq": EARTHQUAKE_SIGNAL_CODE,
+        "earthquake": EARTHQUAKE_SIGNAL_CODE,
+        "sonar": SONAR_SIGNAL_CODE,
+        "unknown": UNKNOWN_SIGNAL_CODE,
+        "instrument": INSTRUMENT_SIGNAL_CODE,
+        "hydrophone_thud": INSTRUMENT_SIGNAL_CODE,
+        "hydrophone thud": INSTRUMENT_SIGNAL_CODE,
+    }
+    return alias_map.get(lowered, text)
 
 
 def _normalize_call_type_raw(value: str) -> str:
@@ -243,6 +306,22 @@ def infer_context_tags(
 ) -> List[str]:
     text = _normalize_call_type_raw(comments).lower()
     tags = set()
+
+    if species_code in {
+        INSTRUMENT_SIGNAL_CODE,
+        EARTHQUAKE_SIGNAL_CODE,
+        UNKNOWN_SIGNAL_CODE,
+        SONAR_SIGNAL_CODE,
+    }:
+        tags.add("non_biological")
+    if species_code == INSTRUMENT_SIGNAL_CODE:
+        tags.add("instrument_noise")
+    if species_code == EARTHQUAKE_SIGNAL_CODE:
+        tags.add("earthquake")
+    if species_code == UNKNOWN_SIGNAL_CODE:
+        tags.add("unknown_signal")
+    if species_code == SONAR_SIGNAL_CODE:
+        tags.add("sonar")
 
     if vessel_flag or any(token in text for token in ("vessel", "mask", "masking", "ship", "lloyd", "lpf", "noise")):
         tags.add("vessel_or_masking")
@@ -292,16 +371,43 @@ def _build_annotation_row(sheet_name: str, row_index: int, row: Dict[str, str]) 
     if not _is_annotation_row(row):
         return None
 
+    sheet_defaults = {
+        "hydrophone_thuds": {
+            "species": INSTRUMENT_SIGNAL_CODE,
+            "call_type": "hydrophone_thud",
+        },
+        "earthquakes": {
+            "species": EARTHQUAKE_SIGNAL_CODE,
+            "call_type": "earthquake",
+        },
+        "unknown": {
+            "species": UNKNOWN_SIGNAL_CODE,
+            "call_type": "unknown",
+        },
+        "sonar": {
+            "species": SONAR_SIGNAL_CODE,
+            "call_type": "sonar",
+        },
+    }
+    defaults = sheet_defaults.get(sheet_name, {})
     filename = normalize_audio_filename(row.get("filename", ""))
-    species = _normalize_species(row.get("species", ""))
-    call_type_raw = _normalize_call_type_raw(row.get("call_type", ""))
+    species = _normalize_species(
+        row.get("species", "")
+        or row.get("signal_source", "")
+        or defaults.get("species", "")
+    )
+    call_type_raw = _normalize_call_type_raw(
+        row.get("call_type", "")
+        or row.get("signal_type", "")
+        or defaults.get("call_type", "")
+    )
     begin_time_s = _as_float(row.get("begin_time"))
     end_time_s = _as_float(row.get("end_time"))
     low_freq_hz = _as_float(row.get("low_freq"))
     high_freq_hz = _as_float(row.get("high_freq"))
     peak_freq_hz = _as_float(row.get("peak_freq"))
     peak_power = _as_float(row.get("peak_power"))
-    comments = _clean_text(row.get("comments", ""))
+    comments = _clean_text(row.get("comments", "") or row.get("comment", ""))
     verified_flag = _as_int_flag(row.get("verified", ""))
     vessel_flag = _as_int_flag(
         row.get("vessel_presence", ""),
@@ -311,6 +417,12 @@ def _build_annotation_row(sheet_name: str, row_index: int, row: Dict[str, str]) 
     granularity = _clean_text(row.get("granularity", ""))
 
     if not filename:
+        return None
+    if begin_time_s is None or end_time_s is None or low_freq_hz is None or high_freq_hz is None:
+        return None
+    if end_time_s <= begin_time_s:
+        return None
+    if high_freq_hz <= low_freq_hz:
         return None
 
     return {
@@ -346,7 +458,54 @@ def _clip_inventory_rows(sheet: WorkbookSheet) -> List[Dict[str, str]]:
     return rows
 
 
-def _clip_manifest_rows(annotation_rows: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+def _fallback_inventory_rows(*row_groups: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+    seen = set()
+    rows: List[Dict[str, str]] = []
+    for row_group in row_groups:
+        for row in row_group:
+            filename = normalize_audio_filename(row.get("filename", ""))
+            if not filename or filename in seen:
+                continue
+            seen.add(filename)
+            rows.append({"filename": filename})
+    rows.sort(key=lambda row: row["filename"])
+    return rows
+
+
+def _load_optional_inventory_rows(workbook_path: Optional[Path | str]) -> Tuple[List[Dict[str, str]], str]:
+    if workbook_path is None:
+        return [], ""
+    path = Path(workbook_path)
+    if not path.exists():
+        return [], ""
+    sheets = load_workbook_sheets(path)
+    inventory_sheet = _inventory_sheet(sheets)
+    if inventory_sheet is None:
+        return [], ""
+    return _clip_inventory_rows(inventory_sheet), str(path.resolve())
+
+
+def _device_code(filename: str) -> str:
+    text = _clean_text(filename)
+    return text.split("_", 1)[0] if "_" in text else ""
+
+
+def _clip_start_iso(filename: str) -> str:
+    timestamp = parse_filename_timestamp(filename)
+    return timestamp.isoformat() if timestamp is not None else ""
+
+
+def _recording_day(filename: str) -> str:
+    timestamp = parse_filename_timestamp(filename)
+    return timestamp.strftime("%Y-%m-%d") if timestamp is not None else ""
+
+
+def _clip_manifest_rows(
+    annotation_rows: Sequence[Dict[str, str]],
+    *,
+    inventory_source: str,
+    source_workbook: str,
+) -> List[Dict[str, str]]:
     grouped: Dict[str, List[Dict[str, str]]] = defaultdict(list)
     for row in annotation_rows:
         grouped[row["filename"]].append(row)
@@ -362,18 +521,143 @@ def _clip_manifest_rows(annotation_rows: Sequence[Dict[str, str]]) -> List[Dict[
             clip_tags.update(filter(None, row.get("context_tags", "").split("|")))
         clip_rows.append(
             {
+                "source_dataset": ANNOTATIONS_2025_DATASET,
+                "inventory_source": inventory_source,
                 "filename": filename,
+                "device_code": _device_code(filename),
+                "clip_start_utc": _clip_start_iso(filename),
+                "recording_day_utc": _recording_day(filename),
                 "is_fin_positive": "1" if fin_rows else "0",
                 "is_annotated_non_fin": "1" if non_fin_rows else "0",
+                "is_pure_negative_candidate": "0",
+                "annotation_count": str(len(rows)),
                 "fin_annotation_count": str(len(fin_rows)),
                 "non_fin_annotation_count": str(len(non_fin_rows)),
                 "species_codes": "|".join(species_codes),
                 "fin_call_type_buckets": "|".join(sorted({row["call_type_bucket"] for row in fin_rows if row.get("call_type_bucket")})),
                 "fin_call_type_raws": "|".join(sorted({row["call_type_raw"] for row in fin_rows if row.get("call_type_raw")})),
                 "context_tags": "|".join(sorted(clip_tags)) if clip_tags else UNKNOWN_CONTEXT,
+                "source_workbooks": source_workbook,
+                "verified_flag": str(max(int(row.get("verified_flag") or 0) for row in rows)),
             }
         )
     return clip_rows
+
+
+def _collect_mar18_guardrail_filenames(
+    workbook_path: Optional[Path | str],
+) -> Tuple[set[str], Dict[str, object]]:
+    summary: Dict[str, object] = {"kept_row_count": 0, "sheet_counts": {}}
+    if workbook_path is None:
+        return set(), summary
+    path = Path(workbook_path)
+    if not path.exists():
+        return set(), summary
+
+    filenames: set[str] = set()
+    sheets = load_workbook_sheets(path)
+    for sheet in _monthly_sheets(sheets):
+        kept = 0
+        for row in sheet.rows:
+            filename = normalize_audio_filename(row.get("filename", ""))
+            species = _normalize_species(row.get("species", ""))
+            begin_s = _as_float(row.get("begin_time"))
+            end_s = _as_float(row.get("end_time"))
+            low_hz = _as_float(row.get("low_freq"))
+            high_hz = _as_float(row.get("high_freq"))
+            if not filename or not species or species.lower() == "nan":
+                continue
+            if begin_s is None or end_s is None or low_hz is None or high_hz is None:
+                continue
+            if end_s <= begin_s or high_hz <= low_hz:
+                continue
+            filenames.add(filename)
+            kept += 1
+        summary["sheet_counts"][sheet.name] = int(kept)
+        summary["kept_row_count"] = int(summary["kept_row_count"]) + int(kept)
+    return filenames, summary
+
+
+def _collect_mar26_pure_negative_rows(
+    workbook_path: Optional[Path | str],
+    *,
+    exclude_filenames: Optional[set[str]] = None,
+) -> Tuple[List[Dict[str, str]], Dict[str, object]]:
+    drop_reasons: Counter[str] = Counter()
+    summary: Dict[str, object] = {
+        "verified_rows": 0,
+        "pure_negative_rows": 0,
+        "drop_reasons": drop_reasons,
+        "sheet_counts": {},
+    }
+    if workbook_path is None:
+        summary["drop_reasons"] = {}
+        return [], summary
+    path = Path(workbook_path)
+    if not path.exists():
+        summary["drop_reasons"] = {}
+        return [], summary
+
+    exclude = set(exclude_filenames or set())
+    rows: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    sheets = load_workbook_sheets(path)
+    for sheet in _monthly_sheets(sheets):
+        kept = 0
+        for row in sheet.rows:
+            filename = normalize_audio_filename(row.get("filename", ""))
+            if not filename:
+                continue
+            if parse_filename_timestamp(filename) is None:
+                drop_reasons["invalid_filename"] += 1
+                continue
+            verified = _truthy_flag(row.get("verified", ""))
+            if verified != 1:
+                continue
+            summary["verified_rows"] = int(summary["verified_rows"]) + 1
+            if filename in exclude:
+                drop_reasons["excluded_by_annotation_guardrail"] += 1
+                continue
+            if filename in seen:
+                drop_reasons["duplicate_filename"] += 1
+                continue
+            any_species_flag = any(
+                _truthy_flag(row.get(column_name, ""))
+                for column_name in PURE_NEGATIVE_FLAG_COLUMNS
+                if column_name in row
+            )
+            if any_species_flag:
+                drop_reasons["species_flag_present"] += 1
+                continue
+
+            rows.append(
+                {
+                    "source_dataset": PURE_NEGATIVE_DATASET,
+                    "inventory_source": str(path.resolve()),
+                    "filename": filename,
+                    "device_code": _device_code(filename),
+                    "clip_start_utc": _clip_start_iso(filename),
+                    "recording_day_utc": _recording_day(filename),
+                    "is_fin_positive": "0",
+                    "is_annotated_non_fin": "0",
+                    "is_pure_negative_candidate": "1",
+                    "annotation_count": "0",
+                    "fin_annotation_count": "0",
+                    "non_fin_annotation_count": "0",
+                    "species_codes": "",
+                    "fin_call_type_buckets": "",
+                    "fin_call_type_raws": "",
+                    "context_tags": "pure_negative",
+                    "source_workbooks": str(path.resolve()),
+                    "verified_flag": "1",
+                }
+            )
+            seen.add(filename)
+            kept += 1
+        summary["sheet_counts"][sheet.name] = int(kept)
+        summary["pure_negative_rows"] = int(summary["pure_negative_rows"]) + int(kept)
+    summary["drop_reasons"] = dict(drop_reasons)
+    return rows, summary
 
 
 def _smoke_subset_rows(
@@ -544,6 +828,8 @@ def _merge_named_rows(
 def build_part2_manifests(
     workbook_path: Path | str,
     *,
+    mar26_workbook: Optional[Path | str] = MAR26_WORKBOOK_DEFAULT,
+    mar18_workbook: Optional[Path | str] = MAR18_WORKBOOK_DEFAULT,
     smoke_per_bucket: int = 6,
     smoke_non_fin: int = 6,
     adjacent_boundary_seconds: float = DEFAULT_ADJACENT_BOUNDARY_SECONDS,
@@ -553,11 +839,10 @@ def build_part2_manifests(
 ) -> Dict[str, object]:
     sheets = load_workbook_sheets(workbook_path)
     inventory_sheet = _inventory_sheet(sheets)
-    if inventory_sheet is None:
-        raise ValueError(f"Workbook is missing required sheet '{INVENTORY_SHEET}'")
 
     annotation_rows: List[Dict[str, str]] = []
     clip_species: Dict[str, List[str]] = defaultdict(list)
+    sheet_counts: Counter[str] = Counter()
 
     for sheet in _monthly_sheets(sheets):
         for row_index, row in enumerate(sheet.rows, start=2):
@@ -565,6 +850,7 @@ def build_part2_manifests(
             if out_row is None:
                 continue
             annotation_rows.append(out_row)
+            sheet_counts[sheet.name] += 1
             if out_row.get("species"):
                 clip_species[out_row["filename"]].append(out_row["species"])
 
@@ -586,14 +872,38 @@ def build_part2_manifests(
         )
     )
 
-    inventory_rows = _clip_inventory_rows(inventory_sheet)
-    clip_rows = _clip_manifest_rows(annotation_rows)
+    workbook_source = str(Path(workbook_path).resolve())
+    guardrail_filenames, mar18_summary = _collect_mar18_guardrail_filenames(mar18_workbook)
+    pure_negative_rows, pure_negative_summary = _collect_mar26_pure_negative_rows(
+        mar26_workbook,
+        exclude_filenames={row["filename"] for row in annotation_rows} | guardrail_filenames,
+    )
+
+    inventory_rows: List[Dict[str, str]]
+    inventory_source: str
+    if inventory_sheet is not None:
+        inventory_rows = _clip_inventory_rows(inventory_sheet)
+        inventory_source = workbook_source
+    else:
+        inventory_rows, inventory_source = _load_optional_inventory_rows(mar26_workbook)
+        if not inventory_rows:
+            inventory_rows, inventory_source = _load_optional_inventory_rows(mar18_workbook)
+        if not inventory_rows:
+            inventory_rows = _fallback_inventory_rows(annotation_rows, pure_negative_rows)
+            inventory_source = "annotation_union"
+
+    annotation_clip_rows = _clip_manifest_rows(
+        annotation_rows,
+        inventory_source=inventory_source,
+        source_workbook=workbook_source,
+    )
+    clip_rows = sorted(annotation_clip_rows + pure_negative_rows, key=lambda row: row["filename"])
     clip_row_by_name = {row["filename"]: row for row in clip_rows}
 
     fin_rows = [row for row in annotation_rows if row.get("species") == FIN_SPECIES_CODE]
-    fin_positive_rows = [row for row in clip_rows if row["is_fin_positive"] == "1"]
+    fin_positive_rows = [row for row in annotation_clip_rows if row["is_fin_positive"] == "1"]
     annotated_non_fin_rows = [
-        row for row in clip_rows if row["is_fin_positive"] == "0" and row["is_annotated_non_fin"] == "1"
+        row for row in annotation_clip_rows if row["is_fin_positive"] == "0" and row["is_annotated_non_fin"] == "1"
     ]
     candidate_rows = sorted(
         fin_positive_rows + annotated_non_fin_rows,
@@ -605,10 +915,16 @@ def build_part2_manifests(
         adjacent_boundary_seconds=float(adjacent_boundary_seconds),
         clip_duration_s=float(clip_duration_s),
     )
-    download_rows = _merge_named_rows(
+    download_base_rows = _merge_named_rows(
         candidate_rows,
-        adjacent_context_rows,
+        pure_negative_rows,
         primary_role="candidate",
+        secondary_role="pure_negative_candidate",
+    )
+    download_rows = _merge_named_rows(
+        download_base_rows,
+        adjacent_context_rows,
+        primary_role="selected_training_audio",
         secondary_role="adjacent_context",
     )
     prep_rows = _merge_named_rows(
@@ -628,11 +944,14 @@ def build_part2_manifests(
         "workbook_path": str(Path(workbook_path)),
         "sheet_count": len(sheets),
         "inventory_clip_count": len(inventory_rows),
+        "inventory_source": inventory_source,
         "annotated_row_count": len(annotation_rows),
         "fin_annotation_count": len(fin_rows),
-        "annotated_clip_count": len(clip_rows),
+        "annotated_clip_count": len(annotation_clip_rows),
+        "clip_manifest_clip_count": len(clip_rows),
         "fin_positive_clip_count": len(fin_positive_rows),
         "annotated_non_fin_clip_count": len(annotated_non_fin_rows),
+        "pure_negative_clip_count": len(pure_negative_rows),
         "candidate_clip_count": len(candidate_rows),
         "adjacent_context_clip_count": len(adjacent_context_rows),
         "download_clip_count": len(download_rows),
@@ -641,8 +960,11 @@ def build_part2_manifests(
         "adjacent_boundary_seconds": float(adjacent_boundary_seconds),
         "include_adjacent_in_prep": bool(include_adjacent_in_prep),
         "clip_duration_s": float(clip_duration_s),
+        "sheet_counts": dict(sheet_counts),
         "species_counts": dict(Counter(row["species"] for row in annotation_rows if row.get("species"))),
         "fin_call_type_counts": dict(Counter(row["call_type_bucket"] for row in fin_rows if row.get("call_type_bucket"))),
+        "mar18_guardrail_summary": mar18_summary,
+        "mar26_pure_negative_summary": pure_negative_summary,
     }
 
     return {
@@ -653,6 +975,7 @@ def build_part2_manifests(
         "clip_manifest": clip_rows,
         "fin_positive_clips": fin_positive_rows,
         "annotated_non_fin_clips": annotated_non_fin_rows,
+        "pure_negative_clips": pure_negative_rows,
         "candidate_clips": candidate_rows,
         "adjacent_context_clips": adjacent_context_rows,
         "download_clips": download_rows,
@@ -698,6 +1021,7 @@ def write_part2_manifests(
         "clip_manifest",
         "fin_positive_clips",
         "annotated_non_fin_clips",
+        "pure_negative_clips",
         "candidate_clips",
         "adjacent_context_clips",
         "download_clips",
@@ -713,6 +1037,7 @@ def write_part2_manifests(
     txt_keys = [
         "fin_positive_clips",
         "annotated_non_fin_clips",
+        "pure_negative_clips",
         "candidate_clips",
         "adjacent_context_clips",
         "download_clips",

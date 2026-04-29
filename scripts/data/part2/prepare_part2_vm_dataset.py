@@ -35,6 +35,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.dataset.part2_annotations import (
+    ANNOTATIONS_2025_WORKBOOK_DEFAULT,
     adjacent_clip_filename,
     build_part2_manifests,
     parse_filename_timestamp,
@@ -439,7 +440,7 @@ def main() -> None:
     ap.add_argument(
         "--workbook",
         type=str,
-        default="data/finwhales/Clayoquot_2025_annotations_Mar18.xlsx",
+        default=ANNOTATIONS_2025_WORKBOOK_DEFAULT,
         help="Path to the Part 2 workbook",
     )
     ap.add_argument(

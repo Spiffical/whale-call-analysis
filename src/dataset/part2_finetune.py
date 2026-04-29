@@ -21,6 +21,7 @@ class FineTuneClipRecord:
     context_tags: Tuple[str, ...]
     is_fin_positive: bool
     is_annotated_non_fin: bool
+    is_pure_negative_candidate: bool
 
 
 def _split_pipe(raw: Any) -> Tuple[str, ...]:
@@ -31,6 +32,11 @@ def _split_pipe(raw: Any) -> Tuple[str, ...]:
 def _read_csv(path: Path | str) -> List[Dict[str, str]]:
     with open(path, "r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _as_bool(raw: Any) -> bool:
+    value = str(raw or "").strip().lower()
+    return value in {"1", "true", "yes", "y"}
 
 
 def load_finetune_clip_records(
@@ -64,10 +70,100 @@ def load_finetune_clip_records(
                 context_tags=_split_pipe(row.get("context_tags", "")),
                 is_fin_positive=str(row.get("is_fin_positive", "0")).strip() == "1",
                 is_annotated_non_fin=str(row.get("is_annotated_non_fin", "0")).strip() == "1",
+                is_pure_negative_candidate=str(row.get("is_pure_negative_candidate", "0")).strip() == "1",
             )
         )
     rows.sort(key=lambda item: (item.timestamp, item.filename))
     return rows
+
+
+def load_finetune_clip_records_from_dataset(
+    *,
+    sample_inventory_csv: Path | str,
+    call_inventory_csv: Path | str | None = None,
+) -> List[FineTuneClipRecord]:
+    clip_rows: Dict[str, Dict[str, Any]] = {}
+
+    for row in _read_csv(sample_inventory_csv):
+        filename = str(row.get("source_audio", "") or row.get("filename", "")).strip()
+        if not filename:
+            continue
+        timestamp = parse_filename_timestamp(filename)
+        if timestamp is None:
+            continue
+        state = clip_rows.setdefault(
+            filename,
+            {
+                "timestamp": timestamp,
+                "fin_call_count": 0,
+                "fin_call_type_buckets": set(),
+                "context_tags": set(),
+                "is_fin_positive": False,
+                "is_annotated_non_fin": False,
+                "is_pure_negative_candidate": False,
+            },
+        )
+        state["context_tags"].update(_split_pipe(row.get("context_tags", "")))
+        state["is_fin_positive"] = bool(state["is_fin_positive"]) or _as_bool(row.get("is_fin_positive", "0"))
+        state["is_annotated_non_fin"] = bool(state["is_annotated_non_fin"]) or _as_bool(
+            row.get("is_annotated_non_fin", "0")
+        )
+        state["is_pure_negative_candidate"] = bool(state["is_pure_negative_candidate"]) or _as_bool(
+            row.get("is_pure_negative_candidate", "0")
+        )
+
+    if call_inventory_csv is not None and Path(call_inventory_csv).exists():
+        for row in _read_csv(call_inventory_csv):
+            filename = str(row.get("filename", "")).strip()
+            if not filename:
+                continue
+            timestamp = parse_filename_timestamp(filename)
+            if timestamp is None:
+                continue
+            state = clip_rows.setdefault(
+                filename,
+                {
+                    "timestamp": timestamp,
+                    "fin_call_count": 0,
+                    "fin_call_type_buckets": set(),
+                    "context_tags": set(),
+                    "is_fin_positive": False,
+                    "is_annotated_non_fin": False,
+                    "is_pure_negative_candidate": False,
+                },
+            )
+            state["fin_call_count"] = int(state["fin_call_count"]) + 1
+            state["fin_call_type_buckets"].update(_split_pipe(row.get("call_type_bucket", "")))
+            state["context_tags"].update(_split_pipe(row.get("context_tags", "")))
+            state["is_fin_positive"] = True
+    else:
+        # Fallback for older dataset exports where only sample_inventory.csv is available.
+        for row in _read_csv(sample_inventory_csv):
+            filename = str(row.get("source_audio", "") or row.get("filename", "")).strip()
+            if not filename or not _as_bool(row.get("is_fin_positive", "0")):
+                continue
+            state = clip_rows.get(filename)
+            if state is None:
+                continue
+            state["fin_call_count"] = int(state["fin_call_count"]) + 1
+            state["fin_call_type_buckets"].update(_split_pipe(row.get("call_type_bucket", "")))
+
+    records: List[FineTuneClipRecord] = []
+    for filename, state in clip_rows.items():
+        records.append(
+            FineTuneClipRecord(
+                filename=filename,
+                timestamp=state["timestamp"],
+                fin_call_count=int(state["fin_call_count"]),
+                fin_call_type_buckets=tuple(sorted(state["fin_call_type_buckets"])),
+                context_tags=tuple(sorted(state["context_tags"])),
+                is_fin_positive=bool(state["is_fin_positive"]),
+                is_annotated_non_fin=bool(state["is_annotated_non_fin"]),
+                is_pure_negative_candidate=bool(state["is_pure_negative_candidate"]),
+            )
+        )
+    records.sort(key=lambda item: (item.timestamp, item.filename))
+    return records
 
 
 def compute_time_boundaries(
@@ -113,17 +209,30 @@ def assign_time_pools(
 
     fin_positive = [record for record in records if record.is_fin_positive]
     nonfin_only = [
-        record for record in records if record.is_annotated_non_fin and not record.is_fin_positive
+        record
+        for record in records
+        if record.is_annotated_non_fin and not record.is_fin_positive and not record.is_pure_negative_candidate
+    ]
+    pure_negative_only = [
+        record
+        for record in records
+        if record.is_pure_negative_candidate and not record.is_fin_positive
     ]
     fin_split = _assign_subset(fin_positive)
     nonfin_split = _assign_subset(nonfin_only)
 
     split_map: Dict[str, List[FineTuneClipRecord]] = {}
     for split_name in ("train", "val", "test"):
+        pure_negative_split = list(pure_negative_only) if split_name == "train" else []
         split_map[f"{split_name}_fin"] = list(fin_split[split_name])
-        split_map[f"{split_name}_nonfin"] = list(nonfin_split[split_name])
+        split_map[f"{split_name}_annotated_nonfin"] = list(nonfin_split[split_name])
+        split_map[f"{split_name}_pure_negative"] = pure_negative_split
+        split_map[f"{split_name}_nonfin"] = sorted(
+            list(nonfin_split[split_name]) + pure_negative_split,
+            key=lambda item: (item.timestamp, item.filename),
+        )
         split_map[split_name] = sorted(
-            fin_split[split_name] + nonfin_split[split_name],
+            fin_split[split_name] + split_map[f"{split_name}_nonfin"],
             key=lambda item: (item.timestamp, item.filename),
         )
     return split_map

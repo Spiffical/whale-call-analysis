@@ -23,7 +23,7 @@ import matplotlib.cm as cm
 from sklearn.metrics import roc_curve, auc, precision_recall_curve
 
 # Import from reorganized src packages
-from src.training.mat_dataset import FinWhaleMatDataset
+from src.training.mat_dataset import POSITIVE_CROP_MODES, FinWhaleMatDataset
 from src.models.fin_models import create_model
 from src.utils.wandb_utils import (
     init_wandb_test, 
@@ -180,7 +180,14 @@ def main():
     ap.add_argument('--min-db', type=float, default=-80.0)
     ap.add_argument('--max-db', type=float, default=0.0)
     ap.add_argument('--center-bias-sigma-frac', type=float, default=0.25,
-                    help='Positive crop jitter strength when --augment-test is enabled')
+                    help='Positive crop jitter strength in centered mode, or edge-band width in edge-oriented modes')
+    ap.add_argument(
+        '--positive-crop-mode',
+        type=str,
+        default=None,
+        choices=list(POSITIVE_CROP_MODES),
+        help='Positive crop positioning mode when --augment-test is enabled. Default: load from args.pkl when available, else centered_gaussian.',
+    )
     ap.add_argument('--train-ratio', type=float, default=0.8)
     ap.add_argument('--val-ratio', type=float, default=0.1)
     ap.add_argument('--seed', type=int, default=42)
@@ -258,6 +265,7 @@ def main():
     # Build test dataset once
     # Derive seed from the first checkpoint if not ignored
     seed_to_use = args.seed
+    positive_crop_mode_to_use = args.positive_crop_mode or 'centered_gaussian'
     if not args.ignore_checkpoint_seed:
         try:
             import pickle
@@ -269,6 +277,11 @@ def main():
                     seed_to_use = int(getattr(sargs, 'seed'))
                 elif isinstance(sargs, dict) and 'seed' in sargs:
                     seed_to_use = int(sargs['seed'])
+                if args.positive_crop_mode is None:
+                    if hasattr(sargs, 'positive_crop_mode'):
+                        positive_crop_mode_to_use = str(getattr(sargs, 'positive_crop_mode'))
+                    elif isinstance(sargs, dict) and 'positive_crop_mode' in sargs:
+                        positive_crop_mode_to_use = str(sargs['positive_crop_mode'])
         except Exception:
             pass
 
@@ -312,6 +325,7 @@ def main():
         crop_size=crop_size,
         min_db=args.min_db, max_db=args.max_db,
         center_bias_sigma_frac=args.center_bias_sigma_frac,
+        positive_crop_mode=positive_crop_mode_to_use,
         seed=seed_to_use, augment_eval=bool(args.augment_test), return_path=True, return_meta=True,
         file_list=file_list
     )

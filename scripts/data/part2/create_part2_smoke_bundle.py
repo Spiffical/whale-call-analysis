@@ -25,6 +25,7 @@ MANIFEST_CSV_KEYS = [
     "clip_manifest",
     "fin_positive_clips",
     "annotated_non_fin_clips",
+    "pure_negative_clips",
     "candidate_clips",
     "adjacent_context_clips",
     "download_clips",
@@ -34,6 +35,7 @@ MANIFEST_CSV_KEYS = [
 MANIFEST_TXT_KEYS = [
     "fin_positive_clips",
     "annotated_non_fin_clips",
+    "pure_negative_clips",
     "candidate_clips",
     "adjacent_context_clips",
     "download_clips",
@@ -46,6 +48,7 @@ CLIP_FILTER_KEYS = {
     "clip_manifest",
     "fin_positive_clips",
     "annotated_non_fin_clips",
+    "pure_negative_clips",
     "candidate_clips",
     "prep_clips",
     "smoke_clips",
