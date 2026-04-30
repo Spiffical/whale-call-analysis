@@ -10,6 +10,7 @@ Outputs MATs and an optional comparison report vs an existing MAT directory.
 from __future__ import annotations
 
 import argparse
+import inspect
 import re
 import sys
 from dataclasses import dataclass
@@ -35,6 +36,14 @@ if ONC_REPO.exists() and str(ONC_REPO) not in sys.path:
 
 from onc_hydrophone_data.audio.spectrogram_generator import SpectrogramGenerator
 from src.data.sequential_prep import crop_to_freq_lims, get_processing_params, load_dataset_documentation
+
+
+def _spectrogram_generator_kwargs(**kwargs: object) -> Dict[str, object]:
+    """Keep train-style prep compatible across local onc-hydrophone-data versions."""
+    params = inspect.signature(SpectrogramGenerator).parameters
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in params}
 
 
 @dataclass
@@ -415,14 +424,16 @@ def main() -> None:
     edge_context_s = float(args.edge_context_s) if args.edge_context_s is not None else inferred_edge_context_s
 
     spec_gen = SpectrogramGenerator(
-        win_dur=win_dur,
-        overlap=overlap,
-        freq_lims=(freq_min, freq_max),
-        clim=(clim_min, clim_max),
-        log_freq=False,
-        crop_freq_lims=False,
-        backend=args.spec_backend,
-        quiet=True,
+        **_spectrogram_generator_kwargs(
+            win_dur=win_dur,
+            overlap=overlap,
+            freq_lims=(freq_min, freq_max),
+            clim=(clim_min, clim_max),
+            log_freq=False,
+            crop_freq_lims=False,
+            backend=args.spec_backend,
+            quiet=True,
+        )
     )
 
     audio_dir = Path(args.audio_dir)
