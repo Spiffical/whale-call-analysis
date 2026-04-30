@@ -19,8 +19,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
-import torch
-from torch.utils.data import Dataset
+
+try:
+    import torch
+    from torch.utils.data import Dataset
+except Exception:
+    torch = None
+
+    class Dataset:  # type: ignore[no-redef]
+        """Fallback base so label-only utilities can run without PyTorch."""
+
+        pass
 
 try:
     import scipy.io as sio
@@ -28,23 +37,57 @@ except Exception:
     sio = None
 
 from src.dataset.part2_annotations import parse_filename_timestamp
-from src.training.mat_dataset import (
-    DB_KEYS,
-    FREQ_KEYS,
-    POWER_KEYS,
-    SPECTRO_KEYS,
-    TIME_KEYS,
-    _choose_start_idx,
-    _find_key,
-    _infer_time_bin_seconds,
-    _normalize_db_to_unit,
-    _power_to_db_norm,
-    parse_crop_size,
-)
+try:
+    from src.training.mat_dataset import (
+        DB_KEYS,
+        FREQ_KEYS,
+        POWER_KEYS,
+        SPECTRO_KEYS,
+        TIME_KEYS,
+        _choose_start_idx,
+        _find_key,
+        _infer_time_bin_seconds,
+        _normalize_db_to_unit,
+        _power_to_db_norm,
+        parse_crop_size,
+    )
+except Exception:
+    DB_KEYS: Tuple[str, ...] = ()
+    FREQ_KEYS: Tuple[str, ...] = ()
+    POWER_KEYS: Tuple[str, ...] = ()
+    SPECTRO_KEYS: Tuple[str, ...] = ()
+    TIME_KEYS: Tuple[str, ...] = ()
+
+    def _missing_training_dependency(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("PyTorch training dependencies are required for MAT dataset loading")
+
+    _choose_start_idx = _missing_training_dependency
+    _find_key = _missing_training_dependency
+    _infer_time_bin_seconds = _missing_training_dependency
+    _normalize_db_to_unit = _missing_training_dependency
+    _power_to_db_norm = _missing_training_dependency
+
+    def parse_crop_size(crop_size: Any) -> Tuple[Optional[int], Optional[int]]:
+        _missing_training_dependency(crop_size)
 
 
 NONBIOLOGICAL_SPECIES_CODES = frozenset({"INSTRUMENT", "EQ", "SONAR", "UNKNOWN"})
-TRAINABLE_CALL_TYPES = frozenset({"20Hz", "30Hz", "40Hz", "song", "other_fin"})
+TRAINABLE_CALL_TYPES = frozenset(
+    {
+        "20Hz",
+        "30Hz",
+        "40Hz",
+        "song",
+        "other_fin",
+        "BmA",
+        "BmB",
+        "BmZ",
+        "BmD",
+        "Bp20",
+        "Bp20plus",
+        "BpD",
+    }
+)
 
 SPECIES_CODE_TO_NAME = {
     "Bp": "Fin whale",
@@ -88,6 +131,13 @@ CALL_TYPE_TO_NAME = {
     "40Hz": "40 Hz call",
     "song": "Song unit",
     "other_fin": "Other fin-whale call",
+    "BmA": "Antarctic blue whale A-call",
+    "BmB": "Antarctic blue whale B-call",
+    "BmZ": "Antarctic blue whale Z-call",
+    "BmD": "Antarctic blue whale D-call",
+    "Bp20": "Fin whale 20 Hz pulse",
+    "Bp20plus": "Fin whale 20 Hz pulse with overtone",
+    "BpD": "Fin whale 40 Hz downsweep",
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -159,6 +209,18 @@ def normalize_call_type(value: Any, species_code: str = "") -> str:
         return "song"
     if species_code == "Bp" and compact in {"otherfin", "other"}:
         return "other_fin"
+    biodcase_aliases = {
+        "bma": "BmA",
+        "bmb": "BmB",
+        "bmz": "BmZ",
+        "bmd": "BmD",
+        "bp20": "Bp20",
+        "bp20plus": "Bp20plus",
+        "bp20p": "Bp20plus",
+        "bpd": "BpD",
+    }
+    if compact in biodcase_aliases:
+        return biodcase_aliases[compact]
     return text
 
 
@@ -434,6 +496,8 @@ class MultiLabelMatDataset(Dataset):
         seed: int = 0,
         return_meta: bool = False,
     ) -> None:
+        if torch is None:
+            raise RuntimeError("PyTorch is required to load MultiLabelMatDataset")
         if sio is None:
             raise RuntimeError("scipy is required to load .mat files")
         self.manifest_csv = Path(manifest_csv)
@@ -571,8 +635,8 @@ def multilabel_metrics(
     threshold: float = 0.5,
 ) -> Dict[str, Any]:
     """Compute thresholded multi-label metrics."""
-    true_np = y_true.detach().cpu().numpy() if isinstance(y_true, torch.Tensor) else np.asarray(y_true)
-    score_np = y_score.detach().cpu().numpy() if isinstance(y_score, torch.Tensor) else np.asarray(y_score)
+    true_np = y_true.detach().cpu().numpy() if torch is not None and isinstance(y_true, torch.Tensor) else np.asarray(y_true)
+    score_np = y_score.detach().cpu().numpy() if torch is not None and isinstance(y_score, torch.Tensor) else np.asarray(y_score)
     if true_np.ndim != 2:
         raise ValueError("y_true must be [n_samples, n_labels]")
     if score_np.shape != true_np.shape:
