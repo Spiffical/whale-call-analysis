@@ -159,7 +159,10 @@ if [[ -f .env ]]; then
 fi
 export WANDB_PROJECT="$WANDB_PROJECT"
 export WANDB_DIR="$OUT_DIR/wandb"
-mkdir -p "\$WANDB_DIR" "$MANIFEST_DIR" "$SPLIT_DIR" "$TRAIN_DIR"
+export WANDB_CACHE_DIR="$OUT_DIR/wandb_cache"
+export WANDB_DATA_DIR="$OUT_DIR/wandb_data"
+export WANDB_CONFIG_DIR="$OUT_DIR/wandb_config"
+mkdir -p "\$WANDB_DIR" "\$WANDB_CACHE_DIR" "\$WANDB_DATA_DIR" "\$WANDB_CONFIG_DIR" "$MANIFEST_DIR" "$SPLIT_DIR" "$TRAIN_DIR"
 
 python -u scripts/data/multilabel/build_call_mat_manifest.py \\
   --annotations-csv "$ANNOTATIONS_CSV" \\
