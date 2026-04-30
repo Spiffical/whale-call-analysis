@@ -1,3 +1,4 @@
+import csv
 import json
 import tempfile
 import unittest
@@ -22,7 +23,7 @@ from src.dataset.multilabel import (
     temporal_grouped_split,
     write_csv_rows,
 )
-from scripts.train.train_multilabel_resnet_smoke import write_validation_exports
+from scripts.train.train_multilabel_resnet_smoke import write_threshold_sweep, write_validation_exports
 from scripts.data.multilabel.build_call_mat_manifest import build_call_manifest
 
 
@@ -208,6 +209,33 @@ class TestMultiLabelHelpers(unittest.TestCase):
             self.assertEqual(len(payload["items"][0]["model_outputs"]), 2)
             self.assertEqual(payload["items"][0]["model_outputs"][0]["label_id"], "species:Bp")
             self.assertIn("class_hierarchy", payload["items"][0]["model_outputs"][0])
+
+    def test_threshold_sweep_writes_best_thresholds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vocab = LabelVocabulary(
+                labels=(
+                    {"id": "species:Bp", "group": "species", "code": "Bp", "name": "Fin whale"},
+                    {"id": "species:Mn", "group": "species", "code": "Mn", "name": "Humpback whale"},
+                )
+            )
+            summary = write_threshold_sweep(
+                root,
+                vocab,
+                {
+                    "scores": np.asarray([[0.90, 0.10], [0.80, 0.40], [0.20, 0.70], [0.10, 0.80]], dtype=np.float32),
+                    "targets": np.asarray([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]], dtype=np.float32),
+                },
+            )
+
+            self.assertTrue((root / "threshold_sweep.csv").exists())
+            self.assertTrue((root / "threshold_sweep_global.csv").exists())
+            self.assertTrue((root / "threshold_sweep_best.csv").exists())
+            self.assertTrue((root / "threshold_sweep_summary.json").exists())
+            with (root / "threshold_sweep_best.csv").open() as handle:
+                best_rows = list(csv.DictReader(handle))
+            self.assertEqual([row["label_id"] for row in best_rows], ["species:Bp", "species:Mn"])
+            self.assertEqual(summary["per_label_threshold_aggregate"]["macro_f1"], 1.0)
 
     def test_build_call_mat_manifest_matches_annotation_times(self):
         with tempfile.TemporaryDirectory() as tmp:

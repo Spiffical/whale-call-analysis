@@ -322,6 +322,130 @@ def _write_csv_dicts(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
     write_csv_rows(path, rows)
 
 
+def write_threshold_sweep(exp_dir: Path, vocab: LabelVocabulary, eval_result: Dict[str, Any]) -> Dict[str, Any]:
+    scores = np.asarray(eval_result.get("scores", []), dtype=np.float32)
+    targets = np.asarray(eval_result.get("targets", []), dtype=np.float32)
+    labels = list(vocab.labels)
+    if scores.size == 0 or targets.size == 0 or scores.shape != targets.shape:
+        return {"paths": [], "global_best_macro": {}, "per_label_threshold_aggregate": {}}
+
+    thresholds = [round(float(value), 2) for value in np.linspace(0.05, 0.95, 91)]
+    per_label_rows: List[Dict[str, Any]] = []
+    global_rows: List[Dict[str, Any]] = []
+    best_by_label: Dict[int, Dict[str, Any]] = {}
+
+    for threshold in thresholds:
+        metrics = multilabel_metrics(targets, scores, threshold=float(threshold))
+        global_rows.append(
+            {
+                "threshold": threshold,
+                "macro_f1": float(metrics.get("macro_f1", 0.0)),
+                "micro_f1": float(metrics.get("micro_f1", 0.0)),
+                "micro_precision": float(metrics.get("micro_precision", 0.0)),
+                "micro_recall": float(metrics.get("micro_recall", 0.0)),
+            }
+        )
+        for row in _per_class_rows(vocab, metrics):
+            sweep_row = {"threshold": threshold, **row}
+            per_label_rows.append(sweep_row)
+            idx = len(per_label_rows)  # deterministic tie-breaker fallback
+            label_idx = next((i for i, label in enumerate(labels) if label.get("id") == row["label_id"]), -1)
+            current = best_by_label.get(label_idx)
+            candidate_key = (float(row["f1"]), float(row["precision"]), float(threshold), -idx)
+            current_key = (
+                float(current.get("f1", 0.0)),
+                float(current.get("precision", 0.0)),
+                float(current.get("threshold", 0.0)),
+                0.0,
+            ) if current else None
+            if current is None or candidate_key > current_key:
+                best_by_label[label_idx] = sweep_row
+
+    best_indices = [idx for idx in sorted(best_by_label) if idx >= 0]
+    best_rows = [best_by_label[idx] for idx in best_indices]
+    per_label_pred = np.zeros_like(targets, dtype=bool)
+    for idx in best_indices:
+        per_label_pred[:, idx] = scores[:, idx] >= float(best_by_label[idx]["threshold"])
+    true = targets >= 0.5
+    tp = np.logical_and(per_label_pred, true).sum(axis=0)
+    fp = np.logical_and(per_label_pred, ~true).sum(axis=0)
+    fn = np.logical_and(~per_label_pred, true).sum(axis=0)
+    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=np.float32), where=(tp + fp) > 0)
+    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=np.float32), where=(tp + fn) > 0)
+    f1 = np.divide(2 * precision * recall, precision + recall, out=np.zeros_like(precision), where=(precision + recall) > 0)
+    micro_tp = int(tp.sum())
+    micro_fp = int(fp.sum())
+    micro_fn = int(fn.sum())
+    micro_precision = micro_tp / max(micro_tp + micro_fp, 1)
+    micro_recall = micro_tp / max(micro_tp + micro_fn, 1)
+    micro_f1 = 2 * micro_precision * micro_recall / max(micro_precision + micro_recall, 1e-12)
+
+    global_best_macro = max(global_rows, key=lambda row: (float(row["macro_f1"]), float(row["threshold"])))
+    global_best_micro = max(global_rows, key=lambda row: (float(row["micro_f1"]), float(row["threshold"])))
+    per_label_summary = {
+        "macro_f1": float(np.mean(f1)) if f1.size else 0.0,
+        "micro_f1": float(micro_f1),
+        "micro_precision": float(micro_precision),
+        "micro_recall": float(micro_recall),
+        "thresholds": {row["label_id"]: float(row["threshold"]) for row in best_rows},
+        "per_class_f1": {labels[idx].get("id", f"label_{idx}"): float(f1[idx]) for idx in range(min(len(labels), len(f1)))},
+    }
+
+    _write_csv_dicts(exp_dir / "threshold_sweep.csv", per_label_rows)
+    _write_csv_dicts(exp_dir / "threshold_sweep_global.csv", global_rows)
+    _write_csv_dicts(exp_dir / "threshold_sweep_best.csv", best_rows)
+    summary = {
+        "global_best_macro": global_best_macro,
+        "global_best_micro": global_best_micro,
+        "per_label_threshold_aggregate": per_label_summary,
+    }
+    with open(exp_dir / "threshold_sweep_summary.json", "w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
+
+    paths: List[Path] = [
+        exp_dir / "threshold_sweep.csv",
+        exp_dir / "threshold_sweep_global.csv",
+        exp_dir / "threshold_sweep_best.csv",
+        exp_dir / "threshold_sweep_summary.json",
+    ]
+    if plt is not None:
+        plot_dir = exp_dir / "plots"
+        plot_dir.mkdir(parents=True, exist_ok=True)
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.plot([row["threshold"] for row in global_rows], [row["macro_f1"] for row in global_rows], label="macro F1")
+        ax.plot([row["threshold"] for row in global_rows], [row["micro_f1"] for row in global_rows], label="micro F1")
+        ax.set_xlabel("Threshold")
+        ax.set_ylabel("F1")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_title("Validation F1 by Global Threshold")
+        ax.grid(alpha=0.25)
+        ax.legend()
+        path = plot_dir / "threshold_global_f1.png"
+        fig.tight_layout()
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        paths.append(path)
+
+        fig, ax = plt.subplots(figsize=(max(8, len(best_rows) * 0.75), 4))
+        x = np.arange(len(best_rows))
+        ax.bar(x, [float(row["f1"]) for row in best_rows], width=0.5, label="best F1")
+        ax.plot(x, [float(row["threshold"]) for row in best_rows], marker="o", color="black", label="threshold")
+        ax.set_xticks(x)
+        ax.set_xticklabels([row["label_id"] for row in best_rows], rotation=45, ha="right")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_title("Best Per-Class Thresholds")
+        ax.grid(axis="y", alpha=0.25)
+        ax.legend()
+        path = plot_dir / "threshold_best_per_class.png"
+        fig.tight_layout()
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        paths.append(path)
+
+    return {**summary, "paths": paths}
+
+
 def write_training_plots(exp_dir: Path, history: Sequence[Dict[str, Any]]) -> List[Path]:
     if plt is None or not history:
         return []
@@ -665,8 +789,10 @@ def main() -> int:
     plot_paths = []
     plot_paths.extend(write_training_plots(exp_dir, history))
     plot_paths.extend(write_validation_plots(exp_dir, vocab, best_eval))
+    threshold_sweep = write_threshold_sweep(exp_dir, vocab, best_eval)
     example_paths = write_example_images(exp_dir, vocab, best_eval, threshold=float(args.threshold))
     plot_paths.extend(example_paths)
+    plot_paths.extend([Path(path) for path in threshold_sweep.get("paths", [])])
 
     summary = {
         "manifest_csv": str(Path(args.manifest_csv).resolve()),
@@ -681,6 +807,7 @@ def main() -> int:
         "best_metric": best_metric,
         "best_checkpoint": str(best_path),
         "init_checkpoint": init_info,
+        "threshold_sweep": {key: value for key, value in threshold_sweep.items() if key != "paths"},
         "history": history,
     }
     with open(exp_dir / "run_summary.json", "w", encoding="utf-8") as handle:
