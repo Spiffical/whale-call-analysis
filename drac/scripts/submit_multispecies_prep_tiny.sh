@@ -12,6 +12,7 @@ EXP_ROOT="$FINAL2025_ROOT/multispecies_calltype_experiments"
 ANNOTATIONS_CSV="$FINAL2025_ROOT/part2/full_bundle/manifests/annotations_all.csv"
 CLIP_MANIFEST_CSV="$FINAL2025_ROOT/part2/full_bundle/manifests/clip_manifest.csv"
 DATASET_DOC="$FINAL2025_ROOT/historical/training_dataset/dataset_documentation.json"
+SOURCE_AUDIO_DIR="$FINAL2025_ROOT/part2/full_bundle/raw_audio"
 ARCHIVE_PATH="/project/6070467/merileo/data/finwhales/archives/clayoquot_raw_audio.tar.zst"
 AVAILABLE_FILENAMES="/project/6070467/merileo/data/finwhales/archives/clayoquot_raw_audio_available_filenames.txt"
 
@@ -41,7 +42,7 @@ Usage:
 
 Builds a bounded non-training prep job:
   1. Selects a small mixed-species/background call manifest.
-  2. Extracts required raw audio from the canonical archive.
+  2. Stages required raw audio from an existing directory, or falls back to archive extraction.
   3. Generates train-style 40s MAT windows with the existing Part 2 prep code.
   4. Builds the multi-label MAT manifest and grouped candidate splits.
 
@@ -52,6 +53,7 @@ Key options:
   --annotations-csv PATH
   --clip-manifest-csv PATH
   --dataset-doc PATH
+  --source-audio-dir PATH           Default: Part 2 full_bundle/raw_audio; set empty to use archive extraction
   --archive-path PATH
   --available-filenames PATH
   --species CSV                    Default: OD,Mn,Bm,Oo
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --annotations-csv) ANNOTATIONS_CSV="$2"; shift 2 ;;
     --clip-manifest-csv) CLIP_MANIFEST_CSV="$2"; shift 2 ;;
     --dataset-doc) DATASET_DOC="$2"; shift 2 ;;
+    --source-audio-dir) SOURCE_AUDIO_DIR="$2"; shift 2 ;;
     --archive-path) ARCHIVE_PATH="$2"; shift 2 ;;
     --available-filenames) AVAILABLE_FILENAMES="$2"; shift 2 ;;
     --species) SPECIES="$2"; shift 2 ;;
@@ -104,9 +107,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for required in "$ANNOTATIONS_CSV" "$CLIP_MANIFEST_CSV" "$DATASET_DOC" "$ARCHIVE_PATH" "$AVAILABLE_FILENAMES"; do
+for required in "$ANNOTATIONS_CSV" "$CLIP_MANIFEST_CSV" "$DATASET_DOC"; do
   [[ -e "$required" ]] || { echo "Missing required path: $required" >&2; exit 1; }
 done
+if [[ -n "$SOURCE_AUDIO_DIR" ]]; then
+  [[ -d "$SOURCE_AUDIO_DIR" ]] || { echo "Missing source audio dir: $SOURCE_AUDIO_DIR" >&2; exit 1; }
+else
+  for required in "$ARCHIVE_PATH" "$AVAILABLE_FILENAMES"; do
+    [[ -e "$required" ]] || { echo "Missing required path: $required" >&2; exit 1; }
+  done
+fi
 
 RUN_ID="${RUN_NAME}_$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="$EXP_ROOT/prep_runs/$RUN_ID"
@@ -159,12 +169,64 @@ if [[ "$INCLUDE_FIN" == "true" ]]; then
 fi
 "\${prep_cmd[@]}"
 
-python -u scripts/data/part2/extract_required_audio_from_archive.py \\
-  --archive-path "$ARCHIVE_PATH" \\
-  --available-filenames-txt "$AVAILABLE_FILENAMES" \\
-  --required-filenames-txt "$PREP_DIR/required_audio_filenames.txt" \\
-  --output-dir "$RAW_DIR" \\
-  --allow-missing
+if [[ -n "$SOURCE_AUDIO_DIR" ]]; then
+  python - "$PREP_DIR/required_audio_filenames.txt" "$SOURCE_AUDIO_DIR" "$RAW_DIR" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+required_txt = Path(sys.argv[1])
+source_dir = Path(sys.argv[2])
+output_dir = Path(sys.argv[3])
+required = [line.strip() for line in required_txt.read_text(encoding="utf-8").splitlines() if line.strip()]
+index = {}
+for pattern in ("*.flac", "*.wav"):
+    for path in source_dir.rglob(pattern):
+        index.setdefault(path.name, path)
+
+output_dir.mkdir(parents=True, exist_ok=True)
+staged = []
+missing = []
+for name in required:
+    src = index.get(name)
+    if src is None:
+        missing.append(name)
+        continue
+    dst = output_dir / name
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+    try:
+        dst.symlink_to(src)
+    except OSError:
+        shutil.copy2(src, dst)
+    staged.append(name)
+
+(output_dir / "required_audio_filenames.txt").write_text("\\n".join(required) + "\\n", encoding="utf-8")
+(output_dir / "staged_audio_filenames.txt").write_text("\\n".join(staged) + ("\\n" if staged else ""), encoding="utf-8")
+(output_dir / "missing_audio_filenames.txt").write_text("\\n".join(missing) + ("\\n" if missing else ""), encoding="utf-8")
+summary = {
+    "source": "source_audio_dir",
+    "source_audio_dir": str(source_dir),
+    "required_count": len(required),
+    "staged_count": len(staged),
+    "missing_count": len(missing),
+    "missing_filenames": missing,
+    "output_dir": str(output_dir),
+}
+(output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+print(json.dumps(summary, indent=2, sort_keys=True))
+if missing:
+    raise SystemExit(f"{len(missing)} required audio files missing from {source_dir}")
+PY
+else
+  python -u scripts/data/part2/extract_required_audio_from_archive.py \\
+    --archive-path "$ARCHIVE_PATH" \\
+    --available-filenames-txt "$AVAILABLE_FILENAMES" \\
+    --required-filenames-txt "$PREP_DIR/required_audio_filenames.txt" \\
+    --output-dir "$RAW_DIR" \\
+    --allow-missing
+fi
 
 python - "$PREP_DIR/selected_source_clips.txt" "$RAW_DIR" <<'PY'
 import sys
@@ -221,6 +283,7 @@ out_dir, run_id, run_name, prep_dir, raw_dir, mat_dir, manifest_dir, split_dir =
 summary = {
     "run_id": str(run_id),
     "run_name": str(run_name),
+    "source_audio_dir": "$SOURCE_AUDIO_DIR",
     "prep_dir": str(prep_dir),
     "raw_dir": str(raw_dir),
     "mat_dir": str(mat_dir),
