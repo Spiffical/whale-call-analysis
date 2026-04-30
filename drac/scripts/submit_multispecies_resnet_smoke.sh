@@ -39,7 +39,7 @@ WANDB_GROUP="multispecies-calltype-v1"
 WANDB_TAGS="multilabel,resnet,nibi,smoke,species"
 
 SBATCH_PARTITION=""
-SBATCH_GRES="gpu:1"
+SBATCH_GRES="gpu:nvidia_h100_80gb_hbm3_1g.10gb:1"
 SBATCH_TIME="02:00:00"
 SBATCH_CPUS="8"
 SBATCH_MEM="48G"
@@ -73,7 +73,7 @@ Key options:
 
 SBATCH:
   --partition NAME
-  --gres SPEC                     Default: gpu:1
+  --gres SPEC                     Default: gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
   --time HH:MM:SS                 Default: 02:00:00
   --cpus-per-task N               Default: 8
   --mem SIZE                      Default: 48G
