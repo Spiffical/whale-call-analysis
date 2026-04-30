@@ -116,6 +116,38 @@ def _adjacent_audio_names(
     return names
 
 
+def _required_audio_names(
+    filename: str,
+    *,
+    begin_s: float,
+    end_s: float,
+    context_s: float,
+    edge_context_s: float,
+    clip_duration_s: float,
+) -> set[str]:
+    names = {filename}
+    names.update(
+        _adjacent_audio_names(
+            filename,
+            begin_s=begin_s,
+            end_s=end_s,
+            context_s=context_s,
+            edge_context_s=edge_context_s,
+            clip_duration_s=clip_duration_s,
+        )
+    )
+    return {name for name in names if name}
+
+
+def _available_audio_names(audio_dir: Optional[Path]) -> Optional[set[str]]:
+    if audio_dir is None:
+        return None
+    names: set[str] = set()
+    for pattern in ("*.flac", "*.wav"):
+        names.update(path.name for path in audio_dir.rglob(pattern))
+    return names
+
+
 def _label_record(row: Dict[str, Any]) -> Dict[str, Any]:
     species = annotation_species_code(row)
     call_type = annotation_call_type(row)
@@ -210,12 +242,15 @@ def build_prep_manifest(
     clip_duration_s: float,
     background_window_s: float,
     background_windows_per_clip: int,
+    available_audio_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     rows = _read_csv(annotations_csv)
     species_filter = set(species)
     if include_fin and species_filter:
         species_filter.add("Bp")
 
+    available_audio = _available_audio_names(available_audio_dir)
+    missing_audio_counter: Counter[str] = Counter()
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     skipped = Counter()
     for row in rows:
@@ -238,6 +273,20 @@ def build_prep_manifest(
         if species_filter and code not in species_filter:
             skipped["species_filter"] += 1
             continue
+        if available_audio is not None:
+            required_names = _required_audio_names(
+                filename,
+                begin_s=begin_s,
+                end_s=end_s,
+                context_s=context_s,
+                edge_context_s=edge_context_s,
+                clip_duration_s=clip_duration_s,
+            )
+            missing_names = sorted(required_names.difference(available_audio))
+            if missing_names:
+                skipped["missing_required_audio"] += 1
+                missing_audio_counter.update(missing_names)
+                continue
         grouped[code].append(dict(row))
 
     positive_rows: List[Dict[str, Any]] = []
@@ -263,6 +312,17 @@ def build_prep_manifest(
         and clean_text(row.get("is_fin_positive")) != "1"
         and clean_text(row.get("is_annotated_non_fin")) != "1"
     ]
+    if available_audio is not None:
+        audio_filtered_negative_clips = []
+        for row in pure_negative_clips:
+            filename = clean_text(row.get("filename"))
+            missing_names = sorted({filename}.difference(available_audio))
+            if missing_names:
+                skipped["background_missing_audio"] += 1
+                missing_audio_counter.update(missing_names)
+                continue
+            audio_filtered_negative_clips.append(row)
+        pure_negative_clips = audio_filtered_negative_clips
     pure_negative_clips = sorted(pure_negative_clips, key=lambda row: clean_text(row.get("filename")))
     pure_negative_clips = _evenly_capped(pure_negative_clips, max_background)
 
@@ -351,6 +411,9 @@ def build_prep_manifest(
         "call_type_counts": dict(call_counts.most_common()),
         "label_counts": dict(label_counts.most_common()),
         "skipped_annotation_counts": dict(skipped.most_common()),
+        "available_audio_dir": "" if available_audio_dir is None else str(available_audio_dir.resolve()),
+        "available_audio_count": None if available_audio is None else len(available_audio),
+        "missing_required_audio_top": dict(missing_audio_counter.most_common(25)),
         "config": {
             "species": list(species),
             "include_fin": bool(include_fin),
@@ -387,6 +450,7 @@ def main() -> int:
     parser.add_argument("--context-s", type=float, default=40.0)
     parser.add_argument("--edge-context-s", type=float, default=10.5)
     parser.add_argument("--clip-duration-s", type=float, default=300.0)
+    parser.add_argument("--available-audio-dir", default="", help="Optional directory used to skip rows whose required source audio is unavailable")
     args = parser.parse_args()
 
     summary = build_prep_manifest(
@@ -405,6 +469,7 @@ def main() -> int:
         clip_duration_s=float(args.clip_duration_s),
         background_window_s=float(args.background_window_s),
         background_windows_per_clip=int(args.background_windows_per_clip),
+        available_audio_dir=Path(args.available_audio_dir) if str(args.available_audio_dir).strip() else None,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

@@ -174,6 +174,9 @@ prep_cmd=(
 if [[ "$INCLUDE_FIN" == "true" ]]; then
   prep_cmd+=(--include-fin --max-fin "$MAX_FIN")
 fi
+if [[ -n "$SOURCE_AUDIO_DIR" ]]; then
+  prep_cmd+=(--available-audio-dir "$SOURCE_AUDIO_DIR")
+fi
 "\${prep_cmd[@]}"
 
 if [[ -n "$SOURCE_AUDIO_DIR" ]]; then
