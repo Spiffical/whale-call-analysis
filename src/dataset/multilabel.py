@@ -764,6 +764,7 @@ def label_balanced_grouped_split(
     assigned_groups: Dict[str, List[Tuple[str, List[Dict[str, Any]]]]] = {
         split: [] for split in ("train", "val", "test")
     }
+    assigned_keys: set[str] = set()
 
     rng = np.random.default_rng(int(seed))
     jitter = {key: float(rng.random()) for key, _ in group_items}
@@ -777,8 +778,61 @@ def label_balanced_grouped_split(
         labels = group_label_counts[key]
         return float(sum(1.0 / max(1, label_group_presence[label]) for label in labels))
 
+    group_lookup = {key: group_rows for key, group_rows in group_items}
+
+    def has_capacity(split: str) -> bool:
+        return len(assigned_groups[split]) < target_group_counts[split]
+
+    def assign_group(split: str, key: str) -> None:
+        group_rows = group_lookup[key]
+        assigned_groups[split].append((key, group_rows))
+        current_label_counts[split].update(group_label_counts[key])
+        assigned_keys.add(key)
+
+    # First reserve a small amount of coverage for validation/test labels.
+    # The later greedy balance step otherwise tends to satisfy the large train
+    # target for blocky species/time distributions before holdout splits ever
+    # see those labels.
+    coverage_split_order = ("val", "test", "train")
+    labels_by_rarity = sorted(
+        total_label_counts,
+        key=lambda label: (label_group_presence[label], total_label_counts[label], label),
+    )
+    for label in labels_by_rarity:
+        candidate_splits = [
+            split
+            for split in coverage_split_order
+            if target_label_counts[split].get(label, 0.0) > 0.0
+        ]
+        if not candidate_splits:
+            continue
+        # If a label exists in only a few groups, spread it as far as it can go
+        # without pretending every split can receive a positive example.
+        candidate_splits = candidate_splits[: min(len(candidate_splits), label_group_presence[label])]
+        for split in candidate_splits:
+            if current_label_counts[split].get(label, 0) > 0 or not has_capacity(split):
+                continue
+            candidates = [
+                key
+                for key in group_lookup
+                if key not in assigned_keys and group_label_counts[key].get(label, 0) > 0
+            ]
+            if not candidates:
+                continue
+            best_key = min(
+                candidates,
+                key=lambda key: (
+                    -group_label_counts[key].get(label, 0),
+                    len(group_label_counts[key]),
+                    group_time(key, group_lookup[key]),
+                    jitter[key],
+                    key,
+                ),
+            )
+            assign_group(split, best_key)
+
     ordered = sorted(
-        group_items,
+        [(key, group_rows) for key, group_rows in group_items if key not in assigned_keys],
         key=lambda item: (
             -rarity_score(item[0]),
             group_time(item[0], item[1]),
@@ -789,23 +843,19 @@ def label_balanced_grouped_split(
 
     def score_assignment(split: str, key: str) -> float:
         counts = group_label_counts[key]
-        before = current_label_counts[split]
-        target = target_label_counts[split]
-        labels = sorted(total_label_counts)
-        before_error = sum(abs(float(before.get(label, 0)) - target.get(label, 0.0)) for label in labels)
-        after_error = sum(
-            abs(float(before.get(label, 0) + counts.get(label, 0)) - target.get(label, 0.0))
-            for label in labels
+        label_score = 0.0
+        for label, count in counts.items():
+            target = max(1.0, target_label_counts[split].get(label, 0.0))
+            current = float(current_label_counts[split].get(label, 0))
+            deficit = (target - current) / target
+            label_score += float(count) * deficit
+            if label_group_presence[label] >= 2 and current == 0.0:
+                label_score += 1.0
+        capacity_deficit = (
+            float(target_group_counts[split] - len(assigned_groups[split]))
+            / max(1.0, float(target_group_counts[split]))
         )
-        coverage_bonus = 0.0
-        if split in {"val", "test"}:
-            coverage_bonus = sum(
-                2.0
-                for label in counts
-                if label_group_presence[label] >= 2 and current_label_counts[split].get(label, 0) == 0
-            )
-        capacity_penalty = abs((len(assigned_groups[split]) + 1) - target_group_counts[split])
-        return (before_error - after_error) + coverage_bonus - (0.05 * capacity_penalty)
+        return label_score + (0.25 * capacity_deficit)
 
     for key, group_rows in ordered:
         available = [
@@ -813,9 +863,15 @@ def label_balanced_grouped_split(
         ]
         if not available:
             available = ["train", "val", "test"]
-        best_split = max(available, key=lambda split: (score_assignment(split, key), -len(assigned_groups[split]), split))
-        assigned_groups[best_split].append((key, group_rows))
-        current_label_counts[best_split].update(group_label_counts[key])
+        best_split = max(
+            available,
+            key=lambda split: (
+                score_assignment(split, key),
+                target_group_counts[split] - len(assigned_groups[split]),
+                {"val": 2, "test": 1, "train": 0}[split],
+            ),
+        )
+        assign_group(best_split, key)
 
     out: Dict[str, List[Dict[str, Any]]] = {"train": [], "val": [], "test": []}
     for split_name, split_group_items in assigned_groups.items():

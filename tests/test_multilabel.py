@@ -99,6 +99,35 @@ class TestMultiLabelHelpers(unittest.TestCase):
             self.assertIn("<background>", split_labels)
         self.assertEqual(sum(len(items) for items in split_rows.values()), len(rows))
 
+    def test_label_balanced_grouped_split_handles_blocked_labels(self):
+        rows = []
+        blocked_labels = (
+            ["species:Bm"] * 50
+            + ["species:Bp"] * 50
+            + ["species:Mn"] * 50
+            + ["species:OD"] * 50
+            + ["species:Oo"] * 50
+            + [""] * 50
+        )
+        for idx, label in enumerate(blocked_labels):
+            rows.append(
+                {
+                    "item_id": f"item-{idx}",
+                    "event_group": f"group-{idx}",
+                    "start_time": f"2025-{(idx // 50) + 1:02d}-{(idx % 28) + 1:02d}T00:00:00+00:00",
+                    "label_ids": label,
+                }
+            )
+
+        split_rows = label_balanced_grouped_split(rows, train_ratio=0.7, val_ratio=0.15, seed=2026)
+        expected = {"species:Bm", "species:Bp", "species:Mn", "species:OD", "species:Oo", "<background>"}
+        self.assertEqual({split: len(items) for split, items in split_rows.items()}, {"train": 210, "val": 45, "test": 45})
+        for split_items in split_rows.values():
+            split_labels = set()
+            for row in split_items:
+                split_labels.update(label_ids_from_row(row) or ["<background>"])
+            self.assertTrue(expected.issubset(split_labels), split_labels)
+
     def test_multilabel_mat_dataset_loads_targets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
