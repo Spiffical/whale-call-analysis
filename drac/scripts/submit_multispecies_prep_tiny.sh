@@ -28,6 +28,8 @@ EDGE_CONTEXT_S="10.5"
 SPEC_BACKEND="torch"
 VOCAB_MIN_COUNT="1"
 SAVE_IMAGES="true"
+SPLIT_STRATEGY="label_balanced"
+SPLIT_SEED="2026"
 
 SBATCH_PARTITION=""
 SBATCH_TIME="01:00:00"
@@ -65,6 +67,9 @@ Key options:
   --window-s SECONDS               Default: 40
   --edge-context-s SECONDS         Default: 10.5
   --spec-backend auto|scipy|torch  Default: torch
+  --split-strategy temporal|label_balanced
+                                   Default: label_balanced
+  --split-seed N                   Default: 2026
   --no-images                      Do not save diagnostic spectrogram images
 
 SBATCH:
@@ -96,6 +101,8 @@ while [[ $# -gt 0 ]]; do
     --window-s) WINDOW_S="$2"; shift 2 ;;
     --edge-context-s) EDGE_CONTEXT_S="$2"; shift 2 ;;
     --spec-backend) SPEC_BACKEND="$2"; shift 2 ;;
+    --split-strategy) SPLIT_STRATEGY="$2"; shift 2 ;;
+    --split-seed) SPLIT_SEED="$2"; shift 2 ;;
     --no-images) SAVE_IMAGES="false"; shift ;;
     --partition) SBATCH_PARTITION="$2"; shift 2 ;;
     --time) SBATCH_TIME="$2"; shift 2 ;;
@@ -272,7 +279,9 @@ python -u scripts/data/multilabel/build_call_mat_manifest.py \\
 
 python -u scripts/data/multilabel/build_candidate_splits.py \\
   --manifest-csv "$MANIFEST_DIR/call_multilabel_manifest.csv" \\
-  --output-dir "$SPLIT_DIR"
+  --output-dir "$SPLIT_DIR" \\
+  --strategy "$SPLIT_STRATEGY" \\
+  --seed "$SPLIT_SEED"
 
 python - "$OUT_DIR" "$RUN_ID" "$RUN_NAME" "$PREP_DIR" "$RAW_DIR" "$MAT_DIR" "$MANIFEST_DIR" "$SPLIT_DIR" <<'PY'
 import json

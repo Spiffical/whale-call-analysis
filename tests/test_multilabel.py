@@ -15,6 +15,7 @@ from src.dataset.multilabel import (
     MultiLabelMatDataset,
     build_vocabulary_from_rows,
     group_key_for_split,
+    label_balanced_grouped_split,
     label_ids_from_row,
     normalize_call_type,
     normalize_species_code,
@@ -68,6 +69,34 @@ class TestMultiLabelHelpers(unittest.TestCase):
                 group = group_key_for_split(row)
                 self.assertNotIn(group, seen) if group not in seen else self.assertEqual(seen[group], split)
                 seen[group] = split
+        self.assertEqual(sum(len(items) for items in split_rows.values()), len(rows))
+
+    def test_label_balanced_grouped_split_preserves_background_and_rare_labels(self):
+        rows = []
+        labels = ["species:Bp", "species:Oo", ""]
+        for idx in range(30):
+            label = labels[idx % len(labels)]
+            row = {
+                "item_id": f"item-{idx}",
+                "event_group": f"group-{idx}",
+                "start_time": f"2025-01-{(idx % 28) + 1:02d}T00:00:00+00:00",
+                "label_ids": label,
+            }
+            rows.append(row)
+
+        split_rows = label_balanced_grouped_split(rows, train_ratio=0.6, val_ratio=0.2, seed=7)
+        seen = {}
+        for split, split_items in split_rows.items():
+            self.assertGreater(len(split_items), 0)
+            split_labels = set()
+            for row in split_items:
+                group = group_key_for_split(row)
+                self.assertNotIn(group, seen)
+                seen[group] = split
+                labels_for_row = label_ids_from_row(row)
+                split_labels.update(labels_for_row or ["<background>"])
+            self.assertIn("species:Oo", split_labels)
+            self.assertIn("<background>", split_labels)
         self.assertEqual(sum(len(items) for items in split_rows.values()), len(rows))
 
     def test_multilabel_mat_dataset_loads_targets(self):

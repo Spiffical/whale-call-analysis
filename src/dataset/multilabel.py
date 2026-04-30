@@ -691,3 +691,138 @@ def temporal_grouped_split(
                 row_out["split"] = split_name
                 out[split_name].append(row_out)
     return out
+
+
+def label_balanced_grouped_split(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    seed: int = 0,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Split rows by group with a greedy multi-label balance heuristic.
+
+    This is intended for smoke experiments where every split should see a
+    representative slice of background and rare labels, while still preserving
+    event/source grouping. It is not a substitute for the final temporal or
+    deployment-level evaluation design.
+    """
+    if not rows:
+        return {"train": [], "val": [], "test": []}
+    if train_ratio <= 0 or val_ratio < 0 or train_ratio + val_ratio >= 1:
+        raise ValueError("Require 0 < train_ratio and train_ratio + val_ratio < 1")
+
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[group_key_for_split(row)].append(dict(row))
+
+    group_items = list(groups.items())
+    n_groups = len(group_items)
+    if n_groups <= 2:
+        return temporal_grouped_split(rows, train_ratio=train_ratio, val_ratio=val_ratio)
+
+    n_train = max(1, int(math.floor(n_groups * float(train_ratio))))
+    n_val = int(math.floor(n_groups * float(val_ratio)))
+    if n_val < 1:
+        n_val = 1
+    if n_train + n_val >= n_groups:
+        n_train = max(1, n_groups - n_val - 1)
+    target_group_counts = {
+        "train": n_train,
+        "val": n_val,
+        "test": max(1, n_groups - n_train - n_val),
+    }
+    split_ratios = {
+        "train": float(train_ratio),
+        "val": float(val_ratio),
+        "test": max(0.0, 1.0 - float(train_ratio) - float(val_ratio)),
+    }
+
+    def row_label_counts(group_rows: Sequence[Dict[str, Any]]) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for row in group_rows:
+            labels = label_ids_from_row(row)
+            if labels:
+                counts.update(labels)
+            else:
+                counts["<background>"] += 1
+        return counts
+
+    group_label_counts: Dict[str, Counter[str]] = {key: row_label_counts(group_rows) for key, group_rows in group_items}
+    total_label_counts: Counter[str] = Counter()
+    label_group_presence: Counter[str] = Counter()
+    for key, counts in group_label_counts.items():
+        total_label_counts.update(counts)
+        for label in counts:
+            label_group_presence[label] += 1
+
+    target_label_counts: Dict[str, Dict[str, float]] = {
+        split: {label: float(count) * ratio for label, count in total_label_counts.items()}
+        for split, ratio in split_ratios.items()
+    }
+    current_label_counts: Dict[str, Counter[str]] = {split: Counter() for split in ("train", "val", "test")}
+    assigned_groups: Dict[str, List[Tuple[str, List[Dict[str, Any]]]]] = {
+        split: [] for split in ("train", "val", "test")
+    }
+
+    rng = np.random.default_rng(int(seed))
+    jitter = {key: float(rng.random()) for key, _ in group_items}
+
+    def group_time(key: str, group_rows: Sequence[Dict[str, Any]]) -> datetime:
+        times = [parse_manifest_time(row) for row in group_rows]
+        times = [dt for dt in times if dt is not None]
+        return min(times) if times else datetime.max.replace(tzinfo=timezone.utc)
+
+    def rarity_score(key: str) -> float:
+        labels = group_label_counts[key]
+        return float(sum(1.0 / max(1, label_group_presence[label]) for label in labels))
+
+    ordered = sorted(
+        group_items,
+        key=lambda item: (
+            -rarity_score(item[0]),
+            group_time(item[0], item[1]),
+            jitter[item[0]],
+            item[0],
+        ),
+    )
+
+    def score_assignment(split: str, key: str) -> float:
+        counts = group_label_counts[key]
+        before = current_label_counts[split]
+        target = target_label_counts[split]
+        labels = sorted(total_label_counts)
+        before_error = sum(abs(float(before.get(label, 0)) - target.get(label, 0.0)) for label in labels)
+        after_error = sum(
+            abs(float(before.get(label, 0) + counts.get(label, 0)) - target.get(label, 0.0))
+            for label in labels
+        )
+        coverage_bonus = 0.0
+        if split in {"val", "test"}:
+            coverage_bonus = sum(
+                2.0
+                for label in counts
+                if label_group_presence[label] >= 2 and current_label_counts[split].get(label, 0) == 0
+            )
+        capacity_penalty = abs((len(assigned_groups[split]) + 1) - target_group_counts[split])
+        return (before_error - after_error) + coverage_bonus - (0.05 * capacity_penalty)
+
+    for key, group_rows in ordered:
+        available = [
+            split for split in ("train", "val", "test") if len(assigned_groups[split]) < target_group_counts[split]
+        ]
+        if not available:
+            available = ["train", "val", "test"]
+        best_split = max(available, key=lambda split: (score_assignment(split, key), -len(assigned_groups[split]), split))
+        assigned_groups[best_split].append((key, group_rows))
+        current_label_counts[best_split].update(group_label_counts[key])
+
+    out: Dict[str, List[Dict[str, Any]]] = {"train": [], "val": [], "test": []}
+    for split_name, split_group_items in assigned_groups.items():
+        sorted_groups = sorted(split_group_items, key=lambda item: (group_time(item[0], item[1]), item[0]))
+        for _, group_rows in sorted_groups:
+            for row in group_rows:
+                row_out = dict(row)
+                row_out["split"] = split_name
+                out[split_name].append(row_out)
+    return out

@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.dataset.multilabel import (  # noqa: E402
     clean_text,
     group_key_for_split,
+    label_balanced_grouped_split,
     label_ids_from_row,
     read_csv_rows,
     temporal_grouped_split,
@@ -73,8 +74,20 @@ def write_split_outputs(
     *,
     train_ratio: float,
     val_ratio: float,
+    strategy: str = "temporal",
+    seed: int = 0,
 ) -> Dict[str, Any]:
-    split_rows = temporal_grouped_split(rows, train_ratio=train_ratio, val_ratio=val_ratio)
+    if strategy == "temporal":
+        split_rows = temporal_grouped_split(rows, train_ratio=train_ratio, val_ratio=val_ratio)
+    elif strategy == "label_balanced":
+        split_rows = label_balanced_grouped_split(
+            rows,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            seed=seed,
+        )
+    else:
+        raise ValueError(f"Unknown split strategy: {strategy}")
     all_rows: List[Dict[str, Any]] = []
     for split in ("train", "val", "test"):
         all_rows.extend(split_rows[split])
@@ -89,7 +102,12 @@ def write_split_outputs(
         _split_text_path(output_dir, split).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     summary = _summarize(split_rows)
-    summary["config"] = {"train_ratio": float(train_ratio), "val_ratio": float(val_ratio)}
+    summary["config"] = {
+        "train_ratio": float(train_ratio),
+        "val_ratio": float(val_ratio),
+        "strategy": strategy,
+        "seed": int(seed),
+    }
     with open(output_dir / "split_summary.json", "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
     return summary
@@ -101,6 +119,8 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, help="Directory for split outputs")
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
+    parser.add_argument("--strategy", choices=["temporal", "label_balanced"], default="temporal")
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     rows = read_csv_rows(Path(args.manifest_csv))
@@ -109,6 +129,8 @@ def main() -> int:
         Path(args.output_dir).resolve(),
         train_ratio=float(args.train_ratio),
         val_ratio=float(args.val_ratio),
+        strategy=str(args.strategy),
+        seed=int(args.seed),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
