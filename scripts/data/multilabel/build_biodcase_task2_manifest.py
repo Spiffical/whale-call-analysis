@@ -199,6 +199,15 @@ def _expected_mat_name(filename: str, begin_s: float, end_s: float) -> str:
     return f"{filename}_{float(begin_s):.1f}s_{float(end_s):.1f}s_trainstyle.mat"
 
 
+def _clip_name(filename: str, dataset: str, mode: str) -> str:
+    if mode == "filename":
+        return filename
+    if mode == "dataset_prefix":
+        prefix = re.sub(r"[^A-Za-z0-9_.-]+", "-", clean_text(dataset) or "dataset").strip("-")
+        return f"{prefix}__{Path(filename).name}"
+    raise ValueError(f"Unknown clip name mode: {mode}")
+
+
 def _label_record(*, species_code: str, call_type: str, dataset: str, row: Dict[str, Any]) -> Dict[str, Any]:
     confidence = _float_or_none(_first(row, CONFIDENCE_COLUMNS))
     return {
@@ -216,6 +225,7 @@ def _label_record(*, species_code: str, call_type: str, dataset: str, row: Dict[
 def _manifest_row(
     *,
     filename: str,
+    clip_name: str,
     dataset: str,
     begin_s: float,
     end_s: float,
@@ -227,11 +237,11 @@ def _manifest_row(
     is_background: bool = False,
     mat_rel_dir: str = "mat_files",
 ) -> Dict[str, Any]:
-    expected_mat = _expected_mat_name(filename, begin_s, end_s)
+    expected_mat = _expected_mat_name(clip_name, begin_s, end_s)
     labels = "" if is_background else labels_json
     row = {
         "item_id": Path(expected_mat).stem,
-        "clip": filename,
+        "clip": clip_name,
         "filename": filename,
         "source_audio": filename,
         "begin_s": f"{begin_s:.6f}",
@@ -294,6 +304,7 @@ def build_biodcase_manifest(
     background_start_s: float = 130.0,
     mat_rel_dir: str = "mat_files",
     vocab_min_count: int = 1,
+    clip_name_mode: str = "filename",
 ) -> Dict[str, Any]:
     positive_rows: List[Dict[str, Any]] = []
     skipped = Counter()
@@ -325,6 +336,7 @@ def build_biodcase_manifest(
             labels = [_label_record(species_code=species_code, call_type=call_type, dataset=dataset, row=row)]
             manifest_row = _manifest_row(
                 filename=filename,
+                clip_name=_clip_name(filename, dataset, clip_name_mode),
                 dataset=dataset,
                 begin_s=float(begin_s),
                 end_s=float(end_s),
@@ -359,6 +371,7 @@ def build_biodcase_manifest(
             background_rows.append(
                 _manifest_row(
                     filename=filename,
+                    clip_name=_clip_name(filename, dataset, clip_name_mode),
                     dataset=dataset,
                     begin_s=begin_s,
                     end_s=end_s,
@@ -386,6 +399,18 @@ def build_biodcase_manifest(
     write_csv_rows(output_dir / "expected_multilabel_manifest.csv", rows)
     required = sorted({clean_text(row.get("source_audio")) for row in rows if clean_text(row.get("source_audio"))})
     (output_dir / "required_audio_filenames.txt").write_text("\n".join(required) + ("\n" if required else ""), encoding="utf-8")
+    write_csv_rows(
+        output_dir / "required_audio_sources.csv",
+        [
+            {
+                "clip": clean_text(row.get("clip")),
+                "source_dataset": clean_text(row.get("source_dataset")),
+                "source_audio": clean_text(row.get("source_audio")),
+            }
+            for row in rows
+            if clean_text(row.get("clip")) and clean_text(row.get("source_audio"))
+        ],
+    )
     vocab = build_vocabulary_from_rows(rows, min_count=max(1, int(vocab_min_count)))
     vocab.save(output_dir / "label_vocabulary.json")
 
@@ -424,6 +449,7 @@ def build_biodcase_manifest(
             "background_start_s": float(background_start_s),
             "mat_rel_dir": mat_rel_dir,
             "vocab_min_count": max(1, int(vocab_min_count)),
+            "clip_name_mode": clip_name_mode,
         },
     }
     (output_dir / "prep_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -444,6 +470,12 @@ def main() -> int:
     parser.add_argument("--background-start-s", type=float, default=130.0)
     parser.add_argument("--mat-rel-dir", default="mat_files")
     parser.add_argument("--vocab-min-count", type=int, default=1)
+    parser.add_argument(
+        "--clip-name-mode",
+        choices=["filename", "dataset_prefix"],
+        default="filename",
+        help="Use dataset_prefix when audio files from multiple site-year folders are staged into one directory.",
+    )
     args = parser.parse_args()
 
     summary = build_biodcase_manifest(
@@ -459,6 +491,7 @@ def main() -> int:
         background_start_s=float(args.background_start_s),
         mat_rel_dir=str(args.mat_rel_dir),
         vocab_min_count=int(args.vocab_min_count),
+        clip_name_mode=str(args.clip_name_mode),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

@@ -130,6 +130,43 @@ class BuildBiodcaseTask2ManifestTest(unittest.TestCase):
             self.assertEqual(positive["begin_s"], "4.500000")
             self.assertEqual(positive["end_s"], "6.500000")
 
+    def test_dataset_prefixed_clip_names_for_flat_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            annotations = root / "annotations.csv"
+            out = root / "out"
+            _write_csv(
+                annotations,
+                [
+                    {
+                        "dataset": "casey2014",
+                        "filename": "2014-09-01T00-00-00_000.wav",
+                        "annotation": "bp20",
+                        "start_s": "10",
+                        "end_s": "12",
+                    }
+                ],
+            )
+
+            summary = build_biodcase_manifest(
+                annotations_csvs=[annotations],
+                output_dir=out,
+                clip_name_mode="dataset_prefix",
+            )
+
+            self.assertEqual(summary["positive_count"], 1)
+            with (out / "selected_calls.csv").open(newline="", encoding="utf-8") as handle:
+                row = list(csv.DictReader(handle))[0]
+            self.assertEqual(row["clip"], "casey2014__2014-09-01T00-00-00_000.wav")
+            self.assertEqual(row["source_audio"], "2014-09-01T00-00-00_000.wav")
+            self.assertTrue(row["mat_path"].endswith("casey2014__2014-09-01T00-00-00_000.wav_10.0s_12.0s_trainstyle.mat"))
+
+            with (out / "required_audio_sources.csv").open(newline="", encoding="utf-8") as handle:
+                source_row = list(csv.DictReader(handle))[0]
+            self.assertEqual(source_row["clip"], row["clip"])
+            self.assertEqual(source_row["source_dataset"], "casey2014")
+            self.assertEqual(source_row["source_audio"], row["source_audio"])
+
     def test_biodcase_label_aliases(self):
         self.assertEqual(normalize_call_type("bma"), "BmA")
         self.assertEqual(normalize_call_type("bp20plus"), "Bp20plus")
