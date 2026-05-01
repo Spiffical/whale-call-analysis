@@ -148,7 +148,7 @@ if [[ -s "$ZIP_PATH" ]]; then
   fi
 fi
 
-if [[ "$zip_ok" != "true" ]]; then
+if [[ "\$zip_ok" != "true" ]]; then
   echo "Downloading/resuming BioDCASE development ZIP to $ZIP_PATH"
   if command -v wget >/dev/null 2>&1; then
     wget -c -O "$ZIP_PATH" "$ZENODO_URL"
@@ -159,10 +159,10 @@ if [[ "$zip_ok" != "true" ]]; then
 fi
 
 EXTRACT_MARKER="$EXTRACT_DIR/.biodcase2026_development_extract_complete"
-if [[ ! -f "$EXTRACT_MARKER" || ! -d "$DEV_DIR/train/annotations" || ! -d "$DEV_DIR/train/audio" ]]; then
+if [[ ! -f "\$EXTRACT_MARKER" || ! -d "$DEV_DIR/train/annotations" || ! -d "$DEV_DIR/train/audio" ]]; then
   echo "Extracting $ZIP_PATH to $EXTRACT_DIR"
   unzip -q -o "$ZIP_PATH" -d "$EXTRACT_DIR"
-  touch "$EXTRACT_MARKER"
+  touch "\$EXTRACT_MARKER"
 else
   echo "Using existing extracted dataset: $DEV_DIR"
 fi
