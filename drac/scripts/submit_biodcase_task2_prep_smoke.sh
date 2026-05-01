@@ -137,20 +137,32 @@ mkdir -p "\$XDG_CACHE_HOME" "\$WANDB_CACHE_DIR" "\$PIP_CACHE_DIR"
 
 mkdir -p "$DATA_ROOT/downloads" "$EXTRACT_DIR" "$PREP_DIR" "$RAW_DIR" "$MAT_DIR" "$SPLIT_DIR"
 
-if [[ ! -s "$ZIP_PATH" ]]; then
-  echo "Downloading BioDCASE development ZIP to $ZIP_PATH"
+zip_ok=false
+if [[ -s "$ZIP_PATH" ]]; then
+  echo "Checking existing ZIP: $ZIP_PATH"
+  if unzip -tq "$ZIP_PATH" >/dev/null 2>&1; then
+    zip_ok=true
+    echo "Existing ZIP passed unzip integrity check."
+  else
+    echo "Existing ZIP is missing/incomplete/corrupt; resuming download."
+  fi
+fi
+
+if [[ "$zip_ok" != "true" ]]; then
+  echo "Downloading/resuming BioDCASE development ZIP to $ZIP_PATH"
   if command -v wget >/dev/null 2>&1; then
     wget -c -O "$ZIP_PATH" "$ZENODO_URL"
   else
     curl -L --continue-at - --output "$ZIP_PATH" "$ZENODO_URL"
   fi
-else
-  echo "Using existing ZIP: $ZIP_PATH"
+  unzip -tq "$ZIP_PATH" >/dev/null
 fi
 
-if [[ ! -d "$DEV_DIR" ]]; then
+EXTRACT_MARKER="$EXTRACT_DIR/.biodcase2026_development_extract_complete"
+if [[ ! -f "$EXTRACT_MARKER" || ! -d "$DEV_DIR/train/annotations" || ! -d "$DEV_DIR/train/audio" ]]; then
   echo "Extracting $ZIP_PATH to $EXTRACT_DIR"
   unzip -q -o "$ZIP_PATH" -d "$EXTRACT_DIR"
+  touch "$EXTRACT_MARKER"
 else
   echo "Using existing extracted dataset: $DEV_DIR"
 fi
