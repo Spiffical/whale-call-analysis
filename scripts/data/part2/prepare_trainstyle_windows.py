@@ -129,6 +129,15 @@ def _find_adjacent_file_with_index(
     return None
 
 
+def _to_mono_audio(data: np.ndarray) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.ndim == 1:
+        return arr
+    if arr.ndim == 2:
+        return arr.mean(axis=1)
+    return arr.reshape(arr.shape[0], -1).mean(axis=1)
+
+
 def power_to_db_norm(power: np.ndarray) -> np.ndarray:
     power = np.abs(power.astype(np.float32))
     max_power = float(np.max(power)) if power.size else 0.0
@@ -284,6 +293,7 @@ def _load_context_audio(
         raise FileNotFoundError(f"Audio file not found for {clip}")
 
     data, fs = sf.read(str(cur_file))
+    data = _to_mono_audio(data)
     total_s = len(data) / fs
 
     def _slice_from_file(arr: np.ndarray, s0: float, s1: float) -> np.ndarray:
@@ -310,6 +320,7 @@ def _load_context_audio(
         )
         if prev_file and prev_file.exists():
             prev_data, prev_fs = sf.read(str(prev_file))
+            prev_data = _to_mono_audio(prev_data)
             if prev_fs == fs:
                 need = -start_s
                 take = int(round(need * fs))
@@ -335,6 +346,7 @@ def _load_context_audio(
         )
         if next_file and next_file.exists():
             next_data, next_fs = sf.read(str(next_file))
+            next_data = _to_mono_audio(next_data)
             if next_fs == fs:
                 need = end_s - total_s
                 take = int(round(need * fs))
