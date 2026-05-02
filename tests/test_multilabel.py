@@ -15,6 +15,7 @@ from src.dataset.multilabel import (
     LabelVocabulary,
     MultiLabelMatDataset,
     build_vocabulary_from_rows,
+    canonicalize_source_label_ids,
     group_key_for_split,
     label_balanced_grouped_split,
     label_ids_from_row,
@@ -25,6 +26,7 @@ from src.dataset.multilabel import (
 )
 from scripts.train.train_multilabel_resnet_smoke import write_threshold_sweep, write_validation_exports
 from scripts.data.multilabel.build_call_mat_manifest import build_call_manifest
+from scripts.data.multilabel.standardize_multilabel_manifest import standardize_rows
 
 
 class TestMultiLabelHelpers(unittest.TestCase):
@@ -50,6 +52,53 @@ class TestMultiLabelHelpers(unittest.TestCase):
         self.assertEqual(float(vector[ids.index("call:20Hz")]), 1.0)
         self.assertNotIn("species:INSTRUMENT", ids)
         self.assertNotIn("call:CK", ids)
+
+    def test_canonical_label_standardization_demotes_od_and_maps_calls(self):
+        canonical, analysis = canonicalize_source_label_ids(
+            ["species:Bp", "species:OD", "call:20Hz", "call:Bp20plus", "call:BmD", "call:song"]
+        )
+        self.assertEqual(
+            canonical,
+            ["call:blue_D", "call:fin_20hz", "call:fin_20hz_plus", "call:fin_song", "species:Bp"],
+        )
+        self.assertEqual(analysis, ["group:odontocete_unknown"])
+
+    def test_standardize_rows_preserves_source_and_canonical_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mat_dir = root / "mat_files"
+            mat_dir.mkdir()
+            manifest = root / "manifest.csv"
+            write_csv_rows(
+                manifest,
+                [
+                    {
+                        "item_id": "fin",
+                        "mat_path": "mat_files/fin.mat",
+                        "split": "train",
+                        "label_ids": "species:Bp|call:20Hz",
+                    },
+                    {
+                        "item_id": "od",
+                        "mat_path": "mat_files/od.mat",
+                        "split": "val",
+                        "label_ids": "species:OD",
+                    },
+                ],
+            )
+            rows, summary = standardize_rows(
+                [f"unit|{manifest}|{root}"],
+                include_species=True,
+                include_call_types=True,
+                primary_species=("Bm", "Bp", "Mn", "Oo"),
+            )
+            self.assertEqual(rows[0]["source_label_ids"], "species:Bp|call:20Hz")
+            self.assertEqual(rows[0]["label_ids"], "call:fin_20hz|species:Bp")
+            self.assertEqual(rows[1]["label_ids"], "")
+            self.assertEqual(rows[1]["analysis_label_ids"], "group:odontocete_unknown")
+            self.assertTrue(rows[0]["mat_path"].endswith("mat_files/fin.mat"))
+            self.assertEqual(summary["canonical_label_counts"]["call:fin_20hz"], 1)
+            self.assertEqual(summary["canonical_label_counts"]["<background>"], 1)
 
     def test_temporal_grouped_split_keeps_groups_together(self):
         rows = []

@@ -86,8 +86,25 @@ TRAINABLE_CALL_TYPES = frozenset(
         "Bp20",
         "Bp20plus",
         "BpD",
+        "fin_20hz",
+        "fin_20hz_plus",
+        "fin_30hz",
+        "fin_40hz",
+        "fin_downsweep",
+        "fin_song",
+        "fin_other",
+        "blue_A",
+        "blue_B",
+        "blue_Z",
+        "blue_D",
+        "humpback_song",
+        "orca_call",
+        "orca_click",
+        "orca_whistle",
     }
 )
+
+PRIMARY_SPECIES_LABEL_IDS = ("species:Bm", "species:Bp", "species:Mn", "species:Oo")
 
 SPECIES_CODE_TO_NAME = {
     "Bp": "Fin whale",
@@ -138,6 +155,21 @@ CALL_TYPE_TO_NAME = {
     "Bp20": "Fin whale 20 Hz pulse",
     "Bp20plus": "Fin whale 20 Hz pulse with overtone",
     "BpD": "Fin whale 40 Hz downsweep",
+    "fin_20hz": "Fin whale 20 Hz pulse",
+    "fin_20hz_plus": "Fin whale 20 Hz pulse plus",
+    "fin_30hz": "Fin whale 30 Hz call",
+    "fin_40hz": "Fin whale 40 Hz call",
+    "fin_downsweep": "Fin whale downsweep",
+    "fin_song": "Fin whale song unit",
+    "fin_other": "Other fin-whale call",
+    "blue_A": "Blue whale A-call",
+    "blue_B": "Blue whale B-call",
+    "blue_Z": "Blue whale Z-call",
+    "blue_D": "Blue whale D-call",
+    "humpback_song": "Humpback whale song",
+    "orca_call": "Killer whale call",
+    "orca_click": "Killer whale click",
+    "orca_whistle": "Killer whale whistle",
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -242,6 +274,78 @@ def call_type_class_path(code: str) -> str:
 
 def label_id(group: str, code: str) -> str:
     return f"{group}:{code}"
+
+
+def canonicalize_source_label_ids(
+    source_label_ids: Iterable[str],
+    *,
+    include_species: bool = True,
+    include_call_types: bool = True,
+    primary_species: Sequence[str] = ("Bm", "Bp", "Mn", "Oo"),
+) -> Tuple[List[str], List[str]]:
+    """Map source-specific label ids into the weekend canonical ontology.
+
+    Returns `(trainable_ids, analysis_ids)`. Analysis ids preserve useful
+    non-trainable concepts such as broad odontocete labels without making them
+    positive training targets.
+    """
+    source_ids = [clean_text(label) for label in source_label_ids if clean_text(label)]
+    species_context = {label.partition(":")[2] for label in source_ids if label.startswith("species:")}
+    primary = set(primary_species)
+    canonical: List[str] = []
+    analysis: List[str] = []
+
+    def add_trainable(value: str) -> None:
+        if value and value not in canonical:
+            canonical.append(value)
+
+    def add_analysis(value: str) -> None:
+        if value and value not in analysis:
+            analysis.append(value)
+
+    for raw_id in source_ids:
+        group, sep, code = raw_id.partition(":")
+        if not sep:
+            continue
+        if group == "species":
+            norm = normalize_species_code(code)
+            if include_species and norm in primary:
+                add_trainable(f"species:{norm}")
+            elif norm == "OD":
+                add_analysis("group:odontocete_unknown")
+            elif norm in {"CE", "UN", "P"}:
+                add_analysis(f"group:{norm}")
+            continue
+
+        if group != "call" or not include_call_types:
+            continue
+        norm_call = normalize_call_type(code)
+        mapping = {
+            "20Hz": "call:fin_20hz",
+            "30Hz": "call:fin_30hz",
+            "40Hz": "call:fin_40hz",
+            "other_fin": "call:fin_other",
+            "Bp20": "call:fin_20hz",
+            "Bp20plus": "call:fin_20hz_plus",
+            "BpD": "call:fin_downsweep",
+            "BmA": "call:blue_A",
+            "BmB": "call:blue_B",
+            "BmZ": "call:blue_Z",
+            "BmD": "call:blue_D",
+        }
+        mapped = mapping.get(norm_call)
+        if mapped is None and norm_call == "song":
+            mapped = "call:fin_song" if "Bp" in species_context else "call:humpback_song"
+        if mapped is None and norm_call.lower() in {"ck", "call", "orca_call"}:
+            mapped = "call:orca_call"
+        if mapped is None and norm_call.lower() in {"click", "clicks", "echolocation"}:
+            mapped = "call:orca_click"
+        if mapped is None and norm_call.lower() in {"whistle", "whistles"}:
+            mapped = "call:orca_whistle"
+        if mapped:
+            add_trainable(mapped)
+
+    return sorted(canonical), sorted(analysis)
 
 
 def parse_labels_json(value: Any) -> List[Dict[str, Any]]:
@@ -620,6 +724,8 @@ class MultiLabelMatDataset(Dataset):
             "item_id": row.get("item_id") or mat_path.stem,
             "mat_path": str(mat_path),
             "source_audio": row.get("source_audio") or row.get("filename"),
+            "source_dataset": row.get("source_dataset") or "",
+            "split": row.get("split") or self.split or "",
             "label_ids": label_ids_from_row(row),
             "full_shape": full_shape,
             "crop_start": crop_start,

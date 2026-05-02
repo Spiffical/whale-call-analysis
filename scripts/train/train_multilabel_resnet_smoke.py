@@ -250,6 +250,7 @@ def write_validation_exports(
         pred_ids = [labels[idx]["id"] for idx in range(len(labels)) if scores[row_idx, idx] >= threshold]
         csv_row: Dict[str, Any] = {
             "item_id": _meta_at(meta, "item_id"),
+            "source_dataset": _meta_at(meta, "source_dataset"),
             "source_audio": _meta_at(meta, "source_audio"),
             "mat_path": _meta_at(meta, "mat_path"),
             "target_label_ids": "|".join(target_ids),
@@ -262,6 +263,7 @@ def write_validation_exports(
         json_items.append(
             {
                 "item_id": csv_row["item_id"],
+                "source_dataset": csv_row["source_dataset"],
                 "audio_path": csv_row["source_audio"],
                 "spectrogram_path": csv_row["mat_path"],
                 "labels": [{"label_id": label_id} for label_id in target_ids],
@@ -291,6 +293,68 @@ def write_validation_exports(
             indent=2,
             sort_keys=True,
         )
+
+
+def write_source_stratified_metrics(
+    output_dir: Path,
+    vocab: LabelVocabulary,
+    eval_result: Dict[str, Any],
+    *,
+    threshold: float,
+) -> List[Path]:
+    scores = np.asarray(eval_result.get("scores", []), dtype=np.float32)
+    targets = np.asarray(eval_result.get("targets", []), dtype=np.float32)
+    metas = eval_result.get("metas") or []
+    if scores.size == 0 or targets.size == 0 or scores.shape != targets.shape:
+        return []
+    source_to_indices: Dict[str, List[int]] = {}
+    for idx in range(scores.shape[0]):
+        meta = metas[idx] if idx < len(metas) else {}
+        source = _meta_at(meta, "source_dataset") or "<unknown>"
+        source_to_indices.setdefault(source, []).append(idx)
+
+    rows: List[Dict[str, Any]] = []
+    summary: Dict[str, Any] = {}
+    labels = list(vocab.labels)
+    for source, indices in sorted(source_to_indices.items()):
+        source_scores = scores[indices]
+        source_targets = targets[indices]
+        metrics = multilabel_metrics(source_targets, source_scores, threshold=threshold)
+        summary[source] = {
+            "samples": len(indices),
+            "macro_f1": float(metrics.get("macro_f1", 0.0)),
+            "micro_f1": float(metrics.get("micro_f1", 0.0)),
+            "micro_precision": float(metrics.get("micro_precision", 0.0)),
+            "micro_recall": float(metrics.get("micro_recall", 0.0)),
+        }
+        for item in metrics.get("per_class", []):
+            label_idx = int(item["index"])
+            label = labels[label_idx] if label_idx < len(labels) else {"id": f"label_{label_idx}", "group": ""}
+            rows.append(
+                {
+                    "source_dataset": source,
+                    "label_id": label.get("id", f"label_{label_idx}"),
+                    "group": label.get("group", ""),
+                    "samples": len(indices),
+                    "support": int(item.get("support", 0)),
+                    "precision": float(item.get("precision", 0.0)),
+                    "recall": float(item.get("recall", 0.0)),
+                    "f1": float(item.get("f1", 0.0)),
+                    "tp": int(item.get("tp", 0)),
+                    "fp": int(item.get("fp", 0)),
+                    "fn": int(item.get("fn", 0)),
+                }
+            )
+    paths: List[Path] = []
+    if rows:
+        path = output_dir / "source_metrics.csv"
+        _write_csv_dicts(path, rows)
+        paths.append(path)
+    summary_path = output_dir / "source_metrics_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
+    paths.append(summary_path)
+    return paths
 
 
 def _per_class_rows(vocab: LabelVocabulary, metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -789,6 +853,7 @@ def main() -> int:
     plot_paths = []
     plot_paths.extend(write_training_plots(exp_dir, history))
     plot_paths.extend(write_validation_plots(exp_dir, vocab, best_eval))
+    plot_paths.extend(write_source_stratified_metrics(exp_dir, vocab, best_eval, threshold=float(args.threshold)))
     threshold_sweep = write_threshold_sweep(exp_dir, vocab, best_eval)
     example_paths = write_example_images(exp_dir, vocab, best_eval, threshold=float(args.threshold))
     plot_paths.extend(example_paths)
@@ -825,6 +890,8 @@ def main() -> int:
                 exp_dir / "validation_predictions.csv",
                 exp_dir / "validation_predictions.o3_compatible.json",
                 exp_dir / "per_class_metrics.csv",
+                exp_dir / "source_metrics.csv",
+                exp_dir / "source_metrics_summary.json",
                 *plot_paths,
             ],
             prefix="multilabel",
