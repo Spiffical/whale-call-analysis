@@ -100,6 +100,44 @@ class TestMultiLabelHelpers(unittest.TestCase):
             self.assertEqual(summary["canonical_label_counts"]["call:fin_20hz"], 1)
             self.assertEqual(summary["canonical_label_counts"]["<background>"], 1)
 
+    def test_standardize_rows_can_dedupe_after_path_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.csv"
+            write_csv_rows(
+                manifest,
+                [
+                    {
+                        "item_id": "first",
+                        "mat_path": "mat_files/dup.mat",
+                        "split": "train",
+                        "label_ids": "species:Oo|call:orca_call",
+                    },
+                    {
+                        "item_id": "second",
+                        "mat_path": "mat_files/dup.mat",
+                        "split": "train",
+                        "label_ids": "species:Oo|call:orca_call",
+                    },
+                    {
+                        "item_id": "holdout",
+                        "mat_path": "mat_files/dup.mat",
+                        "split": "val",
+                        "label_ids": "species:Oo|call:orca_call",
+                    },
+                ],
+            )
+            rows, summary = standardize_rows(
+                [f"unit|{manifest}|{root}"],
+                include_species=True,
+                include_call_types=True,
+                primary_species=("Bm", "Bp", "Mn", "Oo"),
+                dedupe_key_fields=("mat_path", "split"),
+            )
+            self.assertEqual([row["item_id"] for row in rows], ["first", "holdout"])
+            self.assertEqual(summary["dedupe_dropped_count"], 1)
+            self.assertEqual(summary["canonical_label_counts"]["species:Oo"], 2)
+
     def test_temporal_grouped_split_keeps_groups_together(self):
         rows = []
         for idx in range(6):

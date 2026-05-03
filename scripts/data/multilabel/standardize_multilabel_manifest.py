@@ -65,6 +65,7 @@ def standardize_rows(
     include_call_types: bool,
     primary_species: Sequence[str],
     drop_empty: bool = False,
+    dedupe_key_fields: Sequence[str] = (),
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     rows_out: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {
@@ -72,6 +73,9 @@ def standardize_rows(
         "inputs": [],
         "row_count": 0,
         "dropped_empty_count": 0,
+        "dedupe_key_fields": list(dedupe_key_fields),
+        "dedupe_dropped_count": 0,
+        "dedupe_examples": [],
         "source_label_counts": {},
         "canonical_label_counts": {},
         "analysis_label_counts": {},
@@ -85,6 +89,7 @@ def standardize_rows(
     dataset_counts: Counter[str] = Counter()
     split_counts: Counter[str] = Counter()
     source_split_counts: Dict[str, Counter[str]] = defaultdict(Counter)
+    seen_dedupe_keys: set[Tuple[str, ...]] = set()
 
     for input_spec in input_specs:
         default_source, manifest_csv, dataset_root = _parse_input_spec(input_spec)
@@ -120,6 +125,21 @@ def standardize_rows(
             if clean_text(out.get("source_audio")):
                 out["source_audio"] = _resolve_path(clean_text(out.get("source_audio")), dataset_root)
             split = clean_text(out.get("split")) or "unsplit"
+            if dedupe_key_fields:
+                dedupe_key = tuple(clean_text(out.get(field)) for field in dedupe_key_fields)
+                if any(dedupe_key):
+                    if dedupe_key in seen_dedupe_keys:
+                        summary["dedupe_dropped_count"] += 1
+                        if len(summary["dedupe_examples"]) < 10:
+                            summary["dedupe_examples"].append(
+                                {
+                                    "item_id": clean_text(out.get("item_id")),
+                                    "source_dataset": source_dataset,
+                                    "key": dict(zip(dedupe_key_fields, dedupe_key)),
+                                }
+                            )
+                        continue
+                    seen_dedupe_keys.add(dedupe_key)
             rows_out.append(out)
             source_counts.update(source_ids or ["<background>"])
             canonical_counts.update(canonical_ids or ["<background>"])
@@ -153,15 +173,28 @@ def main() -> int:
     parser.add_argument("--primary-species", default="Bm,Bp,Mn,Oo")
     parser.add_argument("--vocab-min-count", type=int, default=1)
     parser.add_argument("--drop-empty", action="store_true")
+    parser.add_argument(
+        "--dedupe-key",
+        action="append",
+        default=[],
+        help="Field name or comma-separated field names used to drop duplicate rows after path resolution.",
+    )
     args = parser.parse_args()
 
     primary_species = [token.strip() for token in args.primary_species.split(",") if token.strip()]
+    dedupe_key_fields = [
+        field.strip()
+        for raw in args.dedupe_key
+        for field in str(raw).split(",")
+        if field.strip()
+    ]
     rows, summary = standardize_rows(
         args.input,
         include_species=True,
         include_call_types=args.mode == "species_call",
         primary_species=primary_species,
         drop_empty=bool(args.drop_empty),
+        dedupe_key_fields=dedupe_key_fields,
     )
     out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
