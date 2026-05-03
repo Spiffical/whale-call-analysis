@@ -1,0 +1,482 @@
+{
+  "E01 ONC control": {
+    "all": {
+      "background_any_primary_fp": 12,
+      "background_any_primary_fp_rate": 0.41379310344827586,
+      "background_row_count": 29,
+      "macro_f1": 0.6371516584282542,
+      "micro_f1": 0.6206896551724138,
+      "micro_precision": 0.5172413793103449,
+      "micro_recall": 0.7758620689655172,
+      "row_count": 87
+    },
+    "all_per_label": {
+      "species:Bm": {
+        "f1": 0.888888888888889,
+        "fn": 3,
+        "fp": 0,
+        "precision": 1.0,
+        "recall": 0.8,
+        "threshold": 0.9,
+        "tn": 72,
+        "tp": 12
+      },
+      "species:Bp": {
+        "f1": 0.5957446808510638,
+        "fn": 2,
+        "fp": 17,
+        "precision": 0.45161290322580644,
+        "recall": 0.875,
+        "threshold": 0.51,
+        "tn": 54,
+        "tp": 14
+      },
+      "species:Mn": {
+        "f1": 0.5454545454545454,
+        "fn": 3,
+        "fp": 17,
+        "precision": 0.41379310344827586,
+        "recall": 0.8,
+        "threshold": 0.7,
+        "tn": 55,
+        "tp": 12
+      },
+      "species:Oo": {
+        "f1": 0.5185185185185186,
+        "fn": 5,
+        "fp": 8,
+        "precision": 0.4666666666666667,
+        "recall": 0.5833333333333334,
+        "threshold": 0.63,
+        "tn": 67,
+        "tp": 7
+      }
+    },
+    "by_source": {
+      "ONC": {
+        "background_any_primary_fp": 12,
+        "background_any_primary_fp_rate": 0.41379310344827586,
+        "background_row_count": 29,
+        "macro_f1": 0.6371516584282542,
+        "micro_f1": 0.6206896551724138,
+        "micro_precision": 0.5172413793103449,
+        "micro_recall": 0.7758620689655172,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.888888888888889,
+            "fn": 3,
+            "fp": 0,
+            "precision": 1.0,
+            "recall": 0.8,
+            "threshold": 0.9,
+            "tn": 72,
+            "tp": 12
+          },
+          "species:Bp": {
+            "f1": 0.5957446808510638,
+            "fn": 2,
+            "fp": 17,
+            "precision": 0.45161290322580644,
+            "recall": 0.875,
+            "threshold": 0.51,
+            "tn": 54,
+            "tp": 14
+          },
+          "species:Mn": {
+            "f1": 0.5454545454545454,
+            "fn": 3,
+            "fp": 17,
+            "precision": 0.41379310344827586,
+            "recall": 0.8,
+            "threshold": 0.7,
+            "tn": 55,
+            "tp": 12
+          },
+          "species:Oo": {
+            "f1": 0.5185185185185186,
+            "fn": 5,
+            "fp": 8,
+            "precision": 0.4666666666666667,
+            "recall": 0.5833333333333334,
+            "threshold": 0.63,
+            "tn": 67,
+            "tp": 7
+          }
+        },
+        "row_count": 87
+      }
+    }
+  },
+  "E04 ONC+BioDCASE species+call": {
+    "all": {
+      "background_any_primary_fp": 21,
+      "background_any_primary_fp_rate": 0.5,
+      "background_row_count": 42,
+      "macro_f1": 0.6718199547212232,
+      "micro_f1": 0.7259786476868327,
+      "micro_precision": 0.6035502958579881,
+      "micro_recall": 0.9107142857142857,
+      "row_count": 154
+    },
+    "all_per_label": {
+      "species:Bm": {
+        "f1": 0.8910891089108911,
+        "fn": 1,
+        "fp": 10,
+        "precision": 0.8181818181818182,
+        "recall": 0.9782608695652174,
+        "threshold": 0.38,
+        "tn": 98,
+        "tp": 45
+      },
+      "species:Bp": {
+        "f1": 0.7415730337078651,
+        "fn": 6,
+        "fp": 17,
+        "precision": 0.66,
+        "recall": 0.8461538461538461,
+        "threshold": 0.54,
+        "tn": 98,
+        "tp": 33
+      },
+      "species:Mn": {
+        "f1": 0.5283018867924527,
+        "fn": 1,
+        "fp": 24,
+        "precision": 0.3684210526315789,
+        "recall": 0.9333333333333333,
+        "threshold": 0.38,
+        "tn": 115,
+        "tp": 14
+      },
+      "species:Oo": {
+        "f1": 0.5263157894736842,
+        "fn": 2,
+        "fp": 16,
+        "precision": 0.38461538461538464,
+        "recall": 0.8333333333333334,
+        "threshold": 0.75,
+        "tn": 126,
+        "tp": 10
+      }
+    },
+    "by_source": {
+      "BioDCASE": {
+        "background_any_primary_fp": 1,
+        "background_any_primary_fp_rate": 0.07692307692307693,
+        "background_row_count": 13,
+        "macro_f1": 0.424192212096106,
+        "micro_f1": 0.8524590163934426,
+        "micro_precision": 0.7647058823529411,
+        "micro_recall": 0.9629629629629629,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.8732394366197184,
+            "fn": 0,
+            "fp": 9,
+            "precision": 0.775,
+            "recall": 1.0,
+            "threshold": 0.38,
+            "tn": 27,
+            "tp": 31
+          },
+          "species:Bp": {
+            "f1": 0.8235294117647057,
+            "fn": 2,
+            "fp": 7,
+            "precision": 0.75,
+            "recall": 0.9130434782608695,
+            "threshold": 0.54,
+            "tn": 37,
+            "tp": 21
+          },
+          "species:Mn": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.38,
+            "tn": 67,
+            "tp": 0
+          },
+          "species:Oo": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.75,
+            "tn": 67,
+            "tp": 0
+          }
+        },
+        "row_count": 67
+      },
+      "ONC": {
+        "background_any_primary_fp": 20,
+        "background_any_primary_fp_rate": 0.6896551724137931,
+        "background_row_count": 29,
+        "macro_f1": 0.6548824892419728,
+        "micro_f1": 0.6289308176100629,
+        "micro_precision": 0.49504950495049505,
+        "micro_recall": 0.8620689655172413,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.9333333333333333,
+            "fn": 1,
+            "fp": 1,
+            "precision": 0.9333333333333333,
+            "recall": 0.9333333333333333,
+            "threshold": 0.38,
+            "tn": 71,
+            "tp": 14
+          },
+          "species:Bp": {
+            "f1": 0.631578947368421,
+            "fn": 4,
+            "fp": 10,
+            "precision": 0.5454545454545454,
+            "recall": 0.75,
+            "threshold": 0.54,
+            "tn": 61,
+            "tp": 12
+          },
+          "species:Mn": {
+            "f1": 0.5283018867924527,
+            "fn": 1,
+            "fp": 24,
+            "precision": 0.3684210526315789,
+            "recall": 0.9333333333333333,
+            "threshold": 0.38,
+            "tn": 48,
+            "tp": 14
+          },
+          "species:Oo": {
+            "f1": 0.5263157894736842,
+            "fn": 2,
+            "fp": 16,
+            "precision": 0.38461538461538464,
+            "recall": 0.8333333333333334,
+            "threshold": 0.75,
+            "tn": 59,
+            "tp": 10
+          }
+        },
+        "row_count": 87
+      }
+    }
+  },
+  "E06 ONC+BioDCASE+DCLDE": {
+    "all": {
+      "background_any_primary_fp": 47,
+      "background_any_primary_fp_rate": 0.6619718309859155,
+      "background_row_count": 71,
+      "macro_f1": 0.6623554123403748,
+      "micro_f1": 0.6740947075208914,
+      "micro_precision": 0.5576036866359447,
+      "micro_recall": 0.852112676056338,
+      "row_count": 213
+    },
+    "all_per_label": {
+      "species:Bm": {
+        "f1": 0.888888888888889,
+        "fn": 6,
+        "fp": 4,
+        "precision": 0.9090909090909091,
+        "recall": 0.8695652173913043,
+        "threshold": 0.53,
+        "tn": 163,
+        "tp": 40
+      },
+      "species:Bp": {
+        "f1": 0.6947368421052632,
+        "fn": 6,
+        "fp": 23,
+        "precision": 0.5892857142857143,
+        "recall": 0.8461538461538461,
+        "threshold": 0.51,
+        "tn": 151,
+        "tp": 33
+      },
+      "species:Mn": {
+        "f1": 0.489795918367347,
+        "fn": 3,
+        "fp": 22,
+        "precision": 0.35294117647058826,
+        "recall": 0.8,
+        "threshold": 0.77,
+        "tn": 176,
+        "tp": 12
+      },
+      "species:Oo": {
+        "f1": 0.5760000000000001,
+        "fn": 6,
+        "fp": 47,
+        "precision": 0.43373493975903615,
+        "recall": 0.8571428571428571,
+        "threshold": 0.67,
+        "tn": 124,
+        "tp": 36
+      }
+    },
+    "by_source": {
+      "BioDCASE": {
+        "background_any_primary_fp": 1,
+        "background_any_primary_fp_rate": 0.07692307692307693,
+        "background_row_count": 13,
+        "macro_f1": 0.41774193548387095,
+        "micro_f1": 0.817391304347826,
+        "micro_precision": 0.7704918032786885,
+        "micro_recall": 0.8703703703703703,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.8709677419354839,
+            "fn": 4,
+            "fp": 4,
+            "precision": 0.8709677419354839,
+            "recall": 0.8709677419354839,
+            "threshold": 0.53,
+            "tn": 32,
+            "tp": 27
+          },
+          "species:Bp": {
+            "f1": 0.7999999999999999,
+            "fn": 3,
+            "fp": 7,
+            "precision": 0.7407407407407407,
+            "recall": 0.8695652173913043,
+            "threshold": 0.51,
+            "tn": 37,
+            "tp": 20
+          },
+          "species:Mn": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.77,
+            "tn": 67,
+            "tp": 0
+          },
+          "species:Oo": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 3,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.67,
+            "tn": 64,
+            "tp": 0
+          }
+        },
+        "row_count": 67
+      },
+      "DCLDE": {
+        "background_any_primary_fp": 25,
+        "background_any_primary_fp_rate": 0.8620689655172413,
+        "background_row_count": 29,
+        "macro_f1": 0.17261904761904762,
+        "micro_f1": 0.6823529411764705,
+        "micro_precision": 0.5272727272727272,
+        "micro_recall": 0.9666666666666667,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.53,
+            "tn": 59,
+            "tp": 0
+          },
+          "species:Bp": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.51,
+            "tn": 58,
+            "tp": 0
+          },
+          "species:Mn": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.77,
+            "tn": 59,
+            "tp": 0
+          },
+          "species:Oo": {
+            "f1": 0.6904761904761905,
+            "fn": 1,
+            "fp": 25,
+            "precision": 0.5370370370370371,
+            "recall": 0.9666666666666667,
+            "threshold": 0.67,
+            "tn": 4,
+            "tp": 29
+          }
+        },
+        "row_count": 59
+      },
+      "ONC": {
+        "background_any_primary_fp": 21,
+        "background_any_primary_fp_rate": 0.7241379310344828,
+        "background_row_count": 29,
+        "macro_f1": 0.5944243726198613,
+        "micro_f1": 0.5660377358490566,
+        "micro_precision": 0.44554455445544555,
+        "micro_recall": 0.7758620689655172,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.9285714285714286,
+            "fn": 2,
+            "fp": 0,
+            "precision": 1.0,
+            "recall": 0.8666666666666667,
+            "threshold": 0.53,
+            "tn": 72,
+            "tp": 13
+          },
+          "species:Bp": {
+            "f1": 0.5909090909090908,
+            "fn": 3,
+            "fp": 15,
+            "precision": 0.4642857142857143,
+            "recall": 0.8125,
+            "threshold": 0.51,
+            "tn": 56,
+            "tp": 13
+          },
+          "species:Mn": {
+            "f1": 0.489795918367347,
+            "fn": 3,
+            "fp": 22,
+            "precision": 0.35294117647058826,
+            "recall": 0.8,
+            "threshold": 0.77,
+            "tn": 50,
+            "tp": 12
+          },
+          "species:Oo": {
+            "f1": 0.3684210526315789,
+            "fn": 5,
+            "fp": 19,
+            "precision": 0.2692307692307692,
+            "recall": 0.5833333333333334,
+            "threshold": 0.67,
+            "tn": 56,
+            "tp": 7
+          }
+        },
+        "row_count": 87
+      }
+    }
+  }
+}

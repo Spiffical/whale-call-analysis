@@ -1,0 +1,171 @@
+{
+  "E01 ONC control": {
+    "call_counts": {
+      "<no-call-label>": 582
+    },
+    "label_counts": {
+      "<background>": 200,
+      "species:Bm": 100,
+      "species:Bp": 101,
+      "species:Mn": 100,
+      "species:Oo": 82
+    },
+    "primary_species_counts": {
+      "<background>": 200,
+      "species:Bm": 100,
+      "species:Bp": 101,
+      "species:Mn": 100,
+      "species:Oo": 82
+    },
+    "row_count": 582,
+    "source_counts": {
+      "ONC": 582
+    },
+    "source_split_counts": {
+      "ONC": {
+        "test": 88,
+        "train": 407,
+        "val": 87
+      }
+    },
+    "split_counts": {
+      "test": 88,
+      "train": 407,
+      "val": 87
+    }
+  },
+  "E04 ONC+BioDCASE species+call": {
+    "call_counts": {
+      "<no-call-label>": 522,
+      "call:blue_A": 50,
+      "call:blue_B": 50,
+      "call:blue_D": 50,
+      "call:blue_Z": 50,
+      "call:fin_20hz": 143,
+      "call:fin_20hz_plus": 50,
+      "call:fin_40hz": 3,
+      "call:fin_downsweep": 50,
+      "call:fin_other": 5,
+      "call:fin_song": 1,
+      "call:humpback_song": 59
+    },
+    "label_counts": {
+      "<background>": 300,
+      "call:blue_A": 50,
+      "call:blue_B": 50,
+      "call:blue_D": 50,
+      "call:blue_Z": 50,
+      "call:fin_20hz": 143,
+      "call:fin_20hz_plus": 50,
+      "call:fin_40hz": 3,
+      "call:fin_downsweep": 50,
+      "call:fin_other": 5,
+      "call:fin_song": 1,
+      "call:humpback_song": 59,
+      "species:Bm": 300,
+      "species:Bp": 251,
+      "species:Mn": 100,
+      "species:Oo": 82
+    },
+    "primary_species_counts": {
+      "<background>": 300,
+      "species:Bm": 300,
+      "species:Bp": 251,
+      "species:Mn": 100,
+      "species:Oo": 82
+    },
+    "row_count": 1032,
+    "source_counts": {
+      "BioDCASE": 450,
+      "ONC": 582
+    },
+    "source_split_counts": {
+      "BioDCASE": {
+        "test": 68,
+        "train": 315,
+        "val": 67
+      },
+      "ONC": {
+        "test": 88,
+        "train": 407,
+        "val": 87
+      }
+    },
+    "split_counts": {
+      "test": 156,
+      "train": 722,
+      "val": 154
+    }
+  },
+  "E06 ONC+BioDCASE+DCLDE": {
+    "call_counts": {
+      "<no-call-label>": 720,
+      "call:blue_A": 50,
+      "call:blue_B": 50,
+      "call:blue_D": 50,
+      "call:blue_Z": 50,
+      "call:fin_20hz": 143,
+      "call:fin_20hz_plus": 50,
+      "call:fin_40hz": 3,
+      "call:fin_downsweep": 50,
+      "call:fin_other": 5,
+      "call:fin_song": 1,
+      "call:humpback_song": 59,
+      "call:orca_call": 194
+    },
+    "label_counts": {
+      "<background>": 498,
+      "call:blue_A": 50,
+      "call:blue_B": 50,
+      "call:blue_D": 50,
+      "call:blue_Z": 50,
+      "call:fin_20hz": 143,
+      "call:fin_20hz_plus": 50,
+      "call:fin_40hz": 3,
+      "call:fin_downsweep": 50,
+      "call:fin_other": 5,
+      "call:fin_song": 1,
+      "call:humpback_song": 59,
+      "call:orca_call": 194,
+      "species:Bm": 300,
+      "species:Bp": 251,
+      "species:Mn": 100,
+      "species:Oo": 276
+    },
+    "primary_species_counts": {
+      "<background>": 498,
+      "species:Bm": 300,
+      "species:Bp": 251,
+      "species:Mn": 100,
+      "species:Oo": 276
+    },
+    "row_count": 1424,
+    "source_counts": {
+      "BioDCASE": 450,
+      "DCLDE": 392,
+      "ONC": 582
+    },
+    "source_split_counts": {
+      "BioDCASE": {
+        "test": 68,
+        "train": 315,
+        "val": 67
+      },
+      "DCLDE": {
+        "test": 62,
+        "train": 271,
+        "val": 59
+      },
+      "ONC": {
+        "test": 88,
+        "train": 407,
+        "val": 87
+      }
+    },
+    "split_counts": {
+      "test": 218,
+      "train": 993,
+      "val": 213
+    }
+  }
+}
