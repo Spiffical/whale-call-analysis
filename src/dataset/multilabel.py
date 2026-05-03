@@ -365,6 +365,10 @@ def label_ids_from_row(row: Dict[str, Any]) -> List[str]:
     Supports the candidate manifest emitted by `audit_labels.py`, plus common
     existing manifest fields for tests and small local conversions.
     """
+    if clean_text(row.get("canonical_schema_version")):
+        explicit_canonical = split_pipe(row.get("label_ids") or row.get("canonical_label_ids"))
+        return list(explicit_canonical)
+
     explicit = split_pipe(row.get("label_ids") or row.get("labels"))
     if explicit:
         return list(explicit)

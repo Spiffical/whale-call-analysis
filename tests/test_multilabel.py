@@ -96,9 +96,12 @@ class TestMultiLabelHelpers(unittest.TestCase):
             self.assertEqual(rows[0]["label_ids"], "call:fin_20hz|species:Bp")
             self.assertEqual(rows[1]["label_ids"], "")
             self.assertEqual(rows[1]["analysis_label_ids"], "group:odontocete_unknown")
+            self.assertEqual(label_ids_from_row(rows[1]), [])
             self.assertTrue(rows[0]["mat_path"].endswith("mat_files/fin.mat"))
             self.assertEqual(summary["canonical_label_counts"]["call:fin_20hz"], 1)
             self.assertEqual(summary["canonical_label_counts"]["<background>"], 1)
+            vocab = build_vocabulary_from_rows(rows)
+            self.assertNotIn("species:OD", vocab.label_ids)
 
     def test_standardize_rows_can_dedupe_after_path_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
