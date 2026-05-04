@@ -23,12 +23,16 @@ DEFAULT_RUNS = {
     "E01 ONC control": "runs/E01_onc_bal100_control_20260502T074301Z",
     "E04 ONC+BioDCASE species+call": "runs/E04_onc_biod_train50_species_call_20260502T074323Z",
     "E06 ONC+BioDCASE+DCLDE": "runs/E06_onc_biod_dclde_oo_repair_species_call_20260503T022802Z",
+    "E08 ONC+DCLDE species-only": "runs/E08_onc_dclde_species_20260504T173524Z",
+    "E09 ONC+BioDCASE+DCLDE species-only": "runs/E09_onc_biod_dclde_species_20260504T173543Z",
 }
 
 DEFAULT_MANIFESTS = {
     "E01 ONC control": "manifests/E01_onc_bal100_control/standardized_manifest.csv",
     "E04 ONC+BioDCASE species+call": "manifests/E04_onc_biod_train50_species_call/standardized_manifest.csv",
     "E06 ONC+BioDCASE+DCLDE": "manifests/E06_onc_biod_dclde_oo_repair_species_call/standardized_manifest.csv",
+    "E08 ONC+DCLDE species-only": "manifests/E08_onc_dclde_species/standardized_manifest.csv",
+    "E09 ONC+BioDCASE+DCLDE species-only": "manifests/E09_onc_biod_dclde_species/standardized_manifest.csv",
 }
 
 
@@ -386,6 +390,196 @@ def save_fp_bar_plot(metrics_by_run: Mapping[str, Dict[str, Any]], out_path: Pat
     plt.close(fig)
 
 
+def save_onc_background_top_label_plot(metrics_by_run: Mapping[str, Dict[str, Any]], out_path: Path) -> None:
+    plt = ensure_matplotlib()
+    run_names = list(metrics_by_run)
+    labels = list(PRIMARY_SPECIES)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bottoms = [0] * len(run_names)
+    x = list(range(len(run_names)))
+    for label in labels:
+        values: List[int] = []
+        for run_name in run_names:
+            metrics = metrics_by_run[run_name]
+            thresholds = metrics["thresholds"]
+            count = 0
+            for row in metrics["prediction_rows"]:
+                if source_group(row.get("source_dataset", "")) != "ONC":
+                    continue
+                if label_set(row) & set(PRIMARY_SPECIES):
+                    continue
+                predictions = [
+                    species_label
+                    for species_label in labels
+                    if score(row, species_label) >= float(thresholds.get(species_label, 0.5))
+                ]
+                if predictions and max_primary(row)[0] == label:
+                    count += 1
+            values.append(count)
+        ax.bar(x, values, bottom=bottoms, label=label.replace("species:", ""))
+        bottoms = [bottom + value for bottom, value in zip(bottoms, values)]
+    ax.set_xticks(x)
+    ax.set_xticklabels(run_names, rotation=22, ha="right")
+    ax.set_ylabel("ONC background rows crossing a primary threshold")
+    ax.set_title("Which species scores dominate ONC background false positives")
+    ax.legend(fontsize=8)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def save_source_background_score_plot(metrics_by_run: Mapping[str, Dict[str, Any]], out_path: Path) -> None:
+    plt = ensure_matplotlib()
+    selected = {
+        name: metrics
+        for name, metrics in metrics_by_run.items()
+        if "DCLDE" in name or "BioDCASE" in name or name.startswith("E01")
+    }
+    if not selected:
+        return
+    fig, axes = plt.subplots(len(selected), 1, figsize=(10, max(4, len(selected) * 2.2)), sharex=True)
+    if len(selected) == 1:
+        axes = [axes]
+    bins = [idx / 20 for idx in range(21)]
+    for ax, (run_name, metrics) in zip(axes, selected.items()):
+        for source in ("ONC", "BioDCASE", "DCLDE"):
+            rows = [
+                row
+                for row in metrics["prediction_rows"]
+                if source_group(row.get("source_dataset", "")) == source
+                and not (label_set(row) & set(PRIMARY_SPECIES))
+            ]
+            if not rows:
+                continue
+            ax.hist([max_primary(row)[1] for row in rows], bins=bins, alpha=0.45, label=f"{source} bg (n={len(rows)})")
+        ax.set_ylabel("rows")
+        ax.set_title(run_name, fontsize=10)
+        ax.grid(axis="y", alpha=0.25)
+        ax.legend(fontsize=8)
+    axes[-1].set_xlabel("Max primary-species score on background/no-primary rows")
+    fig.suptitle("Background score distributions by source", fontsize=12)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+
+def metric_table_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for run_name, metrics in metrics_by_run.items():
+        for source, source_metrics in metrics["by_source"].items():
+            row: Dict[str, Any] = {
+                "run": run_name,
+                "source": source,
+                "row_count": source_metrics["row_count"],
+                "background_row_count": source_metrics["background_row_count"],
+                "background_any_primary_fp": source_metrics["background_any_primary_fp"],
+                "background_any_primary_fp_rate": format_float(source_metrics["background_any_primary_fp_rate"]),
+                "macro_f1": format_float(source_metrics["macro_f1"]),
+                "micro_f1": format_float(source_metrics["micro_f1"]),
+                "micro_precision": format_float(source_metrics["micro_precision"]),
+                "micro_recall": format_float(source_metrics["micro_recall"]),
+            }
+            for label in PRIMARY_SPECIES:
+                label_key = label.replace("species:", "")
+                label_metrics = source_metrics["per_label"][label]
+                row[f"{label_key}_f1"] = format_float(label_metrics["f1"])
+                row[f"{label_key}_precision"] = format_float(label_metrics["precision"])
+                row[f"{label_key}_recall"] = format_float(label_metrics["recall"])
+                row[f"{label_key}_fp"] = label_metrics["fp"]
+                row[f"{label_key}_fn"] = label_metrics["fn"]
+            rows.append(row)
+    return rows
+
+
+def score_quantile_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def quantiles(values: Sequence[float]) -> Dict[str, Any]:
+        if not values:
+            return {"n": 0, "p50": "", "p75": "", "p90": "", "p95": "", "max": ""}
+        sorted_values = sorted(values)
+        def pick(q: float) -> float:
+            idx = min(len(sorted_values) - 1, max(0, math.ceil(q * len(sorted_values)) - 1))
+            return sorted_values[idx]
+        return {
+            "n": len(sorted_values),
+            "p50": f"{pick(0.50):.6f}",
+            "p75": f"{pick(0.75):.6f}",
+            "p90": f"{pick(0.90):.6f}",
+            "p95": f"{pick(0.95):.6f}",
+            "max": f"{sorted_values[-1]:.6f}",
+        }
+
+    rows: List[Dict[str, Any]] = []
+    for run_name, metrics in metrics_by_run.items():
+        for source in sorted({source_group(row.get("source_dataset", "")) for row in metrics["prediction_rows"]}):
+            source_rows = [row for row in metrics["prediction_rows"] if source_group(row.get("source_dataset", "")) == source]
+            subsets = {
+                "all_rows": source_rows,
+                "background_rows": [row for row in source_rows if not (label_set(row) & set(PRIMARY_SPECIES))],
+            }
+            for subset_name, subset_rows in subsets.items():
+                max_values = [max_primary(row)[1] for row in subset_rows]
+                summary = quantiles(max_values)
+                rows.append(
+                    {
+                        "run": run_name,
+                        "source": source,
+                        "subset": subset_name,
+                        "score": "max_primary",
+                        **summary,
+                    }
+                )
+                for label in PRIMARY_SPECIES:
+                    label_summary = quantiles([score(row, label) for row in subset_rows])
+                    rows.append(
+                        {
+                            "run": run_name,
+                            "source": source,
+                            "subset": subset_name,
+                            "score": label,
+                            **label_summary,
+                        }
+                    )
+    return rows
+
+
+def onc_background_top_label_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for run_name, metrics in metrics_by_run.items():
+        counts: Counter[str] = Counter()
+        thresholds = metrics["thresholds"]
+        total_background = 0
+        any_fp = 0
+        for row in metrics["prediction_rows"]:
+            if source_group(row.get("source_dataset", "")) != "ONC":
+                continue
+            if label_set(row) & set(PRIMARY_SPECIES):
+                continue
+            total_background += 1
+            predictions = [
+                label for label in PRIMARY_SPECIES if score(row, label) >= float(thresholds.get(label, 0.5))
+            ]
+            if not predictions:
+                counts["<below_threshold>"] += 1
+                continue
+            any_fp += 1
+            counts[max_primary(row)[0]] += 1
+        for top_label, count in counts.most_common():
+            rows.append(
+                {
+                    "run": run_name,
+                    "top_primary_label": top_label,
+                    "count": count,
+                    "background_rows": total_background,
+                    "any_primary_fp": any_fp,
+                    "share_of_background": format_float(count / total_background if total_background else None),
+                }
+            )
+    return rows
+
+
 def make_contact_sheet(image_paths: Sequence[Path], out_path: Path, *, title: str, max_images: int = 12) -> bool:
     if not image_paths:
         return False
@@ -463,7 +657,7 @@ def write_report(
         "",
         "The external datasets are not failing because they lack signal. They are failing because the model is learning source-specific decision boundaries that do not transfer cleanly back to ONC deployment audio. BioDCASE and DCLDE add real whale examples, but they also shift the model toward higher primary-species scores on ONC background. That shows up as much higher background false positives and weaker ONC Oo/Mn precision.",
         "",
-        "The simpler species-only control remains the best deployable baseline. Adding call-type labels and external sources expands the label space before the source/domain problem is under control. The next modeling step should probably simplify back to species-only and then reintroduce call type after source-aware calibration or embeddings are working.",
+        "The species-only E08/E09 retries show that call-type complexity was not the only issue. Removing call labels did not recover deployability: E08 lost macro F1 and still raised background false positives, while E09 roughly matched macro F1 only by accepting a much higher ONC background false-positive rate. E01 remains the best deployable baseline.",
         "",
         "## ONC-Gated Metrics",
         "",
@@ -475,9 +669,11 @@ def write_report(
         "## What Looks Wrong",
         "",
         "- E06 added DCLDE killer-whale positives and hard negatives, but ONC Oo precision dropped instead of improving. That means the DCLDE examples are not teaching the model an ONC-compatible killer-whale boundary.",
-        "- The biggest deployment problem is background calibration. The combined runs push many ONC background windows over at least one species threshold.",
+        "- The biggest deployment problem is background calibration. The combined runs push many ONC background windows over at least one species threshold, and the species-only E09 run makes this worse rather than better.",
+        "- BioDCASE appears to add useful Bm/Bp signal and raises species recall, but it also makes ONC background look whale-like to the model. That is why its macro F1 can look acceptable while deployment risk increases.",
+        "- DCLDE cap200 did not repair ONC Oo. The model learned extra Oo sensitivity, but the DCLDE Oo boundary does not transfer cleanly to ONC Oo versus ONC background.",
         "- Mn and Oo are the fragile labels. Their recall can look acceptable, but precision collapses because the model starts assigning these labels to ONC background or other-species rows.",
-        "- Call labels probably made the initial external-data problem harder: the model had to learn species, call taxonomy, and source shift at the same time.",
+        "- Call labels probably made the initial external-data problem harder, but the deeper issue is source/domain calibration. Species-only training alone is not enough.",
         "",
         "## Dataset/Training Hypotheses",
         "",
@@ -485,7 +681,8 @@ def write_report(
         "- Background definition mismatch: DCLDE hard negatives are selected confounders, while ONC background includes local noise and ambiguous low-frequency events. A negative from one source is not automatically a good negative for another.",
         "- Label granularity mismatch: ONC OD was demoted correctly, but DCLDE adds explicit Oo. That helps ontology, yet it changes the class boundary unless ONC-like Oo/background examples anchor it.",
         "- Threshold transfer: thresholds optimized on the mixed validation set do not necessarily produce good ONC deployment thresholds.",
-        "- Pos-weight and source imbalance likely encourage sensitivity over specificity, which worsens background false positives.",
+        "- Pos-weight and source imbalance likely encourage sensitivity over specificity, which worsens background false positives. The next ResNet ablation should only happen if it directly tests ONC-specific calibration or source balancing.",
+        "- External validation rows are too easy for the external sources relative to ONC background. Mixed validation can pick thresholds that look good globally while failing the ONC deployment distribution.",
         "",
         "## Figures",
         "",
@@ -497,11 +694,11 @@ def write_report(
             "",
             "## Recommended Next Experiments",
             "",
-            "1. Run a species-only ladder before call-type training: ONC control, ONC+BioDCASE species-only, ONC+DCLDE species-only, then ONC+BioDCASE+DCLDE species-only.",
-            "2. Evaluate with ONC-only thresholds, not only mixed validation thresholds. Treat ONC deployment as the primary calibration target.",
-            "3. Try source-balanced batches or source-aware loss weighting so external data cannot dominate gradients or calibration.",
+            "1. Stop broad ResNet scaling for now. E08/E09 show that the issue is not solved by species-only training.",
+            "2. Run ONC-calibrated post-hoc analysis first: per-source thresholds, source-normalized score calibration, and ONC-background hard-negative mining.",
+            "3. If we run one more ResNet job, make it narrow: species-only ONC+DCLDE or ONC+BioDCASE+DCLDE with source-balanced batches and an ONC-background-heavy validation/calibration split. Do not reintroduce call types yet.",
             "4. Add explicit ONC-like hard negatives for Oo/Mn/background before scaling DCLDE.",
-            "5. Start an embedding branch: extract Perch/other foundation embeddings for ONC/BioDCASE/DCLDE caps, train linear/MLP probes, and compare source-separable clusters. If embeddings separate source more strongly than label, that confirms domain shift and suggests adaptation/calibration work before more ResNet training.",
+            "5. Prioritize the embedding branch: extract Perch/other foundation embeddings for ONC/BioDCASE/DCLDE caps, train linear/MLP probes, and compare source-separable clusters. If embeddings separate source more strongly than label, that confirms domain shift and suggests adaptation/calibration work before more ResNet training.",
             "",
             "## Manifest Composition",
             "",
@@ -557,10 +754,23 @@ def main() -> int:
     fp_plot = out_dir / "figures" / "onc_primary_false_positives.png"
     save_fp_bar_plot(metrics_by_run, fp_plot)
     figures.append(fp_plot)
+    fp_top_plot = out_dir / "figures" / "onc_background_false_positive_top_labels.png"
+    save_onc_background_top_label_plot(metrics_by_run, fp_top_plot)
+    figures.append(fp_top_plot)
+    source_bg_plot = out_dir / "figures" / "source_background_score_distributions.png"
+    save_source_background_score_plot(metrics_by_run, source_bg_plot)
+    figures.append(source_bg_plot)
     if manifest_summaries:
         comp_plot = out_dir / "figures" / "manifest_source_composition.png"
         save_manifest_composition_plot(manifest_summaries, comp_plot)
         figures.append(comp_plot)
+
+    write_csv_rows(out_dir / "tables" / "source_domain_metrics.csv", metric_table_rows(metrics_by_run))
+    write_csv_rows(out_dir / "tables" / "score_quantiles_by_source.csv", score_quantile_rows(metrics_by_run))
+    write_csv_rows(
+        out_dir / "tables" / "onc_background_top_primary_label_counts.csv",
+        onc_background_top_label_rows(metrics_by_run),
+    )
 
     for run_name, metrics in metrics_by_run.items():
         safe = run_name.lower().replace(" ", "_").replace("+", "plus").replace("/", "_")
