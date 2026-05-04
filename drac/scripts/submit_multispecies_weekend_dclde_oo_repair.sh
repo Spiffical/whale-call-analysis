@@ -15,6 +15,8 @@ ONC_SOURCE_NAME="onc_bal100"
 BIODCASE_TRAIN50_RUN="$PROJECT_EXP_ROOT/prep_runs/biodcase_task2_prep_train50_resume_20260501T182239Z"
 DCLDE_RUN="$WEEKEND_ROOT/prep_runs/dclde_orca_cap200_prep_20260502T202327Z"
 BASE_CHECKPOINT="$FINAL2025_ROOT/benchmark/benchmark_runs/final2025_resnet_20260423/runs/joint_scratch_seed1337/train/finwhale/finwhale-resnet18-b64-lr3e-4_-tr0.8-none-time_separated-gap120-cbs0p25-pcmedge_mix-seed1337-mf1-joint_scratch_seed1337/best.pt"
+INCLUDE_BIODCASE="true"
+INCLUDE_DCLDE="true"
 
 EXPERIMENT="E06_onc_biod_dclde_oo_repair_species_call"
 MODE="species_call"
@@ -57,6 +59,8 @@ Options:
   --onc-source-name NAME          Default: onc_bal100
   --biodcase-train50-run PATH
   --dclde-run PATH
+  --skip-biodcase
+  --skip-dclde
   --base-checkpoint PATH
   --experiment NAME
   --mode species|species_call     Default: species_call
@@ -84,6 +88,8 @@ while [[ $# -gt 0 ]]; do
     --onc-source-name) ONC_SOURCE_NAME="$2"; shift 2 ;;
     --biodcase-train50-run) BIODCASE_TRAIN50_RUN="$2"; shift 2 ;;
     --dclde-run) DCLDE_RUN="$2"; shift 2 ;;
+    --skip-biodcase) INCLUDE_BIODCASE="false"; shift ;;
+    --skip-dclde) INCLUDE_DCLDE="false"; shift ;;
     --base-checkpoint) BASE_CHECKPOINT="$2"; shift 2 ;;
     --experiment) EXPERIMENT="$2"; shift 2 ;;
     --mode) MODE="$2"; shift 2 ;;
@@ -130,12 +136,18 @@ ONC_SPLIT="$(first_existing \
   exit 1
 }
 BIOD_SPLIT="$(first_existing "$BIODCASE_TRAIN50_RUN/splits/split_manifest.csv")" || {
-  echo "Could not find BioDCASE train50 split manifest under $BIODCASE_TRAIN50_RUN" >&2
-  exit 1
+  if [[ "$INCLUDE_BIODCASE" == "true" ]]; then
+    echo "Could not find BioDCASE train50 split manifest under $BIODCASE_TRAIN50_RUN" >&2
+    exit 1
+  fi
+  echo ""
 }
 DCLDE_SPLIT="$(first_existing "$DCLDE_RUN/splits/split_manifest.csv")" || {
-  echo "Could not find DCLDE split manifest under $DCLDE_RUN" >&2
-  exit 1
+  if [[ "$INCLUDE_DCLDE" == "true" ]]; then
+    echo "Could not find DCLDE split manifest under $DCLDE_RUN" >&2
+    exit 1
+  fi
+  echo ""
 }
 [[ -e "$BASE_CHECKPOINT" ]] || { echo "Missing base checkpoint: $BASE_CHECKPOINT" >&2; exit 1; }
 
@@ -154,15 +166,21 @@ source .venv/bin/activate
 
 MANIFEST_DIR="$WEEKEND_ROOT/manifests/$EXPERIMENT"
 mkdir -p "$MANIFEST_DIR"
-python -u scripts/data/multilabel/standardize_multilabel_manifest.py \
+standardize_cmd=(
+  python -u scripts/data/multilabel/standardize_multilabel_manifest.py
   --output-dir "$MANIFEST_DIR" \
   --mode "$MODE" \
   --vocab-min-count 1 \
   --dedupe-key mat_path,split \
-  --input "$ONC_SOURCE_NAME|$ONC_SPLIT|$ONC_RUN" \
-  --input "biodcase_train50|$BIOD_SPLIT|$BIODCASE_TRAIN50_RUN" \
-  --input "dclde_orca_cap200|$DCLDE_SPLIT|$DCLDE_RUN" \
-  | tee "$MANIFEST_DIR/standardize_stdout.json" >&2
+  --input "$ONC_SOURCE_NAME|$ONC_SPLIT|$ONC_RUN"
+)
+if [[ "$INCLUDE_BIODCASE" == "true" ]]; then
+  standardize_cmd+=(--input "biodcase_train50|$BIOD_SPLIT|$BIODCASE_TRAIN50_RUN")
+fi
+if [[ "$INCLUDE_DCLDE" == "true" ]]; then
+  standardize_cmd+=(--input "dclde_orca_cap200|$DCLDE_SPLIT|$DCLDE_RUN")
+fi
+"${standardize_cmd[@]}" | tee "$MANIFEST_DIR/standardize_stdout.json" >&2
 
 RUN_DIR="$WEEKEND_ROOT/runs/${EXPERIMENT}_$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_DIR="$RUN_DIR/logs"
@@ -211,6 +229,8 @@ cat > "$RUN_DIR/run_metadata.json" <<META
   "run_dir": "$RUN_DIR",
   "manifest_dir": "$MANIFEST_DIR",
   "onc_run": "$ONC_RUN",
+  "include_biodcase": "$INCLUDE_BIODCASE",
+  "include_dclde": "$INCLUDE_DCLDE",
   "biodcase_train50_run": "$BIODCASE_TRAIN50_RUN",
   "dclde_run": "$DCLDE_RUN",
   "base_checkpoint": "$BASE_CHECKPOINT",
