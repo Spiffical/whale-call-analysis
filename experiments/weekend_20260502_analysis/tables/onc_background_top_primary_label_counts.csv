@@ -1,0 +1,19 @@
+run,top_primary_label,count,background_rows,any_primary_fp,share_of_background
+E01 ONC control,<below_threshold>,17,29,12,0.5862
+E01 ONC control,species:Oo,8,29,12,0.2759
+E01 ONC control,species:Mn,3,29,12,0.1034
+E01 ONC control,species:Bp,1,29,12,0.0345
+E04 ONC+BioDCASE species+call,species:Oo,15,29,20,0.5172
+E04 ONC+BioDCASE species+call,<below_threshold>,9,29,20,0.3103
+E04 ONC+BioDCASE species+call,species:Mn,5,29,20,0.1724
+E06 ONC+BioDCASE+DCLDE,species:Oo,17,29,21,0.5862
+E06 ONC+BioDCASE+DCLDE,<below_threshold>,8,29,21,0.2759
+E06 ONC+BioDCASE+DCLDE,species:Mn,4,29,21,0.1379
+E08 ONC+DCLDE species-only,<below_threshold>,14,29,15,0.4828
+E08 ONC+DCLDE species-only,species:Oo,11,29,15,0.3793
+E08 ONC+DCLDE species-only,species:Bp,2,29,15,0.0690
+E08 ONC+DCLDE species-only,species:Mn,2,29,15,0.0690
+E09 ONC+BioDCASE+DCLDE species-only,species:Oo,19,29,24,0.6552
+E09 ONC+BioDCASE+DCLDE species-only,<below_threshold>,5,29,24,0.1724
+E09 ONC+BioDCASE+DCLDE species-only,species:Mn,4,29,24,0.1379
+E09 ONC+BioDCASE+DCLDE species-only,species:Bp,1,29,24,0.0345

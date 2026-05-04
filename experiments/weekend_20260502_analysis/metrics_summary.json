@@ -478,5 +478,377 @@
         "row_count": 87
       }
     }
+  },
+  "E08 ONC+DCLDE species-only": {
+    "all": {
+      "background_any_primary_fp": 30,
+      "background_any_primary_fp_rate": 0.5172413793103449,
+      "background_row_count": 58,
+      "macro_f1": 0.6657813889562616,
+      "micro_f1": 0.6484018264840183,
+      "micro_precision": 0.5419847328244275,
+      "micro_recall": 0.8068181818181818,
+      "row_count": 146
+    },
+    "all_per_label": {
+      "species:Bm": {
+        "f1": 0.9032258064516129,
+        "fn": 1,
+        "fp": 2,
+        "precision": 0.875,
+        "recall": 0.9333333333333333,
+        "threshold": 0.5,
+        "tn": 129,
+        "tp": 14
+      },
+      "species:Bp": {
+        "f1": 0.5789473684210527,
+        "fn": 5,
+        "fp": 11,
+        "precision": 0.5,
+        "recall": 0.6875,
+        "threshold": 0.86,
+        "tn": 119,
+        "tp": 11
+      },
+      "species:Mn": {
+        "f1": 0.5333333333333333,
+        "fn": 3,
+        "fp": 18,
+        "precision": 0.4,
+        "recall": 0.8,
+        "threshold": 0.55,
+        "tn": 113,
+        "tp": 12
+      },
+      "species:Oo": {
+        "f1": 0.6476190476190475,
+        "fn": 8,
+        "fp": 29,
+        "precision": 0.5396825396825397,
+        "recall": 0.8095238095238095,
+        "threshold": 0.46,
+        "tn": 75,
+        "tp": 34
+      }
+    },
+    "by_source": {
+      "DCLDE": {
+        "background_any_primary_fp": 15,
+        "background_any_primary_fp_rate": 0.5172413793103449,
+        "background_row_count": 29,
+        "macro_f1": 0.19178082191780824,
+        "micro_f1": 0.767123287671233,
+        "micro_precision": 0.6511627906976745,
+        "micro_recall": 0.9333333333333333,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.5,
+            "tn": 59,
+            "tp": 0
+          },
+          "species:Bp": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.86,
+            "tn": 59,
+            "tp": 0
+          },
+          "species:Mn": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.55,
+            "tn": 59,
+            "tp": 0
+          },
+          "species:Oo": {
+            "f1": 0.767123287671233,
+            "fn": 2,
+            "fp": 15,
+            "precision": 0.6511627906976745,
+            "recall": 0.9333333333333333,
+            "threshold": 0.46,
+            "tn": 14,
+            "tp": 28
+          }
+        },
+        "row_count": 59
+      },
+      "ONC": {
+        "background_any_primary_fp": 15,
+        "background_any_primary_fp_rate": 0.5172413793103449,
+        "background_row_count": 29,
+        "macro_f1": 0.5976266270514997,
+        "micro_f1": 0.5890410958904111,
+        "micro_precision": 0.48863636363636365,
+        "micro_recall": 0.7413793103448276,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.9032258064516129,
+            "fn": 1,
+            "fp": 2,
+            "precision": 0.875,
+            "recall": 0.9333333333333333,
+            "threshold": 0.5,
+            "tn": 70,
+            "tp": 14
+          },
+          "species:Bp": {
+            "f1": 0.5789473684210527,
+            "fn": 5,
+            "fp": 11,
+            "precision": 0.5,
+            "recall": 0.6875,
+            "threshold": 0.86,
+            "tn": 60,
+            "tp": 11
+          },
+          "species:Mn": {
+            "f1": 0.5333333333333333,
+            "fn": 3,
+            "fp": 18,
+            "precision": 0.4,
+            "recall": 0.8,
+            "threshold": 0.55,
+            "tn": 54,
+            "tp": 12
+          },
+          "species:Oo": {
+            "f1": 0.37499999999999994,
+            "fn": 6,
+            "fp": 14,
+            "precision": 0.3,
+            "recall": 0.5,
+            "threshold": 0.46,
+            "tn": 61,
+            "tp": 6
+          }
+        },
+        "row_count": 87
+      }
+    }
+  },
+  "E09 ONC+BioDCASE+DCLDE species-only": {
+    "all": {
+      "background_any_primary_fp": 46,
+      "background_any_primary_fp_rate": 0.647887323943662,
+      "background_row_count": 71,
+      "macro_f1": 0.6700808119674073,
+      "micro_f1": 0.6739130434782609,
+      "micro_precision": 0.5486725663716814,
+      "micro_recall": 0.8732394366197183,
+      "row_count": 213
+    },
+    "all_per_label": {
+      "species:Bm": {
+        "f1": 0.853932584269663,
+        "fn": 8,
+        "fp": 5,
+        "precision": 0.8837209302325582,
+        "recall": 0.8260869565217391,
+        "threshold": 0.8,
+        "tn": 162,
+        "tp": 38
+      },
+      "species:Bp": {
+        "f1": 0.7142857142857142,
+        "fn": 4,
+        "fp": 24,
+        "precision": 0.5932203389830508,
+        "recall": 0.8974358974358975,
+        "threshold": 0.49,
+        "tn": 150,
+        "tp": 35
+      },
+      "species:Mn": {
+        "f1": 0.5384615384615385,
+        "fn": 1,
+        "fp": 23,
+        "precision": 0.3783783783783784,
+        "recall": 0.9333333333333333,
+        "threshold": 0.68,
+        "tn": 175,
+        "tp": 14
+      },
+      "species:Oo": {
+        "f1": 0.5736434108527131,
+        "fn": 5,
+        "fp": 50,
+        "precision": 0.42528735632183906,
+        "recall": 0.8809523809523809,
+        "threshold": 0.47,
+        "tn": 121,
+        "tp": 37
+      }
+    },
+    "by_source": {
+      "BioDCASE": {
+        "background_any_primary_fp": 1,
+        "background_any_primary_fp_rate": 0.07692307692307693,
+        "background_row_count": 13,
+        "macro_f1": 0.3994682618810236,
+        "micro_f1": 0.7586206896551724,
+        "micro_precision": 0.7096774193548387,
+        "micro_recall": 0.8148148148148148,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.8135593220338982,
+            "fn": 7,
+            "fp": 4,
+            "precision": 0.8571428571428571,
+            "recall": 0.7741935483870968,
+            "threshold": 0.8,
+            "tn": 32,
+            "tp": 24
+          },
+          "species:Bp": {
+            "f1": 0.7843137254901961,
+            "fn": 3,
+            "fp": 8,
+            "precision": 0.7142857142857143,
+            "recall": 0.8695652173913043,
+            "threshold": 0.49,
+            "tn": 36,
+            "tp": 20
+          },
+          "species:Mn": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.68,
+            "tn": 67,
+            "tp": 0
+          },
+          "species:Oo": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 6,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.47,
+            "tn": 61,
+            "tp": 0
+          }
+        },
+        "row_count": 67
+      },
+      "DCLDE": {
+        "background_any_primary_fp": 21,
+        "background_any_primary_fp_rate": 0.7241379310344828,
+        "background_row_count": 29,
+        "macro_f1": 0.17721518987341772,
+        "micro_f1": 0.6829268292682926,
+        "micro_precision": 0.5384615384615384,
+        "micro_recall": 0.9333333333333333,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.8,
+            "tn": 59,
+            "tp": 0
+          },
+          "species:Bp": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 1,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.49,
+            "tn": 58,
+            "tp": 0
+          },
+          "species:Mn": {
+            "f1": 0.0,
+            "fn": 0,
+            "fp": 2,
+            "precision": 0.0,
+            "recall": 0.0,
+            "threshold": 0.68,
+            "tn": 57,
+            "tp": 0
+          },
+          "species:Oo": {
+            "f1": 0.7088607594936709,
+            "fn": 2,
+            "fp": 21,
+            "precision": 0.5714285714285714,
+            "recall": 0.9333333333333333,
+            "threshold": 0.47,
+            "tn": 8,
+            "tp": 28
+          }
+        },
+        "row_count": 59
+      },
+      "ONC": {
+        "background_any_primary_fp": 24,
+        "background_any_primary_fp_rate": 0.8275862068965517,
+        "background_row_count": 29,
+        "macro_f1": 0.6386495388669302,
+        "micro_f1": 0.611764705882353,
+        "micro_precision": 0.4642857142857143,
+        "micro_recall": 0.896551724137931,
+        "per_label": {
+          "species:Bm": {
+            "f1": 0.9333333333333333,
+            "fn": 1,
+            "fp": 1,
+            "precision": 0.9333333333333333,
+            "recall": 0.9333333333333333,
+            "threshold": 0.8,
+            "tn": 71,
+            "tp": 14
+          },
+          "species:Bp": {
+            "f1": 0.6521739130434783,
+            "fn": 1,
+            "fp": 15,
+            "precision": 0.5,
+            "recall": 0.9375,
+            "threshold": 0.49,
+            "tn": 56,
+            "tp": 15
+          },
+          "species:Mn": {
+            "f1": 0.5599999999999999,
+            "fn": 1,
+            "fp": 21,
+            "precision": 0.4,
+            "recall": 0.9333333333333333,
+            "threshold": 0.68,
+            "tn": 51,
+            "tp": 14
+          },
+          "species:Oo": {
+            "f1": 0.4090909090909091,
+            "fn": 3,
+            "fp": 23,
+            "precision": 0.28125,
+            "recall": 0.75,
+            "threshold": 0.47,
+            "tn": 52,
+            "tp": 9
+          }
+        },
+        "row_count": 87
+      }
+    }
   }
 }

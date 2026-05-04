@@ -167,5 +167,93 @@
       "train": 993,
       "val": 213
     }
+  },
+  "E08 ONC+DCLDE species-only": {
+    "call_counts": {
+      "<no-call-label>": 974
+    },
+    "label_counts": {
+      "<background>": 398,
+      "species:Bm": 100,
+      "species:Bp": 101,
+      "species:Mn": 100,
+      "species:Oo": 276
+    },
+    "primary_species_counts": {
+      "<background>": 398,
+      "species:Bm": 100,
+      "species:Bp": 101,
+      "species:Mn": 100,
+      "species:Oo": 276
+    },
+    "row_count": 974,
+    "source_counts": {
+      "DCLDE": 392,
+      "ONC": 582
+    },
+    "source_split_counts": {
+      "DCLDE": {
+        "test": 62,
+        "train": 271,
+        "val": 59
+      },
+      "ONC": {
+        "test": 88,
+        "train": 407,
+        "val": 87
+      }
+    },
+    "split_counts": {
+      "test": 150,
+      "train": 678,
+      "val": 146
+    }
+  },
+  "E09 ONC+BioDCASE+DCLDE species-only": {
+    "call_counts": {
+      "<no-call-label>": 1424
+    },
+    "label_counts": {
+      "<background>": 498,
+      "species:Bm": 300,
+      "species:Bp": 251,
+      "species:Mn": 100,
+      "species:Oo": 276
+    },
+    "primary_species_counts": {
+      "<background>": 498,
+      "species:Bm": 300,
+      "species:Bp": 251,
+      "species:Mn": 100,
+      "species:Oo": 276
+    },
+    "row_count": 1424,
+    "source_counts": {
+      "BioDCASE": 450,
+      "DCLDE": 392,
+      "ONC": 582
+    },
+    "source_split_counts": {
+      "BioDCASE": {
+        "test": 68,
+        "train": 315,
+        "val": 67
+      },
+      "DCLDE": {
+        "test": 62,
+        "train": 271,
+        "val": 59
+      },
+      "ONC": {
+        "test": 88,
+        "train": 407,
+        "val": 87
+      }
+    },
+    "split_counts": {
+      "test": 218,
+      "train": 993,
+      "val": 213
+    }
   }
 }
