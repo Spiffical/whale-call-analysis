@@ -92,6 +92,10 @@ def negative_bucket_from_row(row: Mapping[str, Any], primary_species: Sequence[s
     source_class = normalize_species_code(row.get("source_class_species") or row.get("species_code") or row.get("species"))
     labels = _label_set(row)
 
+    if review_status_text in {"reviewed_background", "reviewed_negative"} and (
+        "biodcase" in source_dataset or "dclde" in source_dataset
+    ):
+        return "external_source_gap"
     if review_status_text in {"reviewed_background", "reviewed_negative"}:
         return "reviewed_background"
     if "primary_adjacent_gap" in context_tags:
@@ -124,8 +128,17 @@ def primary_intervals_by_clip(rows: Iterable[Mapping[str, Any]]) -> Dict[str, Li
         if not has_primary_species(row):
             continue
         clip = _clip_id(row)
-        begin_s = _float_or_none(row.get("begin_s") or row.get("begin_time_s") or row.get("begin_time"))
+        begin_s = _float_or_none(
+            row.get("begin_s")
+            or row.get("begin_time_s")
+            or row.get("begin_time")
+            or row.get("window_start_s")
+        )
         end_s = _float_or_none(row.get("end_s") or row.get("end_time_s") or row.get("end_time"))
+        if end_s is None and begin_s is not None:
+            duration_s = _float_or_none(row.get("duration_s"))
+            if duration_s is not None and duration_s > 0:
+                end_s = begin_s + duration_s
         if clip and begin_s is not None and end_s is not None and end_s > begin_s:
             intervals[clip].append((begin_s, end_s))
     return dict(intervals)

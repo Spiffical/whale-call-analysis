@@ -29,6 +29,12 @@ class NegativeWindowManifestTest(unittest.TestCase):
             negative_bucket_from_row({"label_ids": "", "source_dataset": "biodcase_task2_train"}),
             "external_source_gap",
         )
+        self.assertEqual(
+            negative_bucket_from_row(
+                {"label_ids": "", "review_status": "reviewed_background", "source_dataset": "biodcase_task2_train"}
+            ),
+            "external_source_gap",
+        )
         self.assertEqual(negative_bucket_from_row({"label_ids": "species:Oo"}), "")
 
     def test_primary_adjacent_gap_windows_respect_exclusion_buffer(self):
@@ -62,6 +68,30 @@ class NegativeWindowManifestTest(unittest.TestCase):
             self.assertFalse(start < 30 and end > 15)
             self.assertFalse(start < 75 and end > 55)
             self.assertEqual(row["negative_bucket"], "primary_adjacent_gap")
+
+    def test_primary_adjacent_gap_windows_accept_standardized_window_fields(self):
+        rows = [
+            {
+                "source_audio": "/tmp/audio/clip-a.wav",
+                "window_start_s": "20",
+                "duration_s": "5",
+                "label_ids": "species:Bp",
+            }
+        ]
+
+        gaps = primary_adjacent_gap_rows(
+            annotation_rows=rows,
+            clip_durations={"/tmp/audio/clip-a.wav": 60.0},
+            window_s=10.0,
+            exclusion_buffer_s=5.0,
+            step_s=10.0,
+        )
+
+        self.assertTrue(gaps)
+        for row in gaps:
+            start = float(row["begin_s"])
+            end = float(row["end_s"])
+            self.assertFalse(start < 30 and end > 15)
 
     def test_builder_writes_buckets_and_leak_free_grouped_splits(self):
         with tempfile.TemporaryDirectory() as tmp:
