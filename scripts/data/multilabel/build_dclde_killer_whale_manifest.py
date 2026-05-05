@@ -183,6 +183,38 @@ def _balanced_take(rows: Sequence[Dict[str, Any]], cap: int, group_fields: Seque
     return selected
 
 
+def _class_balanced_take(
+    rows: Sequence[Dict[str, Any]],
+    cap: int,
+    *,
+    class_field: str,
+    group_fields: Sequence[str],
+) -> List[Dict[str, Any]]:
+    if cap <= 0 or len(rows) <= cap:
+        return list(rows)
+    by_class: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_class[clean_text(row.get(class_field)) or "<blank>"].append(dict(row))
+    ordered_by_class = {
+        class_name: _balanced_take(class_rows, len(class_rows), group_fields)
+        for class_name, class_rows in sorted(by_class.items())
+    }
+    selected: List[Dict[str, Any]] = []
+    active_classes = sorted(ordered_by_class)
+    while len(selected) < cap and active_classes:
+        next_classes: List[str] = []
+        for class_name in active_classes:
+            if len(selected) >= cap:
+                break
+            bucket = ordered_by_class[class_name]
+            if bucket:
+                selected.append(bucket.pop(0))
+            if bucket:
+                next_classes.append(class_name)
+        active_classes = next_classes
+    return selected
+
+
 def _manifest_row(
     *,
     raw: Dict[str, Any],
@@ -315,10 +347,11 @@ def build_dclde_manifest(
         else:
             negatives.append(row)
 
-    positives = _balanced_take(
+    positives = _class_balanced_take(
         positives,
         int(max_positive),
-        ("source_class_species", "source_provider", "source_dataset_raw", "dclde_ecotype"),
+        class_field="source_class_species",
+        group_fields=("source_provider", "source_dataset_raw", "dclde_ecotype"),
     )
     negatives = _balanced_take(negatives, int(max_hard_negative), ("source_class_species", "source_provider", "source_dataset_raw"))
     rows = sorted(
