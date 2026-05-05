@@ -18,6 +18,9 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 
 ## What Looks Wrong
 
+- The bucketed parsing audit found no ONC `reviewed_background` rows in these validation artifacts. The earlier "background FP" metric is therefore a `no-primary-label` metric, not a clean-background deployment metric.
+- Visual inspection of the ONC `candidate_background` false-positive contact sheets across E01/E04/E06/E08/E09 shows many high-energy vertical broadband events, tonal-looking structure, and ambiguous signal-like clips. These rows may be useful as review candidates or hard negatives, but they are not safe to treat as clean reviewed background.
+- Visual inspection of the ONC `demoted_nonprimary_signal` false-positive sheets confirms that these rows contain acoustic events and should be evaluated separately from background. A model firing on these rows is not the same failure mode as firing on clean background.
 - E06 added DCLDE killer-whale positives and hard negatives, but ONC Oo precision dropped instead of improving. That means the DCLDE examples are not teaching the model an ONC-compatible killer-whale boundary.
 - The biggest deployment problem is calibration on rows without primary species labels. Some of these are true reviewed background, but others are demoted OD, known signal, or pure-negative candidates that still need visual audit; they should not all be interpreted as silent background.
 - BioDCASE appears to add useful Bm/Bp signal and raises species recall, but it also makes ONC background look whale-like to the model. That is why its macro F1 can look acceptable while deployment risk increases.
@@ -57,11 +60,12 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 
 ## Recommended Next Experiments
 
-1. Stop broad ResNet scaling for now. E08/E09 show that the issue is not solved by species-only training.
-2. Run ONC-calibrated post-hoc analysis first: per-source thresholds, source-normalized score calibration, and ONC-background hard-negative mining.
-3. If we run one more ResNet job, make it narrow: species-only ONC+DCLDE or ONC+BioDCASE+DCLDE with source-balanced batches and an ONC-background-heavy validation/calibration split. Do not reintroduce call types yet.
-4. Add explicit ONC-like hard negatives for Oo/Mn/background before scaling DCLDE.
-5. Prioritize the embedding branch: extract Perch/other foundation embeddings for ONC/BioDCASE/DCLDE caps, train linear/MLP probes, and compare source-separable clusters. If embeddings separate source more strongly than label, that confirms domain shift and suggests adaptation/calibration work before more ResNet training.
+1. Stop broad ResNet scaling for now. E08/E09 show that the issue is not solved by species-only training, and the current ONC validation artifacts do not contain a clean reviewed-background bucket.
+2. Build or label a reviewed ONC background/calibration bucket before any full-scale training gate. The current `candidate_background` bucket should be treated as `needs_review` or `ambiguous_hard_negative`, not as clean background.
+3. Run ONC-calibrated post-hoc analysis first: per-source thresholds, source-normalized score calibration, and ONC-background hard-negative mining after the reviewed bucket exists.
+4. If we run one more ResNet job, make it narrow: species-only ONC+DCLDE or ONC+BioDCASE+DCLDE with source-balanced batches and an ONC-background-heavy validation/calibration split. Do not reintroduce call types yet.
+5. Add explicit ONC-like hard negatives for Oo/Mn/background before scaling DCLDE.
+6. Prioritize the embedding branch: extract Perch/other foundation embeddings for ONC/BioDCASE/DCLDE caps, train linear/MLP probes, and compare source-separable clusters. If embeddings separate source more strongly than label, that confirms domain shift and suggests adaptation/calibration work before more ResNet training.
 
 ## Manifest Composition
 
@@ -99,4 +103,3 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 - Source counts: `{"BioDCASE": 450, "DCLDE": 392, "ONC": 582}`
 - Primary species counts: `{"<background>": 498, "species:Bm": 300, "species:Bp": 251, "species:Mn": 100, "species:Oo": 276}`
 - Top call counts: `{"<no-call-label>": 1424}`
-
