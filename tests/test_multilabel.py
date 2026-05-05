@@ -16,6 +16,7 @@ from src.dataset.multilabel import (
     MultiLabelMatDataset,
     build_vocabulary_from_rows,
     canonicalize_source_label_ids,
+    evaluation_bucket_from_row,
     group_key_for_split,
     label_balanced_grouped_split,
     label_ids_from_row,
@@ -102,6 +103,31 @@ class TestMultiLabelHelpers(unittest.TestCase):
             self.assertEqual(summary["canonical_label_counts"]["<background>"], 1)
             vocab = build_vocabulary_from_rows(rows)
             self.assertNotIn("species:OD", vocab.label_ids)
+
+    def test_evaluation_bucket_separates_demoted_signal_from_background(self):
+        self.assertEqual(
+            evaluation_bucket_from_row({"target_label_ids": "species:Oo"}),
+            "primary_species_positive",
+        )
+        self.assertEqual(
+            evaluation_bucket_from_row(
+                {
+                    "target_label_ids": "",
+                    "source_label_ids": "species:OD",
+                    "analysis_label_ids": "group:odontocete_unknown",
+                }
+            ),
+            "demoted_nonprimary_signal",
+        )
+        self.assertEqual(
+            evaluation_bucket_from_row({"target_label_ids": "", "source_label_ids": "call:fin_20hz"}),
+            "known_call_signal_no_primary",
+        )
+        self.assertEqual(
+            evaluation_bucket_from_row({"target_label_ids": "", "is_background": "1"}),
+            "reviewed_background",
+        )
+        self.assertEqual(evaluation_bucket_from_row({"target_label_ids": ""}), "empty_unverified")
 
     def test_standardize_rows_can_dedupe_after_path_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -287,12 +313,19 @@ class TestMultiLabelHelpers(unittest.TestCase):
                             "item_id": "clip-1",
                             "source_audio": "ICLISTENHF6016_20250101T000000.000Z.flac",
                             "mat_path": "/tmp/clip-1.mat",
+                            "source_label_ids": "species:OD",
+                            "analysis_label_ids": "group:odontocete_unknown",
+                            "is_background": "0",
                         }
                     ],
                 },
                 threshold=0.5,
             )
 
+            with (root / "validation_predictions.csv").open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["source_label_ids"], "species:OD")
+            self.assertEqual(rows[0]["analysis_label_ids"], "group:odontocete_unknown")
             payload = json.loads((root / "validation_predictions.o3_compatible.json").read_text())
             self.assertEqual(payload["schema_version"], "multilabel-smoke-o3-compatible-v1")
             self.assertEqual(payload["items"][0]["item_id"], "clip-1")

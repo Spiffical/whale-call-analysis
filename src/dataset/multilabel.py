@@ -105,6 +105,7 @@ TRAINABLE_CALL_TYPES = frozenset(
 )
 
 PRIMARY_SPECIES_LABEL_IDS = ("species:Bm", "species:Bp", "species:Mn", "species:Oo")
+TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y"})
 
 SPECIES_CODE_TO_NAME = {
     "Bp": "Fin whale",
@@ -407,6 +408,40 @@ def label_ids_from_row(row: Dict[str, Any]) -> List[str]:
         if norm and norm in TRAINABLE_CALL_TYPES:
             ids.append(label_id("call", norm))
     return sorted(dict.fromkeys(ids))
+
+
+def evaluation_bucket_from_row(
+    row: Dict[str, Any],
+    *,
+    primary_species_label_ids: Sequence[str] = PRIMARY_SPECIES_LABEL_IDS,
+) -> str:
+    """Classify empty-target rows for deployment metrics.
+
+    A row with no primary `Bm/Bp/Mn/Oo` label is not always true background.
+    Species-only manifests can intentionally demote OD/unknown labels and call
+    labels out of the trainable target vector. Those rows should be analyzed as
+    non-primary biological/confounder signal rather than counted as silent
+    background.
+    """
+
+    primary = set(primary_species_label_ids)
+    target_ids = set(split_pipe(row.get("target_label_ids")))
+    canonical_ids = set(split_pipe(row.get("canonical_label_ids") or row.get("label_ids")))
+    source_ids = set(split_pipe(row.get("source_label_ids")))
+    analysis_ids = set(split_pipe(row.get("analysis_label_ids")))
+    known_ids = target_ids | canonical_ids | source_ids | analysis_ids
+
+    if (target_ids | canonical_ids | source_ids) & primary:
+        return "primary_species_positive"
+    if analysis_ids:
+        return "demoted_nonprimary_signal"
+    if any(label.startswith("species:") and label not in primary for label in known_ids):
+        return "known_nonprimary_signal"
+    if any(label.startswith("call:") for label in known_ids):
+        return "known_call_signal_no_primary"
+    if clean_text(row.get("is_background")).lower() in TRUTHY_VALUES:
+        return "reviewed_background"
+    return "empty_unverified"
 
 
 def annotation_species_code(row: Dict[str, Any]) -> str:
@@ -731,6 +766,15 @@ class MultiLabelMatDataset(Dataset):
             "source_dataset": row.get("source_dataset") or "",
             "split": row.get("split") or self.split or "",
             "label_ids": label_ids_from_row(row),
+            "source_label_ids": row.get("source_label_ids") or "",
+            "canonical_label_ids": row.get("canonical_label_ids") or row.get("label_ids") or "",
+            "analysis_label_ids": row.get("analysis_label_ids") or "",
+            "is_background": row.get("is_background") or "",
+            "review_status": row.get("review_status") or "",
+            "context_tags": row.get("context_tags") or "",
+            "begin_s": row.get("begin_s") or row.get("begin_time_s") or "",
+            "end_s": row.get("end_s") or row.get("end_time_s") or "",
+            "event_group": row.get("event_group") or "",
             "full_shape": full_shape,
             "crop_start": crop_start,
             "crop_time_bins": crop_t,

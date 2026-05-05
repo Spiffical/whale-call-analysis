@@ -12,9 +12,16 @@ import csv
 import json
 import math
 import shutil
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.dataset.multilabel import evaluation_bucket_from_row  # noqa: E402
 
 
 PRIMARY_SPECIES = ("species:Bm", "species:Bp", "species:Mn", "species:Oo")
@@ -96,6 +103,14 @@ def label_set(row: Mapping[str, str], field: str = "target_label_ids") -> set[st
     return set(split_pipe(row.get(field)))
 
 
+def row_bucket(row: Mapping[str, str]) -> str:
+    return evaluation_bucket_from_row(dict(row), primary_species_label_ids=PRIMARY_SPECIES)
+
+
+def any_primary_prediction(row: Mapping[str, str], thresholds: Mapping[str, float]) -> bool:
+    return any(score(row, label) >= float(thresholds.get(label, 0.5)) for label in PRIMARY_SPECIES)
+
+
 def compute_metrics(
     rows: Sequence[Mapping[str, str]],
     thresholds: Mapping[str, float],
@@ -141,16 +156,33 @@ def compute_metrics(
         if micro_precision + micro_recall
         else 0.0
     )
-    background_rows = [row for row in rows if not (label_set(row) & set(labels))]
-    background_fp = sum(
-        any(score(row, label) >= float(thresholds.get(label, 0.5)) for label in labels)
-        for row in background_rows
-    )
+    no_primary_rows = [row for row in rows if not (label_set(row) & set(labels))]
+    no_primary_fp = sum(any_primary_prediction(row, thresholds) for row in no_primary_rows)
+    bucket_counts: Counter[str] = Counter(row_bucket(row) for row in rows)
+    bucket_fp_counts: Counter[str] = Counter()
+    bucket_row_counts: Counter[str] = Counter()
+    for row in rows:
+        bucket = row_bucket(row)
+        bucket_row_counts[bucket] += 1
+        if bucket != "primary_species_positive" and any_primary_prediction(row, thresholds):
+            bucket_fp_counts[bucket] += 1
+    reviewed_background_rows = [row for row in rows if row_bucket(row) == "reviewed_background"]
+    reviewed_background_fp = sum(any_primary_prediction(row, thresholds) for row in reviewed_background_rows)
     return {
         "row_count": len(rows),
-        "background_row_count": len(background_rows),
-        "background_any_primary_fp": background_fp,
-        "background_any_primary_fp_rate": background_fp / len(background_rows) if background_rows else None,
+        "background_row_count": len(reviewed_background_rows),
+        "background_any_primary_fp": reviewed_background_fp,
+        "background_any_primary_fp_rate": reviewed_background_fp / len(reviewed_background_rows)
+        if reviewed_background_rows
+        else None,
+        "no_primary_row_count": len(no_primary_rows),
+        "no_primary_any_primary_fp": no_primary_fp,
+        "no_primary_any_primary_fp_rate": no_primary_fp / len(no_primary_rows) if no_primary_rows else None,
+        "evaluation_bucket_counts": dict(bucket_counts.most_common()),
+        "evaluation_bucket_any_primary_fp_counts": dict(bucket_fp_counts.most_common()),
+        "evaluation_bucket_any_primary_fp_rates": {
+            bucket: bucket_fp_counts[bucket] / count if count else None for bucket, count in bucket_row_counts.items()
+        },
         "macro_f1": macro_f1,
         "micro_f1": micro_f1,
         "micro_precision": micro_precision,
@@ -199,6 +231,7 @@ def false_positive_rows(
     thresholds: Mapping[str, float],
     *,
     source: str = "ONC",
+    evaluation_bucket: Optional[str] = None,
     limit: int = 40,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -212,13 +245,21 @@ def false_positive_rows(
         ]
         if true_primary or not predictions:
             continue
+        bucket = row_bucket(row)
+        if evaluation_bucket is not None and bucket != evaluation_bucket:
+            continue
         top_label, top_score = max_primary(row)
         out.append(
             {
                 "item_id": row.get("item_id", ""),
+                "evaluation_bucket": bucket,
                 "source_dataset": row.get("source_dataset", ""),
                 "source_audio": row.get("source_audio", ""),
                 "mat_path": row.get("mat_path", ""),
+                "source_label_ids": row.get("source_label_ids", ""),
+                "analysis_label_ids": row.get("analysis_label_ids", ""),
+                "is_background": row.get("is_background", ""),
+                "context_tags": row.get("context_tags", ""),
                 "predicted_primary": "|".join(predictions),
                 "top_primary": top_label,
                 "top_primary_score": f"{top_score:.6f}",
@@ -265,13 +306,66 @@ def per_label_error_rows(
     )
 
 
-def run_metrics(run_dir: Path) -> Optional[Dict[str, Any]]:
+def _manifest_lookup_rows(path: Path) -> Dict[str, Dict[str, str]]:
+    lookup: Dict[str, Dict[str, str]] = {}
+    if not path.exists():
+        return lookup
+    for row in read_csv_rows(path):
+        for key in (row.get("mat_path"), row.get("item_id"), row.get("expected_mat_name")):
+            text = str(key or "").strip()
+            if text:
+                lookup[text] = row
+                lookup[Path(text).name] = row
+                lookup[Path(text).stem] = row
+    return lookup
+
+
+def _enrich_prediction_rows(
+    rows: Sequence[Dict[str, str]],
+    *,
+    manifest_csv: Optional[Path] = None,
+) -> List[Dict[str, str]]:
+    if manifest_csv is None:
+        return [dict(row) for row in rows]
+    lookup = _manifest_lookup_rows(manifest_csv)
+    fields = (
+        "source_label_ids",
+        "canonical_label_ids",
+        "analysis_label_ids",
+        "is_background",
+        "review_status",
+        "context_tags",
+        "begin_s",
+        "end_s",
+        "event_group",
+        "label_ids",
+    )
+    enriched: List[Dict[str, str]] = []
+    for row in rows:
+        out = dict(row)
+        keys = [
+            out.get("mat_path", ""),
+            Path(out.get("mat_path", "")).name,
+            Path(out.get("mat_path", "")).stem,
+            out.get("item_id", ""),
+        ]
+        match = next((lookup[key] for key in keys if key in lookup), None)
+        if match:
+            for field in fields:
+                if not out.get(field):
+                    out[field] = str(match.get(field, ""))
+        out["evaluation_bucket"] = row_bucket(out)
+        enriched.append(out)
+    return enriched
+
+
+def run_metrics(run_dir: Path, manifest_csv: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     train_dir = run_dir / "train"
     predictions = train_dir / "validation_predictions.csv"
     thresholds_path = train_dir / "threshold_sweep_summary.json"
     if not predictions.exists() or not thresholds_path.exists():
         return None
-    rows = read_csv_rows(predictions)
+    rows = _enrich_prediction_rows(read_csv_rows(predictions), manifest_csv=manifest_csv)
     thresholds = thresholds_from_summary(thresholds_path)
     by_group: Dict[str, List[Mapping[str, str]]] = defaultdict(list)
     for row in rows:
@@ -474,9 +568,12 @@ def metric_table_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Dict
                 "run": run_name,
                 "source": source,
                 "row_count": source_metrics["row_count"],
-                "background_row_count": source_metrics["background_row_count"],
-                "background_any_primary_fp": source_metrics["background_any_primary_fp"],
-                "background_any_primary_fp_rate": format_float(source_metrics["background_any_primary_fp_rate"]),
+                "reviewed_background_row_count": source_metrics["background_row_count"],
+                "reviewed_background_any_primary_fp": source_metrics["background_any_primary_fp"],
+                "reviewed_background_any_primary_fp_rate": format_float(source_metrics["background_any_primary_fp_rate"]),
+                "no_primary_row_count": source_metrics.get("no_primary_row_count", ""),
+                "no_primary_any_primary_fp": source_metrics.get("no_primary_any_primary_fp", ""),
+                "no_primary_any_primary_fp_rate": format_float(source_metrics.get("no_primary_any_primary_fp_rate")),
                 "macro_f1": format_float(source_metrics["macro_f1"]),
                 "micro_f1": format_float(source_metrics["micro_f1"]),
                 "micro_precision": format_float(source_metrics["micro_precision"]),
@@ -580,6 +677,27 @@ def onc_background_top_label_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) 
     return rows
 
 
+def evaluation_bucket_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for run_name, metrics in metrics_by_run.items():
+        for source, source_metrics in metrics["by_source"].items():
+            counts = source_metrics.get("evaluation_bucket_counts", {})
+            fp_counts = source_metrics.get("evaluation_bucket_any_primary_fp_counts", {})
+            fp_rates = source_metrics.get("evaluation_bucket_any_primary_fp_rates", {})
+            for bucket, count in counts.items():
+                rows.append(
+                    {
+                        "run": run_name,
+                        "source": source,
+                        "evaluation_bucket": bucket,
+                        "row_count": count,
+                        "any_primary_fp": fp_counts.get(bucket, 0),
+                        "any_primary_fp_rate": format_float(fp_rates.get(bucket)),
+                    }
+                )
+    return rows
+
+
 def make_contact_sheet(image_paths: Sequence[Path], out_path: Path, *, title: str, max_images: int = 12) -> bool:
     if not image_paths:
         return False
@@ -642,7 +760,8 @@ def write_report(
                 "run": run_name,
                 "ONC macro F1": format_float(onc["macro_f1"]),
                 "ONC micro F1": format_float(onc["micro_f1"]),
-                "ONC background FP": format_float(onc["background_any_primary_fp_rate"]),
+                "ONC reviewed bg FP": format_float(onc["background_any_primary_fp_rate"]),
+                "ONC no-primary FP": format_float(onc.get("no_primary_any_primary_fp_rate")),
                 "Bm F1": format_float(onc["per_label"]["species:Bm"]["f1"]),
                 "Bp F1": format_float(onc["per_label"]["species:Bp"]["f1"]),
                 "Mn F1": format_float(onc["per_label"]["species:Mn"]["f1"]),
@@ -663,13 +782,23 @@ def write_report(
         "",
         markdown_table(
             rows,
-            ["run", "ONC macro F1", "ONC micro F1", "ONC background FP", "Bm F1", "Bp F1", "Mn F1", "Oo F1"],
+            [
+                "run",
+                "ONC macro F1",
+                "ONC micro F1",
+                "ONC reviewed bg FP",
+                "ONC no-primary FP",
+                "Bm F1",
+                "Bp F1",
+                "Mn F1",
+                "Oo F1",
+            ],
         ),
         "",
         "## What Looks Wrong",
         "",
         "- E06 added DCLDE killer-whale positives and hard negatives, but ONC Oo precision dropped instead of improving. That means the DCLDE examples are not teaching the model an ONC-compatible killer-whale boundary.",
-        "- The biggest deployment problem is background calibration. The combined runs push many ONC background windows over at least one species threshold, and the species-only E09 run makes this worse rather than better.",
+        "- The biggest deployment problem is calibration on rows without primary species labels. Some of these are true reviewed background, but others are demoted OD or other known signal and should not be interpreted as silent background.",
         "- BioDCASE appears to add useful Bm/Bp signal and raises species recall, but it also makes ONC background look whale-like to the model. That is why its macro F1 can look acceptable while deployment risk increases.",
         "- DCLDE cap200 did not repair ONC Oo. The model learned extra Oo sensitivity, but the DCLDE Oo boundary does not transfer cleanly to ONC Oo versus ONC background.",
         "- Mn and Oo are the fragile labels. Their recall can look acceptable, but precision collapses because the model starts assigning these labels to ONC background or other-species rows.",
@@ -731,7 +860,9 @@ def main() -> int:
     manifest_summaries: Dict[str, Dict[str, Any]] = {}
 
     for run_name, rel_path in DEFAULT_RUNS.items():
-        metrics = run_metrics(weekend_root / rel_path)
+        manifest_rel = DEFAULT_MANIFESTS.get(run_name)
+        manifest_path = weekend_root / manifest_rel if manifest_rel else None
+        metrics = run_metrics(weekend_root / rel_path, manifest_csv=manifest_path)
         if metrics is not None:
             metrics_by_run[run_name] = metrics
 
@@ -766,6 +897,7 @@ def main() -> int:
         figures.append(comp_plot)
 
     write_csv_rows(out_dir / "tables" / "source_domain_metrics.csv", metric_table_rows(metrics_by_run))
+    write_csv_rows(out_dir / "tables" / "evaluation_bucket_metrics.csv", evaluation_bucket_rows(metrics_by_run))
     write_csv_rows(out_dir / "tables" / "score_quantiles_by_source.csv", score_quantile_rows(metrics_by_run))
     write_csv_rows(
         out_dir / "tables" / "onc_background_top_primary_label_counts.csv",
@@ -777,6 +909,22 @@ def main() -> int:
         write_csv_rows(
             out_dir / "tables" / f"{safe}_onc_background_false_positives.csv",
             false_positive_rows(metrics["prediction_rows"], metrics["thresholds"]),
+        )
+        write_csv_rows(
+            out_dir / "tables" / f"{safe}_onc_reviewed_background_false_positives.csv",
+            false_positive_rows(
+                metrics["prediction_rows"],
+                metrics["thresholds"],
+                evaluation_bucket="reviewed_background",
+            ),
+        )
+        write_csv_rows(
+            out_dir / "tables" / f"{safe}_onc_demoted_nonprimary_signal_false_positives.csv",
+            false_positive_rows(
+                metrics["prediction_rows"],
+                metrics["thresholds"],
+                evaluation_bucket="demoted_nonprimary_signal",
+            ),
         )
         for label in ("species:Mn", "species:Oo"):
             fp_rows, fn_rows = per_label_error_rows(metrics["prediction_rows"], metrics["thresholds"], label)
