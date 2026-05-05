@@ -1,0 +1,9 @@
+source_kind,label_id,count
+BioDCASE,species:Bm,200
+DCLDE,species:Mn,200
+DCLDE,species:Oo,200
+BioDCASE,species:Bp,150
+ONC,species:Bp,101
+ONC,species:Mn,100
+ONC,species:Bm,100
+ONC,species:Oo,82

@@ -1,0 +1,21 @@
+{
+  "annotations_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/negative_manifest_dry_run_input.csv",
+  "config": {
+    "clip_duration_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/negative_manifest_onc_clip_durations.csv",
+    "exclusion_buffer_s": 5.0,
+    "max_windows_per_clip": 3,
+    "split": true,
+    "step_s": 30.0,
+    "window_s": 10.0
+  },
+  "leaked_group_count": 0,
+  "negative_bucket_counts": {
+    "ambiguous_hard_negative": 100,
+    "external_source_gap": 100,
+    "nonbiological_signal": 149,
+    "nonprimary_biological_signal": 151,
+    "primary_adjacent_gap": 825
+  },
+  "output_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/negative_manifest_dry_run.csv",
+  "row_count": 1325
+}

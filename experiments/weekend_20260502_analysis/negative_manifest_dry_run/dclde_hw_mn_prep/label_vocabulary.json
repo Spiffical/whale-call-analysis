@@ -1,0 +1,29 @@
+{
+  "labels": [
+    {
+      "class_hierarchy": "Biophony > Marine mammal > Cetacean > Baleen whale > Humpback whale",
+      "code": "Mn",
+      "count": 200,
+      "group": "species",
+      "id": "species:Mn",
+      "name": "Humpback whale"
+    },
+    {
+      "class_hierarchy": "Biophony > Marine mammal > Cetacean > Toothed whale > Killer whale",
+      "code": "Oo",
+      "count": 200,
+      "group": "species",
+      "id": "species:Oo",
+      "name": "Killer whale"
+    },
+    {
+      "class_hierarchy": "Bioacoustic call type > Killer whale call",
+      "code": "orca_call",
+      "count": 200,
+      "group": "call_type",
+      "id": "call:orca_call",
+      "name": "Killer whale call"
+    }
+  ],
+  "schema_version": "multilabel-v1"
+}

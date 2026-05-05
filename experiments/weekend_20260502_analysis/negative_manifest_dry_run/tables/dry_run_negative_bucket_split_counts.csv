@@ -1,0 +1,16 @@
+split,negative_bucket,count
+train,primary_adjacent_gap,579
+val,primary_adjacent_gap,123
+test,primary_adjacent_gap,123
+train,nonprimary_biological_signal,109
+train,nonbiological_signal,100
+train,external_source_gap,69
+train,ambiguous_hard_negative,69
+test,nonbiological_signal,27
+val,nonprimary_biological_signal,24
+val,nonbiological_signal,22
+test,nonprimary_biological_signal,18
+test,external_source_gap,16
+val,ambiguous_hard_negative,16
+val,external_source_gap,15
+test,ambiguous_hard_negative,15

@@ -1,0 +1,7 @@
+source_kind,negative_bucket,count
+ONC,primary_adjacent_gap,825
+DCLDE,nonbiological_signal,149
+BioDCASE,external_source_gap,100
+ONC,nonprimary_biological_signal,100
+ONC,ambiguous_hard_negative,100
+DCLDE,nonprimary_biological_signal,51

@@ -1,0 +1,58 @@
+{
+  "annotations_csv": "/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/audits/dclde_2027_killer_whales/Annotations.csv",
+  "config": {
+    "gcs_object_lists": [],
+    "hard_negative_classes": [
+      "UndBio",
+      "AB"
+    ],
+    "mat_rel_dir": "mat_files",
+    "max_hard_negative": 200,
+    "max_positive": 400,
+    "require_gcs_audio": false,
+    "vocab_min_count": 1
+  },
+  "dataset_name": "dclde_2027_killer_whales",
+  "hard_negative_count": 200,
+  "label_counts": {
+    "<background>": 200,
+    "call:orca_call": 200,
+    "species:Mn": 200,
+    "species:Oo": 200
+  },
+  "positive_count": 400,
+  "provider_counts": {
+    "DFO_CRP": 434,
+    "DFO_WDLP": 48,
+    "JASCO_VFPA": 30,
+    "JASCO_VFPA_ONC": 17,
+    "ONC": 8,
+    "OrcaSound": 21,
+    "SIMRES": 9,
+    "SIO": 17,
+    "SMRUConsulting": 16
+  },
+  "raw_class_counts": {
+    "AB": 11669,
+    "HW": 124977,
+    "KW": 59107,
+    "UndBio": 11821
+  },
+  "required_audio_count": 134,
+  "row_count": 600,
+  "skipped_counts": {
+    "invalid_time": 650
+  },
+  "source_class_counts": {
+    "AB": 149,
+    "HW": 200,
+    "KW": 200,
+    "UndBio": 51
+  },
+  "vocabulary_label_ids": [
+    "species:Mn",
+    "species:Oo",
+    "call:orca_call"
+  ],
+  "vocabulary_size": 3
+}

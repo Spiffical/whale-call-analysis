@@ -1,0 +1,116 @@
+{
+  "combined_input_row_count": 1632,
+  "combined_source_counts": {
+    "BioDCASE": 450,
+    "DCLDE": 600,
+    "ONC": 582
+  },
+  "dclde_annotations": "/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/audits/dclde_2027_killer_whales/Annotations.csv",
+  "dclde_summary": {
+    "annotations_csv": "/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/audits/dclde_2027_killer_whales/Annotations.csv",
+    "config": {
+      "gcs_object_lists": [],
+      "hard_negative_classes": [
+        "UndBio",
+        "AB"
+      ],
+      "mat_rel_dir": "mat_files",
+      "max_hard_negative": 200,
+      "max_positive": 400,
+      "require_gcs_audio": false,
+      "vocab_min_count": 1
+    },
+    "dataset_name": "dclde_2027_killer_whales",
+    "hard_negative_count": 200,
+    "label_counts": {
+      "<background>": 200,
+      "call:orca_call": 200,
+      "species:Mn": 200,
+      "species:Oo": 200
+    },
+    "positive_count": 400,
+    "provider_counts": {
+      "DFO_CRP": 434,
+      "DFO_WDLP": 48,
+      "JASCO_VFPA": 30,
+      "JASCO_VFPA_ONC": 17,
+      "ONC": 8,
+      "OrcaSound": 21,
+      "SIMRES": 9,
+      "SIO": 17,
+      "SMRUConsulting": 16
+    },
+    "raw_class_counts": {
+      "AB": 11669,
+      "HW": 124977,
+      "KW": 59107,
+      "UndBio": 11821
+    },
+    "required_audio_count": 134,
+    "row_count": 600,
+    "skipped_counts": {
+      "invalid_time": 650
+    },
+    "source_class_counts": {
+      "AB": 149,
+      "HW": 200,
+      "KW": 200,
+      "UndBio": 51
+    },
+    "vocabulary_label_ids": [
+      "species:Mn",
+      "species:Oo",
+      "call:orca_call"
+    ],
+    "vocabulary_size": 3
+  },
+  "decision": "training_blocked_no_onc_reviewed_background",
+  "e09_manifest": "/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/manifests/E09_onc_biod_dclde_species/standardized_manifest.csv",
+  "negative_bucket_counts": {
+    "ambiguous_hard_negative": 100,
+    "external_source_gap": 100,
+    "nonbiological_signal": 149,
+    "nonprimary_biological_signal": 151,
+    "primary_adjacent_gap": 825
+  },
+  "negative_manifest_row_count": 1325,
+  "negative_source_counts": {
+    "BioDCASE": 100,
+    "DCLDE": 200,
+    "ONC": 1025
+  },
+  "negative_summary": {
+    "annotations_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/negative_manifest_dry_run_input.csv",
+    "config": {
+      "clip_duration_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/negative_manifest_onc_clip_durations.csv",
+      "exclusion_buffer_s": 5.0,
+      "max_windows_per_clip": 3,
+      "split": true,
+      "step_s": 30.0,
+      "window_s": 10.0
+    },
+    "leaked_group_count": 0,
+    "negative_bucket_counts": {
+      "ambiguous_hard_negative": 100,
+      "external_source_gap": 100,
+      "nonbiological_signal": 149,
+      "nonprimary_biological_signal": 151,
+      "primary_adjacent_gap": 825
+    },
+    "output_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/negative_manifest_dry_run.csv",
+    "row_count": 1325
+  },
+  "no_primary_source_counts": {
+    "BioDCASE": 100,
+    "DCLDE": 200,
+    "ONC": 200
+  },
+  "onc_review_queue_count": 925,
+  "onc_reviewed_background_count": 0,
+  "positive_source_counts": {
+    "BioDCASE": 350,
+    "DCLDE": 400,
+    "ONC": 382
+  },
+  "weekend_root": "/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502"
+}
