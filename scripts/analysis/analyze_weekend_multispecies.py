@@ -25,6 +25,12 @@ from src.dataset.multilabel import evaluation_bucket_from_row  # noqa: E402
 
 
 PRIMARY_SPECIES = ("species:Bm", "species:Bp", "species:Mn", "species:Oo")
+BACKGROUND_REVIEW_LABELS = (
+    "reviewed_background",
+    "ambiguous_hard_negative",
+    "unlabeled_signal_suspect",
+    "demoted_nonprimary_signal",
+)
 
 DEFAULT_RUNS = {
     "E01 ONC control": "runs/E01_onc_bal100_control_20260502T074301Z",
@@ -267,6 +273,105 @@ def false_positive_rows(
             }
         )
     return sorted(out, key=lambda row: float(row["top_primary_score"]), reverse=True)[:limit]
+
+
+def review_priority(max_score: float, triggered_run_count: int) -> str:
+    if max_score >= 0.85 or triggered_run_count >= 4:
+        return "high"
+    if max_score >= 0.65 or triggered_run_count >= 2:
+        return "medium"
+    return "low"
+
+
+def suggested_review_label(bucket: str, max_score: float, triggered_run_count: int) -> str:
+    if bucket == "reviewed_background":
+        return "reviewed_background"
+    if bucket == "demoted_nonprimary_signal":
+        return "demoted_nonprimary_signal"
+    if bucket in {"known_nonprimary_signal", "known_call_signal_no_primary"}:
+        return "unlabeled_signal_suspect"
+    if bucket == "candidate_background" and (max_score >= 0.65 or triggered_run_count >= 2):
+        return "ambiguous_hard_negative"
+    return ""
+
+
+def onc_background_review_queue_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build one ONC no-primary review row per unique clip across all runs."""
+    aggregated: Dict[str, Dict[str, Any]] = {}
+    for run_name, metrics in metrics_by_run.items():
+        thresholds = metrics["thresholds"]
+        for row in metrics["prediction_rows"]:
+            if source_group(row.get("source_dataset", "")) != "ONC":
+                continue
+            if label_set(row) & set(PRIMARY_SPECIES):
+                continue
+            bucket = row_bucket(row)
+            if bucket == "primary_species_positive":
+                continue
+            item_id = row.get("item_id") or row.get("mat_path") or row.get("source_audio")
+            if not item_id:
+                continue
+            top_label, top_score = max_primary(row)
+            predictions = [
+                label for label in PRIMARY_SPECIES if score(row, label) >= float(thresholds.get(label, 0.5))
+            ]
+            entry = aggregated.setdefault(
+                item_id,
+                {
+                    "review_label": "",
+                    "suggested_review_label": "",
+                    "allowed_review_labels": "|".join(BACKGROUND_REVIEW_LABELS),
+                    "review_priority": "",
+                    "item_id": item_id,
+                    "evaluation_bucket": bucket,
+                    "source_dataset": row.get("source_dataset", ""),
+                    "source_audio": row.get("source_audio", ""),
+                    "mat_path": row.get("mat_path", ""),
+                    "source_label_ids": row.get("source_label_ids", ""),
+                    "analysis_label_ids": row.get("analysis_label_ids", ""),
+                    "target_label_ids": row.get("target_label_ids", ""),
+                    "is_background": row.get("is_background", ""),
+                    "review_status": row.get("review_status", ""),
+                    "context_tags": row.get("context_tags", ""),
+                    "top_primary": top_label,
+                    "top_primary_score": 0.0,
+                    "max_score_run": "",
+                    "triggered_run_count": 0,
+                    "triggered_runs": [],
+                    "run_score_summary": [],
+                    "notes": "",
+                },
+            )
+            entry["run_score_summary"].append(f"{run_name}:{top_label}={top_score:.4f}")
+            if predictions:
+                entry["triggered_runs"].append(run_name)
+            if top_score > float(entry["top_primary_score"]):
+                entry["top_primary_score"] = top_score
+                entry["top_primary"] = top_label
+                entry["max_score_run"] = run_name
+    rows: List[Dict[str, Any]] = []
+    for entry in aggregated.values():
+        triggered = list(dict.fromkeys(entry["triggered_runs"]))
+        triggered_count = len(triggered)
+        max_score = float(entry["top_primary_score"])
+        entry["triggered_run_count"] = triggered_count
+        entry["triggered_runs"] = "|".join(triggered)
+        entry["run_score_summary"] = "; ".join(entry["run_score_summary"])
+        entry["review_priority"] = review_priority(max_score, triggered_count)
+        entry["suggested_review_label"] = suggested_review_label(
+            str(entry["evaluation_bucket"]), max_score, triggered_count
+        )
+        entry["top_primary_score"] = f"{max_score:.6f}"
+        rows.append(entry)
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    return sorted(
+        rows,
+        key=lambda row: (
+            priority_order.get(str(row["review_priority"]), 9),
+            -float(row["top_primary_score"]),
+            str(row["item_id"]),
+        ),
+    )
 
 
 def per_label_error_rows(
@@ -866,6 +971,9 @@ def write_report(
         "",
         "## What Looks Wrong",
         "",
+        "- The bucketed parsing audit found no ONC `reviewed_background` rows in these validation artifacts. The earlier \"background FP\" metric is therefore a `no-primary-label` metric, not a clean-background deployment metric.",
+        "- Visual inspection of the ONC `candidate_background` false-positive contact sheets across E01/E04/E06/E08/E09 shows many high-energy vertical broadband events, tonal-looking structure, and ambiguous signal-like clips. These rows may be useful as review candidates or hard negatives, but they are not safe to treat as clean reviewed background.",
+        "- Visual inspection of the ONC `demoted_nonprimary_signal` false-positive sheets confirms that these rows contain acoustic events and should be evaluated separately from background. A model firing on these rows is not the same failure mode as firing on clean background.",
         "- E06 added DCLDE killer-whale positives and hard negatives, but ONC Oo precision dropped instead of improving. That means the DCLDE examples are not teaching the model an ONC-compatible killer-whale boundary.",
         "- The biggest deployment problem is calibration on rows without primary species labels. Some of these are true reviewed background, but others are demoted OD, known signal, or pure-negative candidates that still need visual audit; they should not all be interpreted as silent background.",
         "- BioDCASE appears to add useful Bm/Bp signal and raises species recall, but it also makes ONC background look whale-like to the model. That is why its macro F1 can look acceptable while deployment risk increases.",
@@ -890,13 +998,21 @@ def write_report(
     report.extend(
         [
             "",
+            "## Reviewed Background Workflow",
+            "",
+            "- Review queue: `tables/onc_background_review_queue.csv`.",
+            "- Review contact sheet: `figures/onc_background_review_queue_contact_sheet.png`.",
+            "- Fill the `review_label` column with one of `reviewed_background`, `ambiguous_hard_negative`, `unlabeled_signal_suspect`, or `demoted_nonprimary_signal` before using these rows as a deployment background gate.",
+            "- Gate future training only on rows marked `reviewed_background`; keep `ambiguous_hard_negative` rows for hard-negative experiments and keep signal rows out of clean-background metrics.",
+            "",
             "## Recommended Next Experiments",
             "",
-            "1. Stop broad ResNet scaling for now. E08/E09 show that the issue is not solved by species-only training.",
-            "2. Run ONC-calibrated post-hoc analysis first: per-source thresholds, source-normalized score calibration, and ONC-background hard-negative mining.",
-            "3. If we run one more ResNet job, make it narrow: species-only ONC+DCLDE or ONC+BioDCASE+DCLDE with source-balanced batches and an ONC-background-heavy validation/calibration split. Do not reintroduce call types yet.",
-            "4. Add explicit ONC-like hard negatives for Oo/Mn/background before scaling DCLDE.",
-            "5. Prioritize the embedding branch: extract Perch/other foundation embeddings for ONC/BioDCASE/DCLDE caps, train linear/MLP probes, and compare source-separable clusters. If embeddings separate source more strongly than label, that confirms domain shift and suggests adaptation/calibration work before more ResNet training.",
+            "1. Stop broad ResNet scaling for now. E08/E09 show that the issue is not solved by species-only training, and the current ONC validation artifacts do not contain a clean reviewed-background bucket.",
+            "2. Build or label a reviewed ONC background/calibration bucket before any full-scale training gate. The current `candidate_background` bucket should be treated as `needs_review` or `ambiguous_hard_negative`, not as clean background.",
+            "3. Run ONC-calibrated post-hoc analysis first: per-source thresholds, source-normalized score calibration, and ONC-background hard-negative mining after the reviewed bucket exists.",
+            "4. If we run one more ResNet job, make it narrow: species-only ONC+DCLDE or ONC+BioDCASE+DCLDE with source-balanced batches and an ONC-background-heavy validation/calibration split. Do not reintroduce call types yet.",
+            "5. Add explicit ONC-like hard negatives for Oo/Mn/background before scaling DCLDE.",
+            "6. Prioritize the embedding branch: extract Perch/other foundation embeddings for ONC/BioDCASE/DCLDE caps, train linear/MLP probes, and compare source-separable clusters. If embeddings separate source more strongly than label, that confirms domain shift and suggests adaptation/calibration work before more ResNet training.",
             "",
             "## Manifest Composition",
             "",
@@ -972,6 +1088,16 @@ def main() -> int:
         out_dir / "tables" / "onc_background_top_primary_label_counts.csv",
         onc_background_top_label_rows(metrics_by_run),
     )
+    review_queue = onc_background_review_queue_rows(metrics_by_run)
+    write_csv_rows(out_dir / "tables" / "onc_background_review_queue.csv", review_queue)
+    review_sheet = out_dir / "figures" / "onc_background_review_queue_contact_sheet.png"
+    if make_prediction_row_contact_sheet(
+        review_queue,
+        review_sheet,
+        title="ONC no-primary review queue: candidate background and demoted signal",
+        max_images=24,
+    ):
+        figures.append(review_sheet)
 
     for run_name, metrics in metrics_by_run.items():
         safe = run_name.lower().replace(" ", "_").replace("+", "plus").replace("/", "_")
