@@ -315,7 +315,11 @@ def build_dclde_manifest(
         else:
             negatives.append(row)
 
-    positives = _balanced_take(positives, int(max_positive), ("source_provider", "source_dataset_raw", "dclde_ecotype"))
+    positives = _balanced_take(
+        positives,
+        int(max_positive),
+        ("source_class_species", "source_provider", "source_dataset_raw", "dclde_ecotype"),
+    )
     negatives = _balanced_take(negatives, int(max_hard_negative), ("source_class_species", "source_provider", "source_dataset_raw"))
     rows = sorted(
         positives + negatives,

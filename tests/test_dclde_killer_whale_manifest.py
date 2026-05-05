@@ -184,6 +184,43 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
             self.assertEqual(len(groups), len(selected))
             self.assertLessEqual(len(selected), 2)
 
+    def test_positive_cap_balances_kw_and_hw_classes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            annotations = root / "Annotations.csv"
+            out = root / "out"
+            rows = []
+            for idx, class_species in enumerate(["KW", "KW", "KW", "HW", "HW", "HW"]):
+                rows.append(
+                    {
+                        "Soundfile": f"{class_species.lower()}-{idx}.wav",
+                        "Dataset": "BarkleyCanyon",
+                        "FileBeginSec": str(10 + idx),
+                        "FileEndSec": str(11 + idx),
+                        "ClassSpecies": class_species,
+                        "KW": "1" if class_species == "KW" else "0",
+                        "KW_certain": "1" if class_species == "KW" else "NA",
+                        "Ecotype": "SRKW" if class_species == "KW" else "NA",
+                        "Provider": "ONC",
+                        "AnnotationLevel": "Call",
+                        "FileOk": "TRUE",
+                    }
+                )
+            _write_csv(annotations, rows)
+
+            summary = build_dclde_manifest(
+                annotations_csv=annotations,
+                output_dir=out,
+                max_positive=2,
+                max_hard_negative=0,
+            )
+
+            self.assertEqual(summary["positive_count"], 2)
+            self.assertEqual(summary["source_class_counts"]["KW"], 1)
+            self.assertEqual(summary["source_class_counts"]["HW"], 1)
+            self.assertEqual(summary["label_counts"]["species:Oo"], 1)
+            self.assertEqual(summary["label_counts"]["species:Mn"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
