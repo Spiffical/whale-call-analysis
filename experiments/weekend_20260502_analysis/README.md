@@ -45,6 +45,7 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 - ![onc_background_false_positive_top_labels](figures/onc_background_false_positive_top_labels.png)
 - ![source_background_score_distributions](figures/source_background_score_distributions.png)
 - ![manifest_source_composition](figures/manifest_source_composition.png)
+- ![onc_background_review_queue_contact_sheet](figures/onc_background_review_queue_contact_sheet.png)
 - ![e01_onc_control_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e01_onc_control_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
 - ![e01_onc_control_onc_candidate_background_fp_contact_sheet](figures/e01_onc_control_onc_candidate_background_fp_contact_sheet.png)
 - ![e04_oncplusbiodcase_speciespluscall_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e04_oncplusbiodcase_speciespluscall_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
@@ -57,6 +58,13 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 - ![e09_oncplusbiodcaseplusdclde_species-only_onc_candidate_background_fp_contact_sheet](figures/e09_oncplusbiodcaseplusdclde_species-only_onc_candidate_background_fp_contact_sheet.png)
 - ![e08_oncplusdclde_species-only_example_images_contact_sheet](figures/e08_oncplusdclde_species-only_example_images_contact_sheet.png)
 - ![e09_oncplusbiodcaseplusdclde_species-only_example_images_contact_sheet](figures/e09_oncplusbiodcaseplusdclde_species-only_example_images_contact_sheet.png)
+
+## Reviewed Background Workflow
+
+- Review queue: `tables/onc_background_review_queue.csv`.
+- Review contact sheet: `figures/onc_background_review_queue_contact_sheet.png`.
+- Fill the `review_label` column with one of `reviewed_background`, `ambiguous_hard_negative`, `unlabeled_signal_suspect`, or `demoted_nonprimary_signal` before using these rows as a deployment background gate.
+- Gate future training only on rows marked `reviewed_background`; keep `ambiguous_hard_negative` rows for hard-negative experiments and keep signal rows out of clean-background metrics.
 
 ## Recommended Next Experiments
 
@@ -103,3 +111,4 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 - Source counts: `{"BioDCASE": 450, "DCLDE": 392, "ONC": 582}`
 - Primary species counts: `{"<background>": 498, "species:Bm": 300, "species:Bp": 251, "species:Mn": 100, "species:Oo": 276}`
 - Top call counts: `{"<no-call-label>": 1424}`
+
