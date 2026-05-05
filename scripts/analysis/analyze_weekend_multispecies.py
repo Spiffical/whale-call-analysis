@@ -730,6 +730,75 @@ def make_contact_sheet(image_paths: Sequence[Path], out_path: Path, *, title: st
     return True
 
 
+def _load_mat_image(mat_path: Path) -> Optional[Any]:
+    try:
+        import numpy as np
+        import scipy.io as sio
+    except Exception:
+        return None
+    try:
+        payload = sio.loadmat(str(mat_path), simplify_cells=True)
+    except Exception:
+        return None
+    candidates = []
+    for key, value in payload.items():
+        if key.startswith("__"):
+            continue
+        arr = np.asarray(value)
+        if arr.ndim == 2 and arr.size > 0 and np.issubdtype(arr.dtype, np.number):
+            candidates.append(arr.astype("float32"))
+    if not candidates:
+        return None
+    image = max(candidates, key=lambda arr: arr.size)
+    if image.shape[0] < image.shape[1] / 4:
+        image = image.T
+    image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0)
+    lo, hi = np.percentile(image, [2, 98])
+    if hi <= lo:
+        lo, hi = float(image.min()), float(image.max())
+    if hi > lo:
+        image = (image - lo) / (hi - lo)
+    return np.clip(image, 0.0, 1.0)
+
+
+def make_prediction_row_contact_sheet(
+    rows: Sequence[Mapping[str, Any]],
+    out_path: Path,
+    *,
+    title: str,
+    max_images: int = 24,
+) -> bool:
+    if not rows:
+        return False
+    plt = ensure_matplotlib()
+    selected = list(rows)[:max_images]
+    cols = 4
+    grid_rows = math.ceil(len(selected) / cols)
+    fig, axes = plt.subplots(grid_rows, cols, figsize=(cols * 3.6, grid_rows * 3.1))
+    axes_list = [axes] if grid_rows == 1 and cols == 1 else (list(axes) if grid_rows == 1 else [ax for row in axes for ax in row])
+    for ax, row in zip(axes_list, selected):
+        mat_path = Path(str(row.get("mat_path", "")))
+        image = _load_mat_image(mat_path)
+        if image is not None:
+            ax.imshow(image, aspect="auto", origin="lower", cmap="magma", vmin=0, vmax=1)
+        else:
+            ax.text(0.5, 0.5, mat_path.name or "missing MAT", ha="center", va="center", fontsize=7)
+        item = str(row.get("item_id", ""))[:42]
+        top = str(row.get("top_primary", ""))
+        score_text = str(row.get("top_primary_score", ""))
+        bucket = str(row.get("evaluation_bucket", ""))
+        ax.set_title(f"{top} {score_text}\n{bucket}\n{item}", fontsize=7)
+        ax.axis("off")
+    for ax in axes_list[len(selected) :]:
+        ax.axis("off")
+    fig.suptitle(title, fontsize=12)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return True
+
+
 def format_float(value: Optional[float]) -> str:
     if value is None:
         return "NA"
@@ -910,22 +979,37 @@ def main() -> int:
             out_dir / "tables" / f"{safe}_onc_background_false_positives.csv",
             false_positive_rows(metrics["prediction_rows"], metrics["thresholds"]),
         )
+        reviewed_fp = false_positive_rows(
+            metrics["prediction_rows"],
+            metrics["thresholds"],
+            evaluation_bucket="reviewed_background",
+            limit=80,
+        )
+        demoted_fp = false_positive_rows(
+            metrics["prediction_rows"],
+            metrics["thresholds"],
+            evaluation_bucket="demoted_nonprimary_signal",
+            limit=80,
+        )
         write_csv_rows(
             out_dir / "tables" / f"{safe}_onc_reviewed_background_false_positives.csv",
-            false_positive_rows(
-                metrics["prediction_rows"],
-                metrics["thresholds"],
-                evaluation_bucket="reviewed_background",
-            ),
+            reviewed_fp,
         )
         write_csv_rows(
             out_dir / "tables" / f"{safe}_onc_demoted_nonprimary_signal_false_positives.csv",
-            false_positive_rows(
-                metrics["prediction_rows"],
-                metrics["thresholds"],
-                evaluation_bucket="demoted_nonprimary_signal",
-            ),
+            demoted_fp,
         )
+        for bucket_name, bucket_rows in (
+            ("reviewed_background", reviewed_fp),
+            ("demoted_nonprimary_signal", demoted_fp),
+        ):
+            out_path = out_dir / "figures" / f"{safe}_onc_{bucket_name}_fp_contact_sheet.png"
+            if make_prediction_row_contact_sheet(
+                bucket_rows,
+                out_path,
+                title=f"{run_name} ONC {bucket_name.replace('_', ' ')} primary FPs",
+            ):
+                figures.append(out_path)
         for label in ("species:Mn", "species:Oo"):
             fp_rows, fn_rows = per_label_error_rows(metrics["prediction_rows"], metrics["thresholds"], label)
             label_safe = label.replace(":", "_")
