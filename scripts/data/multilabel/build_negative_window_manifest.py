@@ -71,6 +71,21 @@ def _label_set(row: Mapping[str, Any]) -> set[str]:
     return {clean_text(label) for label in ids if clean_text(label)}
 
 
+def _source_text(row: Mapping[str, Any]) -> str:
+    return " ".join(
+        clean_text(row.get(field)).lower()
+        for field in (
+            "source_dataset",
+            "source_dataset_raw",
+            "source_provider",
+            "source_audio",
+            "mat_path",
+            "filename",
+            "clip",
+        )
+    )
+
+
 def has_primary_species(row: Mapping[str, Any], primary_species: Sequence[str] = PRIMARY_SPECIES) -> bool:
     primary_ids = {f"species:{normalize_species_code(code)}" for code in primary_species}
     return bool(_label_set(row) & primary_ids)
@@ -88,7 +103,7 @@ def negative_bucket_from_row(row: Mapping[str, Any], primary_species: Sequence[s
 
     review_status_text = clean_text(row.get("review_status")).lower().replace("-", "_").replace(" ", "_")
     context_tags = {tag.lower().replace("-", "_").replace(" ", "_") for tag in split_pipe(row.get("context_tags"))}
-    source_dataset = clean_text(row.get("source_dataset") or row.get("dataset")).lower()
+    source_dataset = _source_text(row)
     source_class = normalize_species_code(row.get("source_class_species") or row.get("species_code") or row.get("species"))
     labels = _label_set(row)
 

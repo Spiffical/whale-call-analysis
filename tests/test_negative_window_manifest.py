@@ -35,6 +35,17 @@ class NegativeWindowManifestTest(unittest.TestCase):
             ),
             "external_source_gap",
         )
+        self.assertEqual(
+            negative_bucket_from_row(
+                {
+                    "label_ids": "",
+                    "review_status": "reviewed_background",
+                    "source_dataset": "ballenyislands2015",
+                    "mat_path": "/tmp/biodcase_task2_prep/mat_files/background.mat",
+                }
+            ),
+            "external_source_gap",
+        )
         self.assertEqual(negative_bucket_from_row({"label_ids": "species:Oo"}), "")
 
     def test_primary_adjacent_gap_windows_respect_exclusion_buffer(self):
