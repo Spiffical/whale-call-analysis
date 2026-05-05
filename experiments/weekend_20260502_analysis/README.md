@@ -63,6 +63,7 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 
 - Review queue: `tables/onc_background_review_queue.csv`.
 - Review contact sheet: `figures/onc_background_review_queue_contact_sheet.png`.
+- Review guide: `onc_background_review_guide.md`.
 - Fill the `review_label` column with one of `reviewed_background`, `ambiguous_hard_negative`, `unlabeled_signal_suspect`, or `demoted_nonprimary_signal` before using these rows as a deployment background gate.
 - Gate future training only on rows marked `reviewed_background`; keep `ambiguous_hard_negative` rows for hard-negative experiments and keep signal rows out of clean-background metrics.
 
@@ -111,4 +112,3 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 - Source counts: `{"BioDCASE": 450, "DCLDE": 392, "ONC": 582}`
 - Primary species counts: `{"<background>": 498, "species:Bm": 300, "species:Bp": 251, "species:Mn": 100, "species:Oo": 276}`
 - Top call counts: `{"<no-call-label>": 1424}`
-
