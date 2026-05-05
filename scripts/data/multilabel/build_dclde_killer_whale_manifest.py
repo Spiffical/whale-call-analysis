@@ -42,9 +42,13 @@ PROVIDER_TO_GCS_SLUG = {
     "UAF_NGOS": "uaf",
 }
 
+DCLDE_PRIMARY_CLASS_TO_LABELS = {
+    "KW": ("Oo", "orca_call"),
+    "HW": ("Mn", ""),
+}
+
 CLASS_TO_ANALYSIS_LABEL = {
     "AB": "confounder:abiotic",
-    "HW": "confounder:humpback",
     "UndBio": "confounder:undetermined_biological",
 }
 
@@ -85,13 +89,13 @@ def _expected_mat_name(clip: str, begin_s: float, end_s: float) -> str:
     return f"{clip}_{float(begin_s):.1f}s_{float(end_s):.1f}s_trainstyle.mat"
 
 
-def _labels_json(source: str) -> str:
+def _labels_json(*, species_code: str, call_type: str, source: str) -> str:
     labels = [
         {
-            "species_code": "Oo",
-            "species": species_display_name("Oo"),
-            "call_type": "orca_call",
-            "call_type_name": call_type_display_name("orca_call"),
+            "species_code": species_code,
+            "species": species_display_name(species_code),
+            "call_type": call_type or None,
+            "call_type_name": call_type_display_name(call_type) if call_type else None,
             "source": source or "dclde_2027_killer_whales",
             "review_status": "reviewed",
             "trainable": True,
@@ -195,8 +199,13 @@ def _manifest_row(
     clip = _clip_name(provider, dataset, soundfile)
     expected_mat = _expected_mat_name(clip, begin_s, end_s)
     source_dataset = f"dclde_2027_{_safe_token(provider)}_{_safe_token(dataset)}"
-    labels_json = _labels_json(source_dataset) if is_positive else "[]"
-    source_ids = "species:Oo|call:orca_call" if is_positive else CLASS_TO_ANALYSIS_LABEL.get(class_species, f"confounder:{class_species}")
+    species_code, call_type = DCLDE_PRIMARY_CLASS_TO_LABELS.get(class_species, ("", ""))
+    labels_json = _labels_json(species_code=species_code, call_type=call_type, source=source_dataset) if is_positive else "[]"
+    positive_ids = [f"species:{species_code}"] if species_code else []
+    if call_type:
+        positive_ids.append(f"call:{call_type}")
+    source_ids = "|".join(positive_ids) if is_positive else CLASS_TO_ANALYSIS_LABEL.get(class_species, f"confounder:{class_species}")
+    canonical_label_ids = "|".join(sorted(positive_ids)) if is_positive else ""
     row = {
         "item_id": Path(expected_mat).stem,
         "clip": clip,
@@ -217,9 +226,9 @@ def _manifest_row(
         "source_soundfile": soundfile,
         "source_class_species": class_species,
         "source_label_ids": source_ids,
-        "canonical_label_ids": "call:orca_call|species:Oo" if is_positive else "",
-        "canonical_species": "Oo" if is_positive else "",
-        "canonical_call_type": "orca_call" if is_positive else "",
+        "canonical_label_ids": canonical_label_ids,
+        "canonical_species": species_code if is_positive else "",
+        "canonical_call_type": call_type if is_positive else "",
         "analysis_label_ids": "" if is_positive else source_ids,
         "dclde_ecotype": clean_text(raw.get("Ecotype")),
         "dclde_annotation_level": clean_text(raw.get("AnnotationLevel")),
@@ -232,11 +241,11 @@ def _manifest_row(
         "https_url": f"https://storage.googleapis.com/noaa-passive-bioacoustic/{gcs_object}",
         "is_background": "0" if is_positive else "1",
         "review_status": "reviewed" if is_positive else "reviewed_confounder",
-        "species": "Oo" if is_positive else "",
-        "species_code": "Oo" if is_positive else "",
-        "call_type": "orca_call" if is_positive else "",
-        "call_type_std": "orca_call" if is_positive else "",
-        "call_type_raw": "orca_call" if is_positive else "",
+        "species": species_code if is_positive else "",
+        "species_code": species_code if is_positive else "",
+        "call_type": call_type if is_positive else "",
+        "call_type_std": call_type if is_positive else "",
+        "call_type_raw": call_type if is_positive else "",
         "event_group": f"{provider}:{dataset}:{soundfile}",
         "labels_json": labels_json,
     }
@@ -252,7 +261,7 @@ def build_dclde_manifest(
     require_gcs_audio: bool = False,
     max_positive: int = 200,
     max_hard_negative: int = 200,
-    hard_negative_classes: Sequence[str] = ("HW", "UndBio", "AB"),
+    hard_negative_classes: Sequence[str] = ("UndBio", "AB"),
     mat_rel_dir: str = "mat_files",
     vocab_min_count: int = 1,
 ) -> Dict[str, Any]:
@@ -279,7 +288,7 @@ def build_dclde_manifest(
         if begin_s is None or end_s is None or end_s <= begin_s:
             skipped["invalid_time"] += 1
             continue
-        is_positive = class_species == "KW"
+        is_positive = class_species in DCLDE_PRIMARY_CLASS_TO_LABELS
         is_hard_negative = class_species in set(hard_negative_classes)
         if not is_positive and not is_hard_negative:
             skipped["unsupported_class_species"] += 1
@@ -389,7 +398,7 @@ def main() -> int:
     parser.add_argument("--require-gcs-audio", action="store_true")
     parser.add_argument("--max-positive", type=int, default=200)
     parser.add_argument("--max-hard-negative", type=int, default=200)
-    parser.add_argument("--hard-negative-classes", default="HW,UndBio,AB")
+    parser.add_argument("--hard-negative-classes", default="UndBio,AB")
     parser.add_argument("--mat-rel-dir", default="mat_files")
     parser.add_argument("--vocab-min-count", type=int, default=1)
     args = parser.parse_args()

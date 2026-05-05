@@ -201,6 +201,54 @@ class BuildMultispeciesPrepManifestTest(unittest.TestCase):
                 "ICLISTENHF6016_20250105T001000.000Z.flac",
             })
 
+    def test_preserves_raw_fin_30hz_when_bucket_is_other_fin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            annotations = root / "annotations.csv"
+            clips = root / "clip_manifest.csv"
+            out = root / "out"
+
+            _write_csv(
+                annotations,
+                [
+                    {
+                        "filename": "ICLISTENHF6016_20250105T000000.000Z.flac",
+                        "species": "Bp",
+                        "call_type_raw": "30 Hz",
+                        "call_type_bucket": "other_fin",
+                        "begin_time_s": "150.0",
+                        "end_time_s": "151.0",
+                        "verified_flag": "1",
+                    }
+                ],
+            )
+            _write_csv(clips, [])
+
+            summary = build_prep_manifest(
+                annotations_csv=annotations,
+                clip_manifest_csv=clips,
+                output_dir=out,
+                dataset_name="unit",
+                species=(),
+                include_fin=True,
+                include_nonbiological=False,
+                max_per_species=0,
+                max_fin=0,
+                max_background=0,
+                context_s=40.0,
+                edge_context_s=10.5,
+                clip_duration_s=300.0,
+                background_window_s=40.0,
+                background_windows_per_clip=1,
+            )
+
+            self.assertEqual(summary["label_counts"]["species:Bp"], 1)
+            self.assertEqual(summary["label_counts"]["call:30Hz"], 1)
+            with (out / "selected_calls.csv").open(newline="", encoding="utf-8") as handle:
+                selected = list(csv.DictReader(handle))
+            self.assertEqual(selected[0]["call_type"], "30Hz")
+            self.assertEqual(selected[0]["label_ids"], "call:30Hz|species:Bp")
+
 
 if __name__ == "__main__":
     unittest.main()

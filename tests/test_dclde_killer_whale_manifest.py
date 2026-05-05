@@ -59,6 +59,21 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
                         "AnnotationLevel": "Detection",
                         "FileOk": "TRUE",
                     },
+                    {
+                        "Soundfile": "ab.wav",
+                        "Dataset": "BarkleyCanyon",
+                        "LowFreqHz": "10",
+                        "HighFreqHz": "100",
+                        "FileBeginSec": "40.0",
+                        "FileEndSec": "45.0",
+                        "ClassSpecies": "AB",
+                        "KW": "0",
+                        "KW_certain": "NA",
+                        "Ecotype": "NA",
+                        "Provider": "ONC",
+                        "AnnotationLevel": "Detection",
+                        "FileOk": "TRUE",
+                    },
                 ],
             )
             objects.write_text(
@@ -66,6 +81,7 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
                     [
                         "dclde/2027/dclde_2027_killer_whales/onc/audio/barkleycanyon/kw.wav",
                         "dclde/2027/dclde_2027_killer_whales/onc/audio/barkleycanyon/hw.wav",
+                        "dclde/2027/dclde_2027_killer_whales/onc/audio/barkleycanyon/ab.wav",
                     ]
                 )
                 + "\n",
@@ -81,9 +97,10 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
                 max_hard_negative=10,
             )
 
-            self.assertEqual(summary["positive_count"], 1)
+            self.assertEqual(summary["positive_count"], 2)
             self.assertEqual(summary["hard_negative_count"], 1)
             self.assertEqual(summary["label_counts"]["species:Oo"], 1)
+            self.assertEqual(summary["label_counts"]["species:Mn"], 1)
             self.assertEqual(summary["label_counts"]["call:orca_call"], 1)
             self.assertEqual(summary["label_counts"]["<background>"], 1)
 
@@ -102,13 +119,20 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
             self.assertIn("/onc/audio/barkleycanyon/kw.wav", kw["https_url"])
 
             hw = [row for row in rows if row["source_class_species"] == "HW"][0]
-            self.assertEqual(hw["label_ids"], "")
-            self.assertEqual(hw["analysis_label_ids"], "confounder:humpback")
-            self.assertEqual(hw["is_background"], "1")
+            self.assertEqual(hw["label_ids"], "species:Mn")
+            self.assertEqual(hw["canonical_label_ids"], "species:Mn")
+            self.assertEqual(hw["analysis_label_ids"], "")
+            self.assertEqual(hw["canonical_species"], "Mn")
+            self.assertEqual(hw["is_background"], "0")
+
+            ab = [row for row in rows if row["source_class_species"] == "AB"][0]
+            self.assertEqual(ab["label_ids"], "")
+            self.assertEqual(ab["analysis_label_ids"], "confounder:abiotic")
+            self.assertEqual(ab["is_background"], "1")
 
             with (out / "required_audio_sources.csv").open(newline="", encoding="utf-8") as handle:
                 required = list(csv.DictReader(handle))
-            self.assertEqual(len(required), 2)
+            self.assertEqual(len(required), 3)
             self.assertTrue(required[0]["clip"].startswith("dclde_ONC_BarkleyCanyon__"))
 
     def test_source_balanced_caps_and_missing_audio_filter(self):

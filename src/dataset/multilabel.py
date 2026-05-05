@@ -461,6 +461,9 @@ def annotation_species_code(row: Dict[str, Any]) -> str:
 
 def annotation_call_type(row: Dict[str, Any]) -> str:
     species = annotation_species_code(row)
+    raw_call = normalize_call_type(row.get("call_type_raw"), species)
+    if raw_call == "30Hz":
+        return raw_call
     return normalize_call_type(row.get("call_type_std") or row.get("call_type_bucket") or row.get("call_type_raw"), species)
 
 
