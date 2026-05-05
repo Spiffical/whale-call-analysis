@@ -103,6 +103,8 @@ class BuildMultispeciesPrepManifestTest(unittest.TestCase):
             self.assertEqual(len(background), 1)
             self.assertEqual(background[0]["begin_s"], "130.000000")
             self.assertEqual(background[0]["label_ids"], "")
+            self.assertEqual(background[0]["review_status"], "pure_negative_candidate")
+            self.assertEqual(background[0]["context_tags"], "pure_negative")
 
             required = (out / "required_audio_filenames.txt").read_text(encoding="utf-8").splitlines()
             self.assertIn("ICLISTENHF6016_20250105T000000.000Z.flac", required)

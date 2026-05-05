@@ -426,9 +426,9 @@ def save_background_score_plot(metrics_by_run: Mapping[str, Dict[str, Any]], out
         ]
         values = [max_primary(row)[1] for row in rows]
         ax.hist(values, bins=bins, alpha=0.45, label=f"{run_name} (n={len(values)})")
-    ax.set_xlabel("Max primary-species score on ONC background rows")
+    ax.set_xlabel("Max primary-species score on ONC no-primary rows")
     ax.set_ylabel("Row count")
-    ax.set_title("External-data runs raise whale scores on ONC background")
+    ax.set_title("External-data runs raise whale scores on ONC no-primary rows")
     ax.legend(fontsize=8)
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
@@ -514,8 +514,8 @@ def save_onc_background_top_label_plot(metrics_by_run: Mapping[str, Dict[str, An
         bottoms = [bottom + value for bottom, value in zip(bottoms, values)]
     ax.set_xticks(x)
     ax.set_xticklabels(run_names, rotation=22, ha="right")
-    ax.set_ylabel("ONC background rows crossing a primary threshold")
-    ax.set_title("Which species scores dominate ONC background false positives")
+    ax.set_ylabel("ONC no-primary rows crossing a primary threshold")
+    ax.set_title("Which species scores dominate ONC no-primary false positives")
     ax.legend(fontsize=8)
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
@@ -614,7 +614,7 @@ def score_quantile_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) -> List[Di
             source_rows = [row for row in metrics["prediction_rows"] if source_group(row.get("source_dataset", "")) == source]
             subsets = {
                 "all_rows": source_rows,
-                "background_rows": [row for row in source_rows if not (label_set(row) & set(PRIMARY_SPECIES))],
+                "no_primary_rows": [row for row in source_rows if not (label_set(row) & set(PRIMARY_SPECIES))],
             }
             for subset_name, subset_rows in subsets.items():
                 max_values = [max_primary(row)[1] for row in subset_rows]
@@ -669,7 +669,7 @@ def onc_background_top_label_rows(metrics_by_run: Mapping[str, Dict[str, Any]]) 
                     "run": run_name,
                     "top_primary_label": top_label,
                     "count": count,
-                    "background_rows": total_background,
+                    "no_primary_rows": total_background,
                     "any_primary_fp": any_fp,
                     "share_of_background": format_float(count / total_background if total_background else None),
                 }
@@ -867,7 +867,7 @@ def write_report(
         "## What Looks Wrong",
         "",
         "- E06 added DCLDE killer-whale positives and hard negatives, but ONC Oo precision dropped instead of improving. That means the DCLDE examples are not teaching the model an ONC-compatible killer-whale boundary.",
-        "- The biggest deployment problem is calibration on rows without primary species labels. Some of these are true reviewed background, but others are demoted OD or other known signal and should not be interpreted as silent background.",
+        "- The biggest deployment problem is calibration on rows without primary species labels. Some of these are true reviewed background, but others are demoted OD, known signal, or pure-negative candidates that still need visual audit; they should not all be interpreted as silent background.",
         "- BioDCASE appears to add useful Bm/Bp signal and raises species recall, but it also makes ONC background look whale-like to the model. That is why its macro F1 can look acceptable while deployment risk increases.",
         "- DCLDE cap200 did not repair ONC Oo. The model learned extra Oo sensitivity, but the DCLDE Oo boundary does not transfer cleanly to ONC Oo versus ONC background.",
         "- Mn and Oo are the fragile labels. Their recall can look acceptable, but precision collapses because the model starts assigning these labels to ONC background or other-species rows.",
@@ -876,7 +876,7 @@ def write_report(
         "## Dataset/Training Hypotheses",
         "",
         "- Source mismatch: BioDCASE and DCLDE have different hydrophones, annotation styles, event durations, frequency ranges, and background scenes than the ONC held-out target.",
-        "- Background definition mismatch: DCLDE hard negatives are selected confounders, while ONC background includes local noise and ambiguous low-frequency events. A negative from one source is not automatically a good negative for another.",
+        "- Background definition mismatch: DCLDE hard negatives are selected confounders, while ONC pure-negative candidates include local noise and possibly unlabeled low-frequency events. A negative from one source or workbook bucket is not automatically a clean negative for another.",
         "- Label granularity mismatch: ONC OD was demoted correctly, but DCLDE adds explicit Oo. That helps ontology, yet it changes the class boundary unless ONC-like Oo/background examples anchor it.",
         "- Threshold transfer: thresholds optimized on the mixed validation set do not necessarily produce good ONC deployment thresholds.",
         "- Pos-weight and source imbalance likely encourage sensitivity over specificity, which worsens background false positives. The next ResNet ablation should only happen if it directly tests ONC-specific calibration or source balancing.",
@@ -991,6 +991,12 @@ def main() -> int:
             evaluation_bucket="demoted_nonprimary_signal",
             limit=80,
         )
+        candidate_fp = false_positive_rows(
+            metrics["prediction_rows"],
+            metrics["thresholds"],
+            evaluation_bucket="candidate_background",
+            limit=80,
+        )
         write_csv_rows(
             out_dir / "tables" / f"{safe}_onc_reviewed_background_false_positives.csv",
             reviewed_fp,
@@ -999,9 +1005,14 @@ def main() -> int:
             out_dir / "tables" / f"{safe}_onc_demoted_nonprimary_signal_false_positives.csv",
             demoted_fp,
         )
+        write_csv_rows(
+            out_dir / "tables" / f"{safe}_onc_candidate_background_false_positives.csv",
+            candidate_fp,
+        )
         for bucket_name, bucket_rows in (
             ("reviewed_background", reviewed_fp),
             ("demoted_nonprimary_signal", demoted_fp),
+            ("candidate_background", candidate_fp),
         ):
             out_path = out_dir / "figures" / f"{safe}_onc_{bucket_name}_fp_contact_sheet.png"
             if make_prediction_row_contact_sheet(

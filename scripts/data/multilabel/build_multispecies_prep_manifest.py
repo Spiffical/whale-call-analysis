@@ -213,7 +213,7 @@ def _background_manifest_row(
         "duration_s": f"{(end_s - begin_s):.6f}",
         "expected_mat_name": _expected_mat_name(filename, begin_s, end_s),
         "source_dataset": dataset_name,
-        "review_status": "reviewed_background",
+        "review_status": "pure_negative_candidate",
         "species": "",
         "call_type": "",
         "is_background": "1",

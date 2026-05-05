@@ -125,7 +125,24 @@ class TestMultiLabelHelpers(unittest.TestCase):
         )
         self.assertEqual(
             evaluation_bucket_from_row({"target_label_ids": "", "is_background": "1"}),
+            "candidate_background",
+        )
+        self.assertEqual(
+            evaluation_bucket_from_row(
+                {"target_label_ids": "", "is_background": "1", "review_status": "reviewed_background"}
+            ),
             "reviewed_background",
+        )
+        self.assertEqual(
+            evaluation_bucket_from_row(
+                {
+                    "target_label_ids": "",
+                    "is_background": "1",
+                    "review_status": "reviewed_background",
+                    "context_tags": "pure_negative",
+                }
+            ),
+            "candidate_background",
         )
         self.assertEqual(evaluation_bucket_from_row({"target_label_ids": ""}), "empty_unverified")
 

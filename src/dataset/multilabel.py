@@ -430,6 +430,8 @@ def evaluation_bucket_from_row(
     source_ids = set(split_pipe(row.get("source_label_ids")))
     analysis_ids = set(split_pipe(row.get("analysis_label_ids")))
     known_ids = target_ids | canonical_ids | source_ids | analysis_ids
+    review = clean_text(row.get("review_status")).lower()
+    context_tags = {tag.lower() for tag in split_pipe(row.get("context_tags"))}
 
     if (target_ids | canonical_ids | source_ids) & primary:
         return "primary_species_positive"
@@ -439,8 +441,17 @@ def evaluation_bucket_from_row(
         return "known_nonprimary_signal"
     if any(label.startswith("call:") for label in known_ids):
         return "known_call_signal_no_primary"
+    if (
+        "candidate" in review
+        or "pure_negative" in review
+        or "pure_negative" in context_tags
+        or "pure-negative" in context_tags
+    ):
+        return "candidate_background"
     if clean_text(row.get("is_background")).lower() in TRUTHY_VALUES:
-        return "reviewed_background"
+        if review in {"reviewed_background", "reviewed background", "reviewed_negative", "reviewed negative"}:
+            return "reviewed_background"
+        return "candidate_background"
     return "empty_unverified"
 
 
