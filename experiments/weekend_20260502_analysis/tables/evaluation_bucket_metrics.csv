@@ -1,0 +1,28 @@
+run,source,evaluation_bucket,row_count,any_primary_fp,any_primary_fp_rate
+E01 ONC control,ONC,primary_species_positive,58,0,0.0000
+E01 ONC control,ONC,candidate_background,15,8,0.5333
+E01 ONC control,ONC,demoted_nonprimary_signal,14,4,0.2857
+E04 ONC+BioDCASE species+call,BioDCASE,primary_species_positive,54,0,0.0000
+E04 ONC+BioDCASE species+call,BioDCASE,reviewed_background,13,1,0.0769
+E04 ONC+BioDCASE species+call,ONC,primary_species_positive,58,0,0.0000
+E04 ONC+BioDCASE species+call,ONC,candidate_background,15,10,0.6667
+E04 ONC+BioDCASE species+call,ONC,demoted_nonprimary_signal,14,10,0.7143
+E06 ONC+BioDCASE+DCLDE,BioDCASE,primary_species_positive,54,0,0.0000
+E06 ONC+BioDCASE+DCLDE,BioDCASE,reviewed_background,13,1,0.0769
+E06 ONC+BioDCASE+DCLDE,DCLDE,primary_species_positive,30,0,0.0000
+E06 ONC+BioDCASE+DCLDE,DCLDE,candidate_background,29,25,0.8621
+E06 ONC+BioDCASE+DCLDE,ONC,primary_species_positive,58,0,0.0000
+E06 ONC+BioDCASE+DCLDE,ONC,candidate_background,15,11,0.7333
+E06 ONC+BioDCASE+DCLDE,ONC,demoted_nonprimary_signal,14,10,0.7143
+E08 ONC+DCLDE species-only,DCLDE,primary_species_positive,30,0,0.0000
+E08 ONC+DCLDE species-only,DCLDE,candidate_background,29,15,0.5172
+E08 ONC+DCLDE species-only,ONC,primary_species_positive,58,0,0.0000
+E08 ONC+DCLDE species-only,ONC,candidate_background,15,9,0.6000
+E08 ONC+DCLDE species-only,ONC,demoted_nonprimary_signal,14,6,0.4286
+E09 ONC+BioDCASE+DCLDE species-only,BioDCASE,primary_species_positive,54,0,0.0000
+E09 ONC+BioDCASE+DCLDE species-only,BioDCASE,reviewed_background,13,1,0.0769
+E09 ONC+BioDCASE+DCLDE species-only,DCLDE,primary_species_positive,30,0,0.0000
+E09 ONC+BioDCASE+DCLDE species-only,DCLDE,candidate_background,29,21,0.7241
+E09 ONC+BioDCASE+DCLDE species-only,ONC,primary_species_positive,58,0,0.0000
+E09 ONC+BioDCASE+DCLDE species-only,ONC,candidate_background,15,14,0.9333
+E09 ONC+BioDCASE+DCLDE species-only,ONC,demoted_nonprimary_signal,14,10,0.7143

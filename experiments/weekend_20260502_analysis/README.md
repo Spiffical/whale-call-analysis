@@ -8,18 +8,18 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 
 ## ONC-Gated Metrics
 
-| run | ONC macro F1 | ONC micro F1 | ONC background FP | Bm F1 | Bp F1 | Mn F1 | Oo F1 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| E01 ONC control | 0.6372 | 0.6207 | 0.4138 | 0.8889 | 0.5957 | 0.5455 | 0.5185 |
-| E04 ONC+BioDCASE species+call | 0.6549 | 0.6289 | 0.6897 | 0.9333 | 0.6316 | 0.5283 | 0.5263 |
-| E06 ONC+BioDCASE+DCLDE | 0.5944 | 0.5660 | 0.7241 | 0.9286 | 0.5909 | 0.4898 | 0.3684 |
-| E08 ONC+DCLDE species-only | 0.5976 | 0.5890 | 0.5172 | 0.9032 | 0.5789 | 0.5333 | 0.3750 |
-| E09 ONC+BioDCASE+DCLDE species-only | 0.6386 | 0.6118 | 0.8276 | 0.9333 | 0.6522 | 0.5600 | 0.4091 |
+| run | ONC macro F1 | ONC micro F1 | ONC reviewed bg FP | ONC no-primary FP | Bm F1 | Bp F1 | Mn F1 | Oo F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E01 ONC control | 0.6372 | 0.6207 | NA | 0.4138 | 0.8889 | 0.5957 | 0.5455 | 0.5185 |
+| E04 ONC+BioDCASE species+call | 0.6549 | 0.6289 | NA | 0.6897 | 0.9333 | 0.6316 | 0.5283 | 0.5263 |
+| E06 ONC+BioDCASE+DCLDE | 0.5944 | 0.5660 | NA | 0.7241 | 0.9286 | 0.5909 | 0.4898 | 0.3684 |
+| E08 ONC+DCLDE species-only | 0.5976 | 0.5890 | NA | 0.5172 | 0.9032 | 0.5789 | 0.5333 | 0.3750 |
+| E09 ONC+BioDCASE+DCLDE species-only | 0.6386 | 0.6118 | NA | 0.8276 | 0.9333 | 0.6522 | 0.5600 | 0.4091 |
 
 ## What Looks Wrong
 
 - E06 added DCLDE killer-whale positives and hard negatives, but ONC Oo precision dropped instead of improving. That means the DCLDE examples are not teaching the model an ONC-compatible killer-whale boundary.
-- The biggest deployment problem is background calibration. The combined runs push many ONC background windows over at least one species threshold, and the species-only E09 run makes this worse rather than better.
+- The biggest deployment problem is calibration on rows without primary species labels. Some of these are true reviewed background, but others are demoted OD, known signal, or pure-negative candidates that still need visual audit; they should not all be interpreted as silent background.
 - BioDCASE appears to add useful Bm/Bp signal and raises species recall, but it also makes ONC background look whale-like to the model. That is why its macro F1 can look acceptable while deployment risk increases.
 - DCLDE cap200 did not repair ONC Oo. The model learned extra Oo sensitivity, but the DCLDE Oo boundary does not transfer cleanly to ONC Oo versus ONC background.
 - Mn and Oo are the fragile labels. Their recall can look acceptable, but precision collapses because the model starts assigning these labels to ONC background or other-species rows.
@@ -28,7 +28,7 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 ## Dataset/Training Hypotheses
 
 - Source mismatch: BioDCASE and DCLDE have different hydrophones, annotation styles, event durations, frequency ranges, and background scenes than the ONC held-out target.
-- Background definition mismatch: DCLDE hard negatives are selected confounders, while ONC background includes local noise and ambiguous low-frequency events. A negative from one source is not automatically a good negative for another.
+- Background definition mismatch: DCLDE hard negatives are selected confounders, while ONC pure-negative candidates include local noise and possibly unlabeled low-frequency events. A negative from one source or workbook bucket is not automatically a clean negative for another.
 - Label granularity mismatch: ONC OD was demoted correctly, but DCLDE adds explicit Oo. That helps ontology, yet it changes the class boundary unless ONC-like Oo/background examples anchor it.
 - Threshold transfer: thresholds optimized on the mixed validation set do not necessarily produce good ONC deployment thresholds.
 - Pos-weight and source imbalance likely encourage sensitivity over specificity, which worsens background false positives. The next ResNet ablation should only happen if it directly tests ONC-specific calibration or source balancing.
@@ -42,6 +42,16 @@ The species-only E08/E09 retries show that call-type complexity was not the only
 - ![onc_background_false_positive_top_labels](figures/onc_background_false_positive_top_labels.png)
 - ![source_background_score_distributions](figures/source_background_score_distributions.png)
 - ![manifest_source_composition](figures/manifest_source_composition.png)
+- ![e01_onc_control_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e01_onc_control_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
+- ![e01_onc_control_onc_candidate_background_fp_contact_sheet](figures/e01_onc_control_onc_candidate_background_fp_contact_sheet.png)
+- ![e04_oncplusbiodcase_speciespluscall_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e04_oncplusbiodcase_speciespluscall_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
+- ![e04_oncplusbiodcase_speciespluscall_onc_candidate_background_fp_contact_sheet](figures/e04_oncplusbiodcase_speciespluscall_onc_candidate_background_fp_contact_sheet.png)
+- ![e06_oncplusbiodcaseplusdclde_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e06_oncplusbiodcaseplusdclde_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
+- ![e06_oncplusbiodcaseplusdclde_onc_candidate_background_fp_contact_sheet](figures/e06_oncplusbiodcaseplusdclde_onc_candidate_background_fp_contact_sheet.png)
+- ![e08_oncplusdclde_species-only_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e08_oncplusdclde_species-only_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
+- ![e08_oncplusdclde_species-only_onc_candidate_background_fp_contact_sheet](figures/e08_oncplusdclde_species-only_onc_candidate_background_fp_contact_sheet.png)
+- ![e09_oncplusbiodcaseplusdclde_species-only_onc_demoted_nonprimary_signal_fp_contact_sheet](figures/e09_oncplusbiodcaseplusdclde_species-only_onc_demoted_nonprimary_signal_fp_contact_sheet.png)
+- ![e09_oncplusbiodcaseplusdclde_species-only_onc_candidate_background_fp_contact_sheet](figures/e09_oncplusbiodcaseplusdclde_species-only_onc_candidate_background_fp_contact_sheet.png)
 - ![e08_oncplusdclde_species-only_example_images_contact_sheet](figures/e08_oncplusdclde_species-only_example_images_contact_sheet.png)
 - ![e09_oncplusbiodcaseplusdclde_species-only_example_images_contact_sheet](figures/e09_oncplusbiodcaseplusdclde_species-only_example_images_contact_sheet.png)
 

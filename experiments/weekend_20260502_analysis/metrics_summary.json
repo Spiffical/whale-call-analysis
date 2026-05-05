@@ -1,13 +1,30 @@
 {
   "E01 ONC control": {
     "all": {
-      "background_any_primary_fp": 12,
-      "background_any_primary_fp_rate": 0.41379310344827586,
-      "background_row_count": 29,
+      "background_any_primary_fp": 0,
+      "background_any_primary_fp_rate": null,
+      "background_row_count": 0,
+      "evaluation_bucket_any_primary_fp_counts": {
+        "candidate_background": 8,
+        "demoted_nonprimary_signal": 4
+      },
+      "evaluation_bucket_any_primary_fp_rates": {
+        "candidate_background": 0.5333333333333333,
+        "demoted_nonprimary_signal": 0.2857142857142857,
+        "primary_species_positive": 0.0
+      },
+      "evaluation_bucket_counts": {
+        "candidate_background": 15,
+        "demoted_nonprimary_signal": 14,
+        "primary_species_positive": 58
+      },
       "macro_f1": 0.6371516584282542,
       "micro_f1": 0.6206896551724138,
       "micro_precision": 0.5172413793103449,
       "micro_recall": 0.7758620689655172,
+      "no_primary_any_primary_fp": 12,
+      "no_primary_any_primary_fp_rate": 0.41379310344827586,
+      "no_primary_row_count": 29,
       "row_count": 87
     },
     "all_per_label": {
@@ -54,13 +71,30 @@
     },
     "by_source": {
       "ONC": {
-        "background_any_primary_fp": 12,
-        "background_any_primary_fp_rate": 0.41379310344827586,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 8,
+          "demoted_nonprimary_signal": 4
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.5333333333333333,
+          "demoted_nonprimary_signal": 0.2857142857142857,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 15,
+          "demoted_nonprimary_signal": 14,
+          "primary_species_positive": 58
+        },
         "macro_f1": 0.6371516584282542,
         "micro_f1": 0.6206896551724138,
         "micro_precision": 0.5172413793103449,
         "micro_recall": 0.7758620689655172,
+        "no_primary_any_primary_fp": 12,
+        "no_primary_any_primary_fp_rate": 0.41379310344827586,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.888888888888889,
@@ -109,13 +143,33 @@
   },
   "E04 ONC+BioDCASE species+call": {
     "all": {
-      "background_any_primary_fp": 21,
-      "background_any_primary_fp_rate": 0.5,
-      "background_row_count": 42,
+      "background_any_primary_fp": 1,
+      "background_any_primary_fp_rate": 0.07692307692307693,
+      "background_row_count": 13,
+      "evaluation_bucket_any_primary_fp_counts": {
+        "candidate_background": 10,
+        "demoted_nonprimary_signal": 10,
+        "reviewed_background": 1
+      },
+      "evaluation_bucket_any_primary_fp_rates": {
+        "candidate_background": 0.6666666666666666,
+        "demoted_nonprimary_signal": 0.7142857142857143,
+        "primary_species_positive": 0.0,
+        "reviewed_background": 0.07692307692307693
+      },
+      "evaluation_bucket_counts": {
+        "candidate_background": 15,
+        "demoted_nonprimary_signal": 14,
+        "primary_species_positive": 112,
+        "reviewed_background": 13
+      },
       "macro_f1": 0.6718199547212232,
       "micro_f1": 0.7259786476868327,
       "micro_precision": 0.6035502958579881,
       "micro_recall": 0.9107142857142857,
+      "no_primary_any_primary_fp": 21,
+      "no_primary_any_primary_fp_rate": 0.5,
+      "no_primary_row_count": 42,
       "row_count": 154
     },
     "all_per_label": {
@@ -165,10 +219,24 @@
         "background_any_primary_fp": 1,
         "background_any_primary_fp_rate": 0.07692307692307693,
         "background_row_count": 13,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "reviewed_background": 1
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "primary_species_positive": 0.0,
+          "reviewed_background": 0.07692307692307693
+        },
+        "evaluation_bucket_counts": {
+          "primary_species_positive": 54,
+          "reviewed_background": 13
+        },
         "macro_f1": 0.424192212096106,
         "micro_f1": 0.8524590163934426,
         "micro_precision": 0.7647058823529411,
         "micro_recall": 0.9629629629629629,
+        "no_primary_any_primary_fp": 1,
+        "no_primary_any_primary_fp_rate": 0.07692307692307693,
+        "no_primary_row_count": 13,
         "per_label": {
           "species:Bm": {
             "f1": 0.8732394366197184,
@@ -214,13 +282,30 @@
         "row_count": 67
       },
       "ONC": {
-        "background_any_primary_fp": 20,
-        "background_any_primary_fp_rate": 0.6896551724137931,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 10,
+          "demoted_nonprimary_signal": 10
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.6666666666666666,
+          "demoted_nonprimary_signal": 0.7142857142857143,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 15,
+          "demoted_nonprimary_signal": 14,
+          "primary_species_positive": 58
+        },
         "macro_f1": 0.6548824892419728,
         "micro_f1": 0.6289308176100629,
         "micro_precision": 0.49504950495049505,
         "micro_recall": 0.8620689655172413,
+        "no_primary_any_primary_fp": 20,
+        "no_primary_any_primary_fp_rate": 0.6896551724137931,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.9333333333333333,
@@ -269,13 +354,33 @@
   },
   "E06 ONC+BioDCASE+DCLDE": {
     "all": {
-      "background_any_primary_fp": 47,
-      "background_any_primary_fp_rate": 0.6619718309859155,
-      "background_row_count": 71,
+      "background_any_primary_fp": 1,
+      "background_any_primary_fp_rate": 0.07692307692307693,
+      "background_row_count": 13,
+      "evaluation_bucket_any_primary_fp_counts": {
+        "candidate_background": 36,
+        "demoted_nonprimary_signal": 10,
+        "reviewed_background": 1
+      },
+      "evaluation_bucket_any_primary_fp_rates": {
+        "candidate_background": 0.8181818181818182,
+        "demoted_nonprimary_signal": 0.7142857142857143,
+        "primary_species_positive": 0.0,
+        "reviewed_background": 0.07692307692307693
+      },
+      "evaluation_bucket_counts": {
+        "candidate_background": 44,
+        "demoted_nonprimary_signal": 14,
+        "primary_species_positive": 142,
+        "reviewed_background": 13
+      },
       "macro_f1": 0.6623554123403748,
       "micro_f1": 0.6740947075208914,
       "micro_precision": 0.5576036866359447,
       "micro_recall": 0.852112676056338,
+      "no_primary_any_primary_fp": 47,
+      "no_primary_any_primary_fp_rate": 0.6619718309859155,
+      "no_primary_row_count": 71,
       "row_count": 213
     },
     "all_per_label": {
@@ -325,10 +430,24 @@
         "background_any_primary_fp": 1,
         "background_any_primary_fp_rate": 0.07692307692307693,
         "background_row_count": 13,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "reviewed_background": 1
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "primary_species_positive": 0.0,
+          "reviewed_background": 0.07692307692307693
+        },
+        "evaluation_bucket_counts": {
+          "primary_species_positive": 54,
+          "reviewed_background": 13
+        },
         "macro_f1": 0.41774193548387095,
         "micro_f1": 0.817391304347826,
         "micro_precision": 0.7704918032786885,
         "micro_recall": 0.8703703703703703,
+        "no_primary_any_primary_fp": 1,
+        "no_primary_any_primary_fp_rate": 0.07692307692307693,
+        "no_primary_row_count": 13,
         "per_label": {
           "species:Bm": {
             "f1": 0.8709677419354839,
@@ -374,13 +493,27 @@
         "row_count": 67
       },
       "DCLDE": {
-        "background_any_primary_fp": 25,
-        "background_any_primary_fp_rate": 0.8620689655172413,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 25
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.8620689655172413,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 29,
+          "primary_species_positive": 30
+        },
         "macro_f1": 0.17261904761904762,
         "micro_f1": 0.6823529411764705,
         "micro_precision": 0.5272727272727272,
         "micro_recall": 0.9666666666666667,
+        "no_primary_any_primary_fp": 25,
+        "no_primary_any_primary_fp_rate": 0.8620689655172413,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.0,
@@ -426,13 +559,30 @@
         "row_count": 59
       },
       "ONC": {
-        "background_any_primary_fp": 21,
-        "background_any_primary_fp_rate": 0.7241379310344828,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 11,
+          "demoted_nonprimary_signal": 10
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.7333333333333333,
+          "demoted_nonprimary_signal": 0.7142857142857143,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 15,
+          "demoted_nonprimary_signal": 14,
+          "primary_species_positive": 58
+        },
         "macro_f1": 0.5944243726198613,
         "micro_f1": 0.5660377358490566,
         "micro_precision": 0.44554455445544555,
         "micro_recall": 0.7758620689655172,
+        "no_primary_any_primary_fp": 21,
+        "no_primary_any_primary_fp_rate": 0.7241379310344828,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.9285714285714286,
@@ -481,13 +631,30 @@
   },
   "E08 ONC+DCLDE species-only": {
     "all": {
-      "background_any_primary_fp": 30,
-      "background_any_primary_fp_rate": 0.5172413793103449,
-      "background_row_count": 58,
+      "background_any_primary_fp": 0,
+      "background_any_primary_fp_rate": null,
+      "background_row_count": 0,
+      "evaluation_bucket_any_primary_fp_counts": {
+        "candidate_background": 24,
+        "demoted_nonprimary_signal": 6
+      },
+      "evaluation_bucket_any_primary_fp_rates": {
+        "candidate_background": 0.5454545454545454,
+        "demoted_nonprimary_signal": 0.42857142857142855,
+        "primary_species_positive": 0.0
+      },
+      "evaluation_bucket_counts": {
+        "candidate_background": 44,
+        "demoted_nonprimary_signal": 14,
+        "primary_species_positive": 88
+      },
       "macro_f1": 0.6657813889562616,
       "micro_f1": 0.6484018264840183,
       "micro_precision": 0.5419847328244275,
       "micro_recall": 0.8068181818181818,
+      "no_primary_any_primary_fp": 30,
+      "no_primary_any_primary_fp_rate": 0.5172413793103449,
+      "no_primary_row_count": 58,
       "row_count": 146
     },
     "all_per_label": {
@@ -534,13 +701,27 @@
     },
     "by_source": {
       "DCLDE": {
-        "background_any_primary_fp": 15,
-        "background_any_primary_fp_rate": 0.5172413793103449,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 15
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.5172413793103449,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 29,
+          "primary_species_positive": 30
+        },
         "macro_f1": 0.19178082191780824,
         "micro_f1": 0.767123287671233,
         "micro_precision": 0.6511627906976745,
         "micro_recall": 0.9333333333333333,
+        "no_primary_any_primary_fp": 15,
+        "no_primary_any_primary_fp_rate": 0.5172413793103449,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.0,
@@ -586,13 +767,30 @@
         "row_count": 59
       },
       "ONC": {
-        "background_any_primary_fp": 15,
-        "background_any_primary_fp_rate": 0.5172413793103449,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 9,
+          "demoted_nonprimary_signal": 6
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.6,
+          "demoted_nonprimary_signal": 0.42857142857142855,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 15,
+          "demoted_nonprimary_signal": 14,
+          "primary_species_positive": 58
+        },
         "macro_f1": 0.5976266270514997,
         "micro_f1": 0.5890410958904111,
         "micro_precision": 0.48863636363636365,
         "micro_recall": 0.7413793103448276,
+        "no_primary_any_primary_fp": 15,
+        "no_primary_any_primary_fp_rate": 0.5172413793103449,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.9032258064516129,
@@ -641,13 +839,33 @@
   },
   "E09 ONC+BioDCASE+DCLDE species-only": {
     "all": {
-      "background_any_primary_fp": 46,
-      "background_any_primary_fp_rate": 0.647887323943662,
-      "background_row_count": 71,
+      "background_any_primary_fp": 1,
+      "background_any_primary_fp_rate": 0.07692307692307693,
+      "background_row_count": 13,
+      "evaluation_bucket_any_primary_fp_counts": {
+        "candidate_background": 35,
+        "demoted_nonprimary_signal": 10,
+        "reviewed_background": 1
+      },
+      "evaluation_bucket_any_primary_fp_rates": {
+        "candidate_background": 0.7954545454545454,
+        "demoted_nonprimary_signal": 0.7142857142857143,
+        "primary_species_positive": 0.0,
+        "reviewed_background": 0.07692307692307693
+      },
+      "evaluation_bucket_counts": {
+        "candidate_background": 44,
+        "demoted_nonprimary_signal": 14,
+        "primary_species_positive": 142,
+        "reviewed_background": 13
+      },
       "macro_f1": 0.6700808119674073,
       "micro_f1": 0.6739130434782609,
       "micro_precision": 0.5486725663716814,
       "micro_recall": 0.8732394366197183,
+      "no_primary_any_primary_fp": 46,
+      "no_primary_any_primary_fp_rate": 0.647887323943662,
+      "no_primary_row_count": 71,
       "row_count": 213
     },
     "all_per_label": {
@@ -697,10 +915,24 @@
         "background_any_primary_fp": 1,
         "background_any_primary_fp_rate": 0.07692307692307693,
         "background_row_count": 13,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "reviewed_background": 1
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "primary_species_positive": 0.0,
+          "reviewed_background": 0.07692307692307693
+        },
+        "evaluation_bucket_counts": {
+          "primary_species_positive": 54,
+          "reviewed_background": 13
+        },
         "macro_f1": 0.3994682618810236,
         "micro_f1": 0.7586206896551724,
         "micro_precision": 0.7096774193548387,
         "micro_recall": 0.8148148148148148,
+        "no_primary_any_primary_fp": 1,
+        "no_primary_any_primary_fp_rate": 0.07692307692307693,
+        "no_primary_row_count": 13,
         "per_label": {
           "species:Bm": {
             "f1": 0.8135593220338982,
@@ -746,13 +978,27 @@
         "row_count": 67
       },
       "DCLDE": {
-        "background_any_primary_fp": 21,
-        "background_any_primary_fp_rate": 0.7241379310344828,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 21
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.7241379310344828,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 29,
+          "primary_species_positive": 30
+        },
         "macro_f1": 0.17721518987341772,
         "micro_f1": 0.6829268292682926,
         "micro_precision": 0.5384615384615384,
         "micro_recall": 0.9333333333333333,
+        "no_primary_any_primary_fp": 21,
+        "no_primary_any_primary_fp_rate": 0.7241379310344828,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.0,
@@ -798,13 +1044,30 @@
         "row_count": 59
       },
       "ONC": {
-        "background_any_primary_fp": 24,
-        "background_any_primary_fp_rate": 0.8275862068965517,
-        "background_row_count": 29,
+        "background_any_primary_fp": 0,
+        "background_any_primary_fp_rate": null,
+        "background_row_count": 0,
+        "evaluation_bucket_any_primary_fp_counts": {
+          "candidate_background": 14,
+          "demoted_nonprimary_signal": 10
+        },
+        "evaluation_bucket_any_primary_fp_rates": {
+          "candidate_background": 0.9333333333333333,
+          "demoted_nonprimary_signal": 0.7142857142857143,
+          "primary_species_positive": 0.0
+        },
+        "evaluation_bucket_counts": {
+          "candidate_background": 15,
+          "demoted_nonprimary_signal": 14,
+          "primary_species_positive": 58
+        },
         "macro_f1": 0.6386495388669302,
         "micro_f1": 0.611764705882353,
         "micro_precision": 0.4642857142857143,
         "micro_recall": 0.896551724137931,
+        "no_primary_any_primary_fp": 24,
+        "no_primary_any_primary_fp_rate": 0.8275862068965517,
+        "no_primary_row_count": 29,
         "per_label": {
           "species:Bm": {
             "f1": 0.9333333333333333,

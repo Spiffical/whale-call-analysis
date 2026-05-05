@@ -1,4 +1,4 @@
-run,top_primary_label,count,background_rows,any_primary_fp,share_of_background
+run,top_primary_label,count,no_primary_rows,any_primary_fp,share_of_background
 E01 ONC control,<below_threshold>,17,29,12,0.5862
 E01 ONC control,species:Oo,8,29,12,0.2759
 E01 ONC control,species:Mn,3,29,12,0.1034
