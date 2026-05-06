@@ -78,6 +78,10 @@ def _load_audio_spectrogram(row: Mapping[str, Any]) -> Optional[Any]:
 
     audio_path = Path(clean_text(row.get("source_audio") or row.get("filename") or row.get("clip")))
     if not audio_path.exists():
+        staged = audio_path.parent / "raw_audio" / audio_path.name
+        if staged.exists():
+            audio_path = staged
+    if not audio_path.exists():
         return None
     begin_s = _float_or_none(row.get("begin_s") or row.get("window_start_s"))
     end_s = _float_or_none(row.get("end_s"))
