@@ -1,0 +1,18 @@
+{
+  "ambiguous_rendered_count": 24,
+  "ambiguous_sample_count": 24,
+  "decision": "visual_review_required_before_training",
+  "primary_gap_rendered_count": 32,
+  "primary_gap_sample_count": 32,
+  "queue_bucket_counts": {
+    "ambiguous_hard_negative": 100,
+    "primary_adjacent_gap": 825
+  },
+  "queue_csv": "/project/6070467/merileo/data/finwhales/final2025_resnet_20260423/multispecies_calltype_experiments/repo/experiments/weekend_20260502_analysis/negative_manifest_dry_run/tables/dry_run_onc_negative_review_queue.csv",
+  "queue_split_counts": {
+    "test": 138,
+    "train": 648,
+    "val": 139
+  },
+  "row_count": 925
+}
