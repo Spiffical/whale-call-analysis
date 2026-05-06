@@ -178,6 +178,70 @@ class AutoscreenedSpeciesTrainingManifestTest(unittest.TestCase):
             self.assertEqual(len(excluded), 1)
             self.assertEqual(excluded[0]["auto_screen_decision"], "excluded_obvious_signal")
 
+    def test_resolves_dclde_negative_mat_paths_with_source_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            onc = root / "onc.csv"
+            dclde = root / "dclde.csv"
+            neg = root / "neg.csv"
+            dclde_root = root / "dclde_prep"
+            _write_csv(
+                onc,
+                [
+                    {
+                        "item_id": "onc-pos",
+                        "mat_path": "/tmp/onc.mat",
+                        "source_audio": "ICLISTENHF6016_20250101T000000.000Z.flac",
+                        "label_ids": "species:Bp",
+                        "split": "train",
+                    }
+                ],
+            )
+            _write_csv(
+                dclde,
+                [
+                    {
+                        "item_id": "kw-pos",
+                        "mat_path": "mat_files/kw.mat",
+                        "source_audio": "kw.wav",
+                        "source_class_species": "KW",
+                        "source_label_ids": "species:Oo",
+                        "label_ids": "species:Oo",
+                        "split": "train",
+                    }
+                ],
+            )
+            _write_csv(
+                neg,
+                [
+                    {
+                        "item_id": "dclde-hard-neg",
+                        "source_dataset": "dclde_2027_DFO_CRP_NorthBc",
+                        "source_audio": "hard.wav",
+                        "mat_path": "mat_files/hard.mat",
+                        "negative_bucket": "nonbiological_signal",
+                        "label_ids": "",
+                        "split": "train",
+                    }
+                ],
+            )
+
+            build_manifests(
+                output_dir=root / "out",
+                onc_csv=onc,
+                biodcase_csv=None,
+                dclde_csv=dclde,
+                negative_csv=neg,
+                model_labels_csv=None,
+                gap_report_csv=None,
+                dclde_root=dclde_root,
+            )
+            with (root / "out/tables/autoscreened_negative_manifest.csv").open(newline="") as handle:
+                kept = list(csv.DictReader(handle))
+            self.assertEqual(len(kept), 1)
+            self.assertEqual(kept[0]["source_kind"], "DCLDE")
+            self.assertEqual(kept[0]["mat_path"], str((dclde_root / "mat_files/hard.mat").resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()

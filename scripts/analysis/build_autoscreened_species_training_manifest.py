@@ -92,6 +92,16 @@ def _load_gap_report(path: Optional[Path]) -> Dict[Tuple[str, str, str], str]:
     return out
 
 
+def _resolve_under_root(value: str, root: Optional[Path]) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    path = Path(text)
+    if path.is_absolute() or root is None:
+        return str(path)
+    return str((root / path).resolve())
+
+
 def _force_labels(row: Dict[str, Any], labels: Sequence[str]) -> Dict[str, Any]:
     labels_text = "|".join(labels)
     row["source_label_ids"] = labels_text
@@ -116,6 +126,7 @@ def build_positive_manifest(
     source_csv: Path,
     output_csv: Path,
     source_kind: str,
+    source_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     rows_out: List[Dict[str, Any]] = []
     skipped = Counter()
@@ -134,6 +145,7 @@ def build_positive_manifest(
         elif not _has_primary(row):
             skipped["no_primary_label"] += 1
             continue
+        row["mat_path"] = _resolve_under_root(clean_text(row.get("mat_path")), source_root)
         row["source_kind"] = source_kind
         rows_out.append(row)
         labels.update(label for label in _label_set(row) if label in PRIMARY_LABELS)
@@ -155,6 +167,7 @@ def build_negative_manifest(
     excluded_csv: Path,
     model_labels_csv: Optional[Path],
     gap_report_csv: Optional[Path],
+    source_roots: Optional[Mapping[str, Path]] = None,
 ) -> Dict[str, Any]:
     model_labels = _load_model_labels(model_labels_csv)
     gap_paths = _load_gap_report(gap_report_csv)
@@ -166,6 +179,8 @@ def build_negative_manifest(
     source_counts = Counter()
     auto_counts = Counter()
     missing_mat_examples: List[str] = []
+    resolved_relative_mat_count = 0
+    source_roots = source_roots or {}
 
     for raw in read_csv_rows(negative_csv):
         row = dict(raw)
@@ -217,6 +232,12 @@ def build_negative_manifest(
                     }
                 )
                 row["mat_path"] = ""
+        else:
+            raw_mat_path = clean_text(row.get("mat_path"))
+            resolved_mat_path = _resolve_under_root(raw_mat_path, source_roots.get(row["source_kind"]))
+            if raw_mat_path and resolved_mat_path != raw_mat_path:
+                resolved_relative_mat_count += 1
+            row["mat_path"] = resolved_mat_path
 
         rows_out.append(row)
         bucket_counts[bucket] += 1
@@ -253,6 +274,7 @@ def build_negative_manifest(
         "leaked_group_count": len(leaked),
         "leaked_group_examples": dict(list(leaked.items())[:10]),
         "missing_gap_mat_examples": missing_mat_examples,
+        "resolved_relative_mat_count": resolved_relative_mat_count,
     }
 
 
@@ -265,6 +287,9 @@ def build_manifests(
     negative_csv: Path,
     model_labels_csv: Optional[Path],
     gap_report_csv: Optional[Path],
+    onc_root: Optional[Path] = None,
+    biodcase_root: Optional[Path] = None,
+    dclde_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     tables_dir = output_dir / "tables"
@@ -274,18 +299,30 @@ def build_manifests(
         source_csv=onc_csv,
         output_csv=tables_dir / "onc_primary_positive_manifest.csv",
         source_kind="ONC",
+        source_root=onc_root,
     )
     if biodcase_csv is not None:
         summary["positive_manifests"]["BioDCASE"] = build_positive_manifest(
             source_csv=biodcase_csv,
             output_csv=tables_dir / "biodcase_primary_positive_manifest.csv",
             source_kind="BioDCASE",
+            source_root=biodcase_root,
         )
     summary["positive_manifests"]["DCLDE"] = build_positive_manifest(
         source_csv=dclde_csv,
         output_csv=tables_dir / "dclde_kw_hw_primary_positive_manifest.csv",
         source_kind="DCLDE",
+        source_root=dclde_root,
     )
+    source_roots = {
+        key: root
+        for key, root in {
+            "ONC": onc_root,
+            "BioDCASE": biodcase_root,
+            "DCLDE": dclde_root,
+        }.items()
+        if root is not None
+    }
     summary["negative_manifest"] = build_negative_manifest(
         negative_csv=negative_csv,
         output_csv=tables_dir / "autoscreened_negative_manifest.csv",
@@ -293,6 +330,7 @@ def build_manifests(
         excluded_csv=tables_dir / "autoscreened_negative_excluded_rows.csv",
         model_labels_csv=model_labels_csv,
         gap_report_csv=gap_report_csv,
+        source_roots=source_roots,
     )
     (output_dir / "autoscreened_training_manifest_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True),
@@ -310,6 +348,9 @@ def main() -> int:
     parser.add_argument("--negative-csv", required=True)
     parser.add_argument("--model-labels-csv", default="")
     parser.add_argument("--gap-report-csv", default="")
+    parser.add_argument("--onc-root", default="")
+    parser.add_argument("--biodcase-root", default="")
+    parser.add_argument("--dclde-root", default="")
     args = parser.parse_args()
 
     summary = build_manifests(
@@ -320,6 +361,9 @@ def main() -> int:
         negative_csv=Path(args.negative_csv),
         model_labels_csv=Path(args.model_labels_csv) if args.model_labels_csv else None,
         gap_report_csv=Path(args.gap_report_csv) if args.gap_report_csv else None,
+        onc_root=Path(args.onc_root) if args.onc_root else None,
+        biodcase_root=Path(args.biodcase_root) if args.biodcase_root else None,
+        dclde_root=Path(args.dclde_root) if args.dclde_root else None,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
