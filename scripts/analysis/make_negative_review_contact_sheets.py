@@ -125,8 +125,9 @@ def _load_audio_spectrogram(row: Mapping[str, Any]) -> Optional[Any]:
 
 
 def _image_for_row(row: Mapping[str, Any]) -> Optional[Any]:
-    mat_path = Path(clean_text(row.get("mat_path")))
-    if mat_path.exists():
+    mat_text = clean_text(row.get("mat_path"))
+    mat_path = Path(mat_text) if mat_text else None
+    if mat_path is not None and mat_path.is_file():
         return _load_mat_image(mat_path)
     return _load_audio_spectrogram(row)
 
