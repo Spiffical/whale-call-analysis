@@ -221,6 +221,50 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
             self.assertEqual(summary["label_counts"]["species:Oo"], 1)
             self.assertEqual(summary["label_counts"]["species:Mn"], 1)
 
+    def test_gcs_inventory_overrides_misleading_dataset_slug(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            annotations = root / "Annotations.csv"
+            objects = root / "gcs_objects.txt"
+            out = root / "out"
+            _write_csv(
+                annotations,
+                [
+                    {
+                        "Soundfile": "AMAR779.20210904T191552Z.wav",
+                        "Dataset": "StrGeoS2",
+                        "FileBeginSec": "75.0",
+                        "FileEndSec": "76.0",
+                        "ClassSpecies": "AB",
+                        "KW": "0",
+                        "KW_certain": "NA",
+                        "Ecotype": "NA",
+                        "Provider": "DFO_WDLP",
+                        "AnnotationLevel": "Detection",
+                        "FileOk": "TRUE",
+                    }
+                ],
+            )
+            objects.write_text(
+                "dclde/2027/dclde_2027_killer_whales/dfo_wdlp/audio/strgeos1/AMAR779.20210904T191552Z.wav\n",
+                encoding="utf-8",
+            )
+
+            build_dclde_manifest(
+                annotations_csv=annotations,
+                output_dir=out,
+                gcs_object_lists=[objects],
+                require_gcs_audio=True,
+                max_positive=0,
+                max_hard_negative=10,
+            )
+
+            with (out / "hard_negative_windows.csv").open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertIn("/dfo_wdlp/audio/strgeos1/", rows[0]["https_url"])
+            self.assertNotIn("/strgeos2/", rows[0]["https_url"])
+
 
 if __name__ == "__main__":
     unittest.main()

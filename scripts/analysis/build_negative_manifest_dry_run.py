@@ -22,6 +22,7 @@ from src.dataset.multilabel import clean_text, label_ids_from_row, split_pipe, w
 
 DEFAULT_E09_MANIFEST = "manifests/E09_onc_biod_dclde_species/standardized_manifest.csv"
 DEFAULT_DCLDE_ANNOTATIONS = "audits/dclde_2027_killer_whales/Annotations.csv"
+DEFAULT_DCLDE_GCS_OBJECTS = "audits/dclde_2027_killer_whales/gcs_objects.txt"
 
 
 def read_csv_rows(path: Path) -> List[Dict[str, str]]:
@@ -68,6 +69,7 @@ def build_dry_run(
     output_dir: Path,
     e09_manifest: Path,
     dclde_annotations: Path,
+    dclde_gcs_object_lists: Sequence[Path],
     dclde_max_positive: int,
     dclde_max_hard_negative: int,
     max_gap_windows_per_clip: int,
@@ -83,6 +85,8 @@ def build_dry_run(
     dclde_summary = build_dclde_manifest(
         annotations_csv=dclde_annotations,
         output_dir=dclde_dir,
+        gcs_object_lists=dclde_gcs_object_lists,
+        require_gcs_audio=bool(dclde_gcs_object_lists),
         max_positive=int(dclde_max_positive),
         max_hard_negative=int(dclde_max_hard_negative),
     )
@@ -152,6 +156,7 @@ def build_dry_run(
         "weekend_root": str(weekend_root),
         "e09_manifest": str(e09_manifest),
         "dclde_annotations": str(dclde_annotations),
+        "dclde_gcs_object_lists": [str(path) for path in dclde_gcs_object_lists],
         "combined_input_row_count": len(combined_rows),
         "combined_source_counts": dict(source_counts.most_common()),
         "positive_source_counts": dict(positive_source_counts.most_common()),
@@ -211,17 +216,23 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--e09-manifest", default="")
     parser.add_argument("--dclde-annotations", default="")
+    parser.add_argument("--dclde-gcs-object-list", action="append", default=[])
     parser.add_argument("--dclde-max-positive", type=int, default=400)
     parser.add_argument("--dclde-max-hard-negative", type=int, default=200)
     parser.add_argument("--max-gap-windows-per-clip", type=int, default=3)
     args = parser.parse_args()
 
     weekend_root = Path(args.weekend_root)
+    dclde_gcs_object_lists = [Path(path) for path in args.dclde_gcs_object_list]
+    default_gcs_objects = weekend_root / DEFAULT_DCLDE_GCS_OBJECTS
+    if not dclde_gcs_object_lists and default_gcs_objects.exists():
+        dclde_gcs_object_lists = [default_gcs_objects]
     summary = build_dry_run(
         weekend_root=weekend_root,
         output_dir=Path(args.output_dir),
         e09_manifest=Path(args.e09_manifest) if args.e09_manifest else weekend_root / DEFAULT_E09_MANIFEST,
         dclde_annotations=Path(args.dclde_annotations) if args.dclde_annotations else weekend_root / DEFAULT_DCLDE_ANNOTATIONS,
+        dclde_gcs_object_lists=dclde_gcs_object_lists,
         dclde_max_positive=int(args.dclde_max_positive),
         dclde_max_hard_negative=int(args.dclde_max_hard_negative),
         max_gap_windows_per_clip=int(args.max_gap_windows_per_clip),
