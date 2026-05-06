@@ -253,6 +253,7 @@ def _manifest_row(
         "expected_mat_name": expected_mat,
         "mat_path": str(Path(mat_rel_dir) / expected_mat),
         "source_dataset": dataset or "biodcase2026_task2_atbfl",
+        "source_kind": "BioDCASE",
         "review_status": "reviewed_background" if is_background else "reviewed",
         "species": "" if is_background else species_code,
         "species_code": "" if is_background else species_code,
@@ -263,6 +264,8 @@ def _manifest_row(
         "high_frequency_hz": high_freq_hz,
         "is_background": "1" if is_background else "0",
         "event_group": f"{dataset}:{filename}:{begin_s:.3f}" if not is_background else f"{dataset}:{filename}:background:{begin_s:.3f}",
+        "negative_bucket": "external_source_gap" if is_background else "",
+        "context_tags": "external_source_gap" if is_background else "",
         "labels_json": labels if labels else "[]",
     }
     row["label_ids"] = "" if is_background else "|".join(label_ids_from_row(row))

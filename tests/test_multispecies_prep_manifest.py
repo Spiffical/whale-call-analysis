@@ -101,9 +101,11 @@ class BuildMultispeciesPrepManifestTest(unittest.TestCase):
             self.assertEqual(len(selected), 3)
             background = [row for row in selected if row["is_background"] == "1"]
             self.assertEqual(len(background), 1)
+            self.assertEqual(background[0]["source_kind"], "ONC")
             self.assertEqual(background[0]["begin_s"], "130.000000")
             self.assertEqual(background[0]["label_ids"], "")
             self.assertEqual(background[0]["review_status"], "pure_negative_candidate")
+            self.assertEqual(background[0]["negative_bucket"], "ambiguous_hard_negative")
             self.assertEqual(background[0]["context_tags"], "pure_negative")
 
             required = (out / "required_audio_filenames.txt").read_text(encoding="utf-8").splitlines()
@@ -248,6 +250,8 @@ class BuildMultispeciesPrepManifestTest(unittest.TestCase):
                 selected = list(csv.DictReader(handle))
             self.assertEqual(selected[0]["call_type"], "30Hz")
             self.assertEqual(selected[0]["label_ids"], "call:30Hz|species:Bp")
+            self.assertEqual(selected[0]["negative_bucket"], "")
+            self.assertEqual(selected[0]["source_kind"], "ONC")
 
 
 if __name__ == "__main__":

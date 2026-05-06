@@ -108,6 +108,7 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             kw = [row for row in rows if row["source_class_species"] == "KW"][0]
             self.assertEqual(kw["source_provider"], "ONC")
+            self.assertEqual(kw["source_kind"], "DCLDE")
             self.assertEqual(kw["source_dataset_raw"], "BarkleyCanyon")
             self.assertEqual(kw["dclde_ecotype"], "SRKW")
             self.assertEqual(kw["label_ids"], "call:orca_call|species:Oo")
@@ -129,6 +130,7 @@ class BuildDcldeKillerWhaleManifestTest(unittest.TestCase):
             self.assertEqual(ab["label_ids"], "")
             self.assertEqual(ab["analysis_label_ids"], "confounder:abiotic")
             self.assertEqual(ab["is_background"], "1")
+            self.assertEqual(ab["negative_bucket"], "nonbiological_signal")
 
             with (out / "required_audio_sources.csv").open(newline="", encoding="utf-8") as handle:
                 required = list(csv.DictReader(handle))

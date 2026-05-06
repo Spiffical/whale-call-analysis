@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.dataset.multilabel import (  # noqa: E402
     NONBIOLOGICAL_SPECIES_CODES,
+    PRIMARY_SPECIES_LABEL_IDS,
     annotation_call_type,
     annotation_species_code,
     build_vocabulary_from_rows,
@@ -45,6 +46,7 @@ from src.dataset.multilabel import (  # noqa: E402
 
 DEFAULT_SPECIES_EXCLUDE = frozenset({"Bp"})
 DEFAULT_BACKGROUND_WINDOW_START_S = 130.0
+PRIMARY_SPECIES_CODES = frozenset(label.partition(":")[2] for label in PRIMARY_SPECIES_LABEL_IDS)
 
 
 def _read_csv(path: Path) -> List[Dict[str, str]]:
@@ -174,6 +176,8 @@ def _positive_manifest_row(row: Dict[str, Any], dataset_name: str) -> Dict[str, 
     if begin_s is None or end_s is None:
         raise ValueError("positive annotation row missing begin/end")
     labels = [_label_record(row)]
+    species_code = annotation_species_code(row)
+    negative_bucket = "" if species_code in PRIMARY_SPECIES_CODES else "nonprimary_biological_signal"
     out = {
         "item_id": Path(_expected_mat_name(filename, begin_s, end_s)).stem,
         "clip": filename,
@@ -184,11 +188,14 @@ def _positive_manifest_row(row: Dict[str, Any], dataset_name: str) -> Dict[str, 
         "duration_s": f"{(end_s - begin_s):.6f}",
         "expected_mat_name": _expected_mat_name(filename, begin_s, end_s),
         "source_dataset": dataset_name,
+        "source_kind": "ONC",
         "review_status": review_status(row),
-        "species": annotation_species_code(row),
+        "species": species_code,
         "call_type": annotation_call_type(row),
         "is_background": "0",
         "event_group": f"{filename}:{begin_s:.3f}",
+        "negative_bucket": negative_bucket,
+        "context_tags": "" if not negative_bucket else negative_bucket,
         "labels_json": json.dumps(labels, sort_keys=True, separators=(",", ":")),
     }
     out["label_ids"] = "|".join(label_ids_from_row(out))
@@ -213,11 +220,13 @@ def _background_manifest_row(
         "duration_s": f"{(end_s - begin_s):.6f}",
         "expected_mat_name": _expected_mat_name(filename, begin_s, end_s),
         "source_dataset": dataset_name,
+        "source_kind": "ONC",
         "review_status": "pure_negative_candidate",
         "species": "",
         "call_type": "",
         "is_background": "1",
         "event_group": f"{filename}:background:{begin_s:.3f}",
+        "negative_bucket": "ambiguous_hard_negative",
         "context_tags": context_tags,
         "labels_json": "[]",
         "label_ids": "",

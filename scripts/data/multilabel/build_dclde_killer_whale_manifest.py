@@ -51,6 +51,10 @@ CLASS_TO_ANALYSIS_LABEL = {
     "AB": "confounder:abiotic",
     "UndBio": "confounder:undetermined_biological",
 }
+CLASS_TO_NEGATIVE_BUCKET = {
+    "AB": "nonbiological_signal",
+    "UndBio": "nonprimary_biological_signal",
+}
 
 
 def _read_rows(path: Path) -> List[Dict[str, str]]:
@@ -252,6 +256,7 @@ def _manifest_row(
         "expected_mat_name": expected_mat,
         "mat_path": str(Path(mat_rel_dir) / expected_mat),
         "source_dataset": source_dataset,
+        "source_kind": "DCLDE",
         "source_row_id": clean_text(raw.get("__source_row_id")),
         "source_provider": provider,
         "source_dataset_raw": dataset,
@@ -262,6 +267,8 @@ def _manifest_row(
         "canonical_species": species_code if is_positive else "",
         "canonical_call_type": call_type if is_positive else "",
         "analysis_label_ids": "" if is_positive else source_ids,
+        "negative_bucket": "" if is_positive else CLASS_TO_NEGATIVE_BUCKET.get(class_species, "ambiguous_hard_negative"),
+        "context_tags": "" if is_positive else CLASS_TO_NEGATIVE_BUCKET.get(class_species, "ambiguous_hard_negative"),
         "dclde_ecotype": clean_text(raw.get("Ecotype")),
         "dclde_annotation_level": clean_text(raw.get("AnnotationLevel")),
         "dclde_kw": clean_text(raw.get("KW")),

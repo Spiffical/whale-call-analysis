@@ -126,9 +126,11 @@ class BuildBiodcaseTask2ManifestTest(unittest.TestCase):
             background = [row for row in rows if row["is_background"] == "1"]
             self.assertEqual(background[0]["filename"], "background-only.wav")
             self.assertEqual(background[0]["label_ids"], "")
+            self.assertEqual(background[0]["negative_bucket"], "external_source_gap")
             positive = [row for row in rows if row["is_background"] == "0"][0]
             self.assertEqual(positive["begin_s"], "4.500000")
             self.assertEqual(positive["end_s"], "6.500000")
+            self.assertEqual(positive["source_kind"], "BioDCASE")
 
     def test_dataset_prefixed_clip_names_for_flat_staging(self):
         with tempfile.TemporaryDirectory() as tmp:
