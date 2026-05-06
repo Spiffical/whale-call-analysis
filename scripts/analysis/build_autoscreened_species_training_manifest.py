@@ -168,6 +168,7 @@ def build_negative_manifest(
     model_labels_csv: Optional[Path],
     gap_report_csv: Optional[Path],
     source_roots: Optional[Mapping[str, Path]] = None,
+    require_existing_mats: bool = False,
 ) -> Dict[str, Any]:
     model_labels = _load_model_labels(model_labels_csv)
     gap_paths = _load_gap_report(gap_report_csv)
@@ -178,7 +179,9 @@ def build_negative_manifest(
     bucket_counts = Counter()
     source_counts = Counter()
     auto_counts = Counter()
-    missing_mat_examples: List[str] = []
+    missing_gap_mat_examples: List[str] = []
+    missing_mat_path_examples: List[str] = []
+    missing_mat_path_count = 0
     resolved_relative_mat_count = 0
     source_roots = source_roots or {}
 
@@ -214,8 +217,8 @@ def build_negative_manifest(
             if gap_paths:
                 mat_path = gap_paths.get((clip, begin, end))
                 if not mat_path:
-                    if len(missing_mat_examples) < 10:
-                        missing_mat_examples.append(f"{clip}:{begin}-{end}")
+                    if len(missing_gap_mat_examples) < 10:
+                        missing_gap_mat_examples.append(f"{clip}:{begin}-{end}")
                     row["auto_screen_decision"] = "excluded_missing_gap_mat"
                     excluded.append(row)
                     continue
@@ -238,6 +241,16 @@ def build_negative_manifest(
             if raw_mat_path and resolved_mat_path != raw_mat_path:
                 resolved_relative_mat_count += 1
             row["mat_path"] = resolved_mat_path
+
+        if require_existing_mats and clean_text(row.get("mat_path")):
+            mat_path = Path(clean_text(row.get("mat_path")))
+            if not mat_path.exists():
+                missing_mat_path_count += 1
+                if len(missing_mat_path_examples) < 10:
+                    missing_mat_path_examples.append(str(mat_path))
+                row["auto_screen_decision"] = "excluded_missing_mat_path"
+                excluded.append(row)
+                continue
 
         rows_out.append(row)
         bucket_counts[bucket] += 1
@@ -273,7 +286,9 @@ def build_negative_manifest(
         "auto_screen_label_counts": dict(auto_counts.most_common()),
         "leaked_group_count": len(leaked),
         "leaked_group_examples": dict(list(leaked.items())[:10]),
-        "missing_gap_mat_examples": missing_mat_examples,
+        "missing_gap_mat_examples": missing_gap_mat_examples,
+        "missing_mat_path_count": missing_mat_path_count,
+        "missing_mat_path_examples": missing_mat_path_examples,
         "resolved_relative_mat_count": resolved_relative_mat_count,
     }
 
@@ -290,6 +305,7 @@ def build_manifests(
     onc_root: Optional[Path] = None,
     biodcase_root: Optional[Path] = None,
     dclde_root: Optional[Path] = None,
+    require_existing_mats: bool = False,
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     tables_dir = output_dir / "tables"
@@ -331,6 +347,7 @@ def build_manifests(
         model_labels_csv=model_labels_csv,
         gap_report_csv=gap_report_csv,
         source_roots=source_roots,
+        require_existing_mats=require_existing_mats,
     )
     (output_dir / "autoscreened_training_manifest_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True),
@@ -351,6 +368,7 @@ def main() -> int:
     parser.add_argument("--onc-root", default="")
     parser.add_argument("--biodcase-root", default="")
     parser.add_argument("--dclde-root", default="")
+    parser.add_argument("--require-existing-mats", action="store_true")
     args = parser.parse_args()
 
     summary = build_manifests(
@@ -364,6 +382,7 @@ def main() -> int:
         onc_root=Path(args.onc_root) if args.onc_root else None,
         biodcase_root=Path(args.biodcase_root) if args.biodcase_root else None,
         dclde_root=Path(args.dclde_root) if args.dclde_root else None,
+        require_existing_mats=bool(args.require_existing_mats),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
