@@ -230,12 +230,13 @@ def _meta_at(meta: Dict[str, Any], key: str) -> str:
     return clean_text(value)
 
 
-def write_validation_exports(
+def write_prediction_exports(
     output_dir: Path,
     vocab: LabelVocabulary,
     eval_result: Dict[str, Any],
     *,
     threshold: float,
+    prefix: str = "validation",
 ) -> None:
     labels = list(vocab.labels)
     scores = eval_result["scores"]
@@ -251,11 +252,14 @@ def write_validation_exports(
         csv_row: Dict[str, Any] = {
             "item_id": _meta_at(meta, "item_id"),
             "source_dataset": _meta_at(meta, "source_dataset"),
+            "source_kind": _meta_at(meta, "source_kind"),
             "source_audio": _meta_at(meta, "source_audio"),
             "mat_path": _meta_at(meta, "mat_path"),
             "source_label_ids": _meta_at(meta, "source_label_ids"),
             "canonical_label_ids": _meta_at(meta, "canonical_label_ids"),
             "analysis_label_ids": _meta_at(meta, "analysis_label_ids"),
+            "negative_bucket": _meta_at(meta, "negative_bucket"),
+            "split": _meta_at(meta, "split"),
             "is_background": _meta_at(meta, "is_background"),
             "review_status": _meta_at(meta, "review_status"),
             "context_tags": _meta_at(meta, "context_tags"),
@@ -290,8 +294,8 @@ def write_validation_exports(
 
     from src.dataset.multilabel import write_csv_rows
 
-    write_csv_rows(output_dir / "validation_predictions.csv", csv_rows)
-    with open(output_dir / "validation_predictions.o3_compatible.json", "w", encoding="utf-8") as handle:
+    write_csv_rows(output_dir / f"{prefix}_predictions.csv", csv_rows)
+    with open(output_dir / f"{prefix}_predictions.o3_compatible.json", "w", encoding="utf-8") as handle:
         json.dump(
             {
                 "schema_version": "multilabel-smoke-o3-compatible-v1",
@@ -304,12 +308,24 @@ def write_validation_exports(
         )
 
 
+def write_validation_exports(
+    output_dir: Path,
+    vocab: LabelVocabulary,
+    eval_result: Dict[str, Any],
+    *,
+    threshold: float,
+) -> None:
+    write_prediction_exports(output_dir, vocab, eval_result, threshold=threshold, prefix="validation")
+
+
 def write_source_stratified_metrics(
     output_dir: Path,
     vocab: LabelVocabulary,
     eval_result: Dict[str, Any],
     *,
     threshold: float,
+    group_field: str = "source_dataset",
+    prefix: str = "source_metrics",
 ) -> List[Path]:
     scores = np.asarray(eval_result.get("scores", []), dtype=np.float32)
     targets = np.asarray(eval_result.get("targets", []), dtype=np.float32)
@@ -319,7 +335,7 @@ def write_source_stratified_metrics(
     source_to_indices: Dict[str, List[int]] = {}
     for idx in range(scores.shape[0]):
         meta = metas[idx] if idx < len(metas) else {}
-        source = _meta_at(meta, "source_dataset") or "<unknown>"
+        source = _meta_at(meta, group_field) or "<unknown>"
         source_to_indices.setdefault(source, []).append(idx)
 
     rows: List[Dict[str, Any]] = []
@@ -342,6 +358,7 @@ def write_source_stratified_metrics(
             rows.append(
                 {
                     "source_dataset": source,
+                    "source_field": group_field,
                     "label_id": label.get("id", f"label_{label_idx}"),
                     "group": label.get("group", ""),
                     "samples": len(indices),
@@ -356,10 +373,10 @@ def write_source_stratified_metrics(
             )
     paths: List[Path] = []
     if rows:
-        path = output_dir / "source_metrics.csv"
+        path = output_dir / f"{prefix}.csv"
         _write_csv_dicts(path, rows)
         paths.append(path)
-    summary_path = output_dir / "source_metrics_summary.json"
+    summary_path = output_dir / f"{prefix}_summary.json"
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
     paths.append(summary_path)
@@ -723,6 +740,7 @@ def main() -> int:
     parser.add_argument("--use-pos-weight", action="store_true")
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
+    parser.add_argument("--max-test-samples", type=int, default=None)
     parser.add_argument("--max-example-images", type=int, default=64)
     parser.add_argument("--use-wandb", action="store_true")
     parser.add_argument("--wandb-project", default="whale-multispecies-calltype")
@@ -771,8 +789,22 @@ def main() -> int:
         seed=int(args.seed) + 1,
         return_meta=True,
     )
+    test_ds_full = MultiLabelMatDataset(
+        args.manifest_csv,
+        vocab,
+        split="test",
+        dataset_root=args.dataset_root,
+        crop_size=int(args.crop_size),
+        crop_time_seconds=args.crop_time_seconds,
+        crop_freq_range_hz=crop_freq_range,
+        center_bias_sigma_frac=float(args.center_bias_sigma_frac),
+        positive_crop_mode=str(args.positive_crop_mode),
+        seed=int(args.seed) + 2,
+        return_meta=True,
+    )
     train_ds = maybe_subset(train_ds_full, args.max_train_samples)
     val_ds = maybe_subset(val_ds_full, args.max_val_samples)
+    test_ds = maybe_subset(test_ds_full, args.max_test_samples)
     if len(train_ds) == 0 or len(val_ds) == 0:
         raise SystemExit(f"Need non-empty train and val splits, got train={len(train_ds)} val={len(val_ds)}")
 
@@ -790,6 +822,13 @@ def main() -> int:
         num_workers=int(args.num_workers),
         collate_fn=collate_batch,
     )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=int(args.batch_size),
+        shuffle=False,
+        num_workers=int(args.num_workers),
+        collate_fn=collate_batch,
+    ) if len(test_ds) else None
 
     model = create_model(args.model, num_classes=vocab.size, in_ch=1).to(device)
     init_info = None
@@ -863,10 +902,56 @@ def main() -> int:
     plot_paths.extend(write_training_plots(exp_dir, history))
     plot_paths.extend(write_validation_plots(exp_dir, vocab, best_eval))
     plot_paths.extend(write_source_stratified_metrics(exp_dir, vocab, best_eval, threshold=float(args.threshold)))
+    plot_paths.extend(
+        write_source_stratified_metrics(
+            exp_dir,
+            vocab,
+            best_eval,
+            threshold=float(args.threshold),
+            group_field="source_kind",
+            prefix="source_kind_metrics",
+        )
+    )
     threshold_sweep = write_threshold_sweep(exp_dir, vocab, best_eval)
     example_paths = write_example_images(exp_dir, vocab, best_eval, threshold=float(args.threshold))
     plot_paths.extend(example_paths)
     plot_paths.extend([Path(path) for path in threshold_sweep.get("paths", [])])
+
+    test_metrics: Optional[Dict[str, Any]] = None
+    if test_loader is not None:
+        checkpoint = torch.load(best_path, map_location=device)
+        if isinstance(checkpoint, dict) and isinstance(checkpoint.get("model_state"), dict):
+            model.load_state_dict(checkpoint["model_state"])
+        test_result = evaluate(
+            model,
+            test_loader,
+            device,
+            loss_fn,
+            float(args.threshold),
+            max_example_images=0,
+        )
+        test_metrics = test_result.get("metrics", {})
+        write_prediction_exports(exp_dir, vocab, test_result, threshold=float(args.threshold), prefix="test")
+        _write_csv_dicts(exp_dir / "test_per_class_metrics.csv", _per_class_rows(vocab, test_metrics))
+        plot_paths.extend(
+            write_source_stratified_metrics(
+                exp_dir,
+                vocab,
+                test_result,
+                threshold=float(args.threshold),
+                prefix="test_source_metrics",
+            )
+        )
+        plot_paths.extend(
+            write_source_stratified_metrics(
+                exp_dir,
+                vocab,
+                test_result,
+                threshold=float(args.threshold),
+                group_field="source_kind",
+                prefix="test_source_kind_metrics",
+            )
+        )
 
     summary = {
         "manifest_csv": str(Path(args.manifest_csv).resolve()),
@@ -876,12 +961,14 @@ def main() -> int:
         "device": str(device),
         "train_samples": len(train_ds),
         "val_samples": len(val_ds),
+        "test_samples": len(test_ds),
         "num_labels": vocab.size,
         "threshold": float(args.threshold),
         "best_metric": best_metric,
         "best_checkpoint": str(best_path),
         "init_checkpoint": init_info,
         "threshold_sweep": {key: value for key, value in threshold_sweep.items() if key != "paths"},
+        "test_metrics": test_metrics,
         "history": history,
     }
     with open(exp_dir / "run_summary.json", "w", encoding="utf-8") as handle:
@@ -898,9 +985,18 @@ def main() -> int:
                 exp_dir / "run_summary.json",
                 exp_dir / "validation_predictions.csv",
                 exp_dir / "validation_predictions.o3_compatible.json",
+                exp_dir / "test_predictions.csv",
+                exp_dir / "test_predictions.o3_compatible.json",
                 exp_dir / "per_class_metrics.csv",
                 exp_dir / "source_metrics.csv",
                 exp_dir / "source_metrics_summary.json",
+                exp_dir / "source_kind_metrics.csv",
+                exp_dir / "source_kind_metrics_summary.json",
+                exp_dir / "test_per_class_metrics.csv",
+                exp_dir / "test_source_metrics.csv",
+                exp_dir / "test_source_metrics_summary.json",
+                exp_dir / "test_source_kind_metrics.csv",
+                exp_dir / "test_source_kind_metrics_summary.json",
                 *plot_paths,
             ],
             prefix="multilabel",

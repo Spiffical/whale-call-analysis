@@ -40,6 +40,16 @@ def _label_counts(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
     return dict(counts.most_common())
 
 
+def _source_key(row: Dict[str, Any], source_key_fields: Sequence[str]) -> str:
+    values = [clean_text(row.get(field)) for field in source_key_fields]
+    text = "|".join(value or "<blank>" for value in values)
+    return text or "<unknown>"
+
+
+def _stable_seed_offset(text: str) -> int:
+    return sum((idx + 1) * ord(char) for idx, char in enumerate(text)) % 1_000_003
+
+
 def _group_leakage(split_rows: Dict[str, Sequence[Dict[str, Any]]]) -> Dict[str, Any]:
     split_to_groups: Dict[str, set[str]] = {}
     group_to_splits: Dict[str, set[str]] = defaultdict(set)
@@ -56,7 +66,24 @@ def _group_leakage(split_rows: Dict[str, Sequence[Dict[str, Any]]]) -> Dict[str,
     }
 
 
-def _summarize(split_rows: Dict[str, Sequence[Dict[str, Any]]]) -> Dict[str, Any]:
+def _source_split_label_counts(
+    split_rows: Dict[str, Sequence[Dict[str, Any]]],
+    source_key_fields: Sequence[str],
+) -> Dict[str, Dict[str, Dict[str, int]]]:
+    out: Dict[str, Dict[str, Dict[str, int]]] = {}
+    for split, rows in split_rows.items():
+        by_source: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            by_source[_source_key(row, source_key_fields)].append(dict(row))
+        out[split] = {source: _label_counts(source_rows) for source, source_rows in sorted(by_source.items())}
+    return out
+
+
+def _summarize(
+    split_rows: Dict[str, Sequence[Dict[str, Any]]],
+    *,
+    source_key_fields: Sequence[str],
+) -> Dict[str, Any]:
     summary: Dict[str, Any] = {"splits": {}, "leakage": _group_leakage(split_rows)}
     for split, rows in split_rows.items():
         summary["splits"][split] = {
@@ -65,7 +92,42 @@ def _summarize(split_rows: Dict[str, Sequence[Dict[str, Any]]]) -> Dict[str, Any
             "background_row_count": sum(1 for row in rows if not label_ids_from_row(row)),
             "label_counts": _label_counts(rows),
         }
+    summary["source_key_fields"] = list(source_key_fields)
+    summary["source_split_label_counts"] = _source_split_label_counts(split_rows, source_key_fields)
     return summary
+
+
+def source_label_balanced_grouped_split(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    seed: int = 0,
+    source_key_fields: Sequence[str] = ("source_kind",),
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Run the label-balanced grouped splitter independently per source.
+
+    A combined multi-source label-balanced split can satisfy rare-label
+    validation coverage using only an external source. For ONC deployment
+    checks we need each major source, especially ONC, to carry its own
+    validation/test support when that source has enough groups.
+    """
+
+    by_source: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_source[_source_key(row, source_key_fields)].append(dict(row))
+
+    combined: Dict[str, List[Dict[str, Any]]] = {"train": [], "val": [], "test": []}
+    for source_key, source_rows in sorted(by_source.items()):
+        source_split = label_balanced_grouped_split(
+            source_rows,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            seed=int(seed) + _stable_seed_offset(source_key),
+        )
+        for split in ("train", "val", "test"):
+            combined[split].extend(source_split[split])
+    return combined
 
 
 def write_split_outputs(
@@ -76,6 +138,7 @@ def write_split_outputs(
     val_ratio: float,
     strategy: str = "temporal",
     seed: int = 0,
+    source_key_fields: Sequence[str] = ("source_kind",),
 ) -> Dict[str, Any]:
     if strategy == "temporal":
         split_rows = temporal_grouped_split(rows, train_ratio=train_ratio, val_ratio=val_ratio)
@@ -85,6 +148,14 @@ def write_split_outputs(
             train_ratio=train_ratio,
             val_ratio=val_ratio,
             seed=seed,
+        )
+    elif strategy == "source_label_balanced":
+        split_rows = source_label_balanced_grouped_split(
+            rows,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            seed=seed,
+            source_key_fields=source_key_fields,
         )
     else:
         raise ValueError(f"Unknown split strategy: {strategy}")
@@ -101,12 +172,13 @@ def write_split_outputs(
             lines.append(identifier)
         _split_text_path(output_dir, split).write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
-    summary = _summarize(split_rows)
+    summary = _summarize(split_rows, source_key_fields=source_key_fields)
     summary["config"] = {
         "train_ratio": float(train_ratio),
         "val_ratio": float(val_ratio),
         "strategy": strategy,
         "seed": int(seed),
+        "source_key_fields": list(source_key_fields),
     }
     with open(output_dir / "split_summary.json", "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
@@ -119,7 +191,12 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, help="Directory for split outputs")
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
-    parser.add_argument("--strategy", choices=["temporal", "label_balanced"], default="temporal")
+    parser.add_argument("--strategy", choices=["temporal", "label_balanced", "source_label_balanced"], default="temporal")
+    parser.add_argument(
+        "--source-key-fields",
+        default="source_kind",
+        help="Comma-separated fields used to partition source_label_balanced splits",
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -131,6 +208,7 @@ def main() -> int:
         val_ratio=float(args.val_ratio),
         strategy=str(args.strategy),
         seed=int(args.seed),
+        source_key_fields=[field.strip() for field in str(args.source_key_fields).split(",") if field.strip()],
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

@@ -778,6 +778,8 @@ class MultiLabelMatDataset(Dataset):
             "mat_path": str(mat_path),
             "source_audio": row.get("source_audio") or row.get("filename"),
             "source_dataset": row.get("source_dataset") or "",
+            "source_kind": row.get("source_kind") or "",
+            "negative_bucket": row.get("negative_bucket") or "",
             "split": row.get("split") or self.split or "",
             "label_ids": label_ids_from_row(row),
             "source_label_ids": row.get("source_label_ids") or "",

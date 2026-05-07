@@ -33,6 +33,9 @@ NUM_WORKERS="8"
 LR="0.0003"
 WEIGHT_DECAY="0.0001"
 SEED="2026"
+SPLIT_STRATEGY="source_label_balanced"
+SOURCE_KEY_FIELDS="source_kind"
+EXPERIMENT_SET="standard"
 SBATCH_TIME="12:00:00"
 SBATCH_CPUS="16"
 SBATCH_MEM="96G"
@@ -64,6 +67,9 @@ Key options:
   --epochs N                            Default: 30
   --batch-size N                        Default: 64
   --prep-parallel-jobs N                Default: 8
+  --split-strategy NAME                 Default: source_label_balanced
+  --source-key-fields FIELDS            Default: source_kind
+  --experiment-set NAME                 standard or sourcecal_arch (Default: standard)
   --dry-run                             Write the sbatch but do not submit
 USAGE
 }
@@ -91,6 +97,9 @@ while [[ $# -gt 0 ]]; do
     --lr) LR="$2"; shift 2 ;;
     --weight-decay) WEIGHT_DECAY="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
+    --split-strategy) SPLIT_STRATEGY="$2"; shift 2 ;;
+    --source-key-fields) SOURCE_KEY_FIELDS="$2"; shift 2 ;;
+    --experiment-set) EXPERIMENT_SET="$2"; shift 2 ;;
     --time) SBATCH_TIME="$2"; shift 2 ;;
     --cpus-per-task) SBATCH_CPUS="$2"; shift 2 ;;
     --mem) SBATCH_MEM="$2"; shift 2 ;;
@@ -630,7 +639,8 @@ for exp in "\$E12_EXP" "\$E13_EXP"; do
   python -u scripts/data/multilabel/build_candidate_splits.py \\
     --manifest-csv "\$MANIFEST_ROOT/\$exp/archive_manifest_unsplit.csv" \\
     --output-dir "\$MANIFEST_ROOT/\$exp/splits" \\
-    --strategy label_balanced \\
+    --strategy "$SPLIT_STRATEGY" \\
+    --source-key-fields "$SOURCE_KEY_FIELDS" \\
     --seed "$SEED" \\
     > "\$MANIFEST_ROOT/\$exp/splits/build_splits_stdout.json"
   cp "\$MANIFEST_ROOT/\$exp/splits/split_manifest.csv" "\$MANIFEST_ROOT/\$exp/standardized_manifest.csv"
@@ -658,13 +668,16 @@ sacct -u merileo --starttime now-7days || true
 
 SUBMITTED_TSV="\$PIPELINE_DIR/scaleup40s_training_submitted.tsv"
 PLAN_TSV="\$PIPELINE_DIR/scaleup40s_training_plan.tsv"
-echo -e "experiment\tmanifest\tvocab\tdataset_root\tuse_pos_weight\trun_dir\tarchive_path\twandb_group" > "\$PLAN_TSV"
+echo -e "experiment\tmanifest\tvocab\tdataset_root\tmodel\tlr\tweight_decay\tuse_pos_weight\trun_dir\tarchive_path\twandb_group" > "\$PLAN_TSV"
 echo -e "job_id\texperiment\trun_dir\tjob_script" > "\$SUBMITTED_TSV"
 
 submit_train() {
   local exp="\$1"
   local use_pos_weight="\$2"
   local suffix="\$3"
+  local model_name="\$4"
+  local train_lr="\$5"
+  local train_weight_decay="\$6"
   local manifest_dir="\$MANIFEST_ROOT/\$exp"
   local run_exp="\${exp}_\$suffix"
   local run_dir="\$WEEKEND/runs/\${run_exp}_\$(date -u +%Y%m%dT%H%M%SZ)"
@@ -697,13 +710,13 @@ train_cmd=(
   --vocab-json "\$manifest_dir/label_vocabulary.json"
   --dataset-root "\$EXTRACT_DIR"
   --exp-dir "\$train_dir"
-  --model resnet18
+  --model "\$model_name"
   --init-checkpoint "\$BASE_CKPT"
   --epochs "$EPOCHS"
   --batch-size "$BATCH_SIZE"
   --num-workers "$NUM_WORKERS"
-  --lr "$LR"
-  --weight-decay "$WEIGHT_DECAY"
+  --lr "\$train_lr"
+  --weight-decay "\$train_weight_decay"
   --crop-size 96
   --crop-time-seconds 10
   --freq-min-hz 5
@@ -716,22 +729,31 @@ train_cmd=(
   --wandb-project whale-multispecies-calltype
   --wandb-group "$WANDB_GROUP"
   --wandb-name "\$run_exp"
-  --wandb-tags "multilabel,resnet,species,scaleup40s,mat-archive"
+  --wandb-tags "multilabel,species,scaleup40s,mat-archive,source-calibration,\$model_name"
 )
 if [[ "\$use_pos_weight" == "true" ]]; then
   train_cmd+=(--use-pos-weight)
 fi
 "\\\${train_cmd[@]}"
+python -u scripts/analysis/summarize_multilabel_predictions.py \\
+  --validation-csv "\$train_dir/validation_predictions.csv" \\
+  --test-csv "\$train_dir/test_predictions.csv" \\
+  --output-dir "\$train_dir/onc_calibrated_eval" \\
+  --calibration-source-kind ONC \\
+  --eval-source-kind ONC
 cat > "\$run_dir/run_metadata.json" <<META
 {
   "experiment": "\$run_exp",
   "base_experiment": "\$exp",
+  "model": "\$model_name",
   "manifest_csv": "\$manifest_dir/standardized_manifest.csv",
   "vocab_json": "\$manifest_dir/label_vocabulary.json",
   "dataset_root": "\$EXTRACT_DIR",
   "mat_archive": "\$ARCHIVE_PATH",
   "train_dir": "\$train_dir",
   "use_pos_weight": "\$use_pos_weight",
+  "lr": "\$train_lr",
+  "weight_decay": "\$train_weight_decay",
   "crop_time_seconds": 10,
   "positive_crop_mode": "edge_mix",
   "epochs": $EPOCHS,
@@ -741,15 +763,30 @@ META
 TRAIN_EOF
   local job_id
   job_id=\$(sbatch "\$job_script" | awk '{print \$4}')
-  echo -e "\$run_exp\t\$manifest_dir/standardized_manifest.csv\t\$manifest_dir/label_vocabulary.json\t\$EXTRACT_DIR\t\$use_pos_weight\t\$run_dir\t\$ARCHIVE_PATH\t$WANDB_GROUP" >> "\$PLAN_TSV"
+  echo -e "\$run_exp\t\$manifest_dir/standardized_manifest.csv\t\$manifest_dir/label_vocabulary.json\t\$EXTRACT_DIR\t\$model_name\t\$train_lr\t\$train_weight_decay\t\$use_pos_weight\t\$run_dir\t\$ARCHIVE_PATH\t$WANDB_GROUP" >> "\$PLAN_TSV"
   echo -e "\$job_id\t\$run_exp\t\$run_dir\t\$job_script" >> "\$SUBMITTED_TSV"
   echo "Submitted \$run_exp as \$job_id"
 }
 
-submit_train "\$E12_EXP" true "posw"
-submit_train "\$E12_EXP" false "noposw"
-submit_train "\$E13_EXP" true "posw"
-submit_train "\$E13_EXP" false "noposw"
+case "$EXPERIMENT_SET" in
+  standard)
+    submit_train "\$E12_EXP" true "resnet18_posw" "resnet18" "$LR" "$WEIGHT_DECAY"
+    submit_train "\$E12_EXP" false "resnet18_noposw" "resnet18" "$LR" "$WEIGHT_DECAY"
+    submit_train "\$E13_EXP" true "resnet18_posw" "resnet18" "$LR" "$WEIGHT_DECAY"
+    submit_train "\$E13_EXP" false "resnet18_noposw" "resnet18" "$LR" "$WEIGHT_DECAY"
+    ;;
+  sourcecal_arch)
+    submit_train "\$E12_EXP" false "resnet18_noposw_lr3e4" "resnet18" "0.0003" "$WEIGHT_DECAY"
+    submit_train "\$E13_EXP" false "resnet18_noposw_lr3e4" "resnet18" "0.0003" "$WEIGHT_DECAY"
+    submit_train "\$E13_EXP" true "resnet18_posw_lr3e4" "resnet18" "0.0003" "$WEIGHT_DECAY"
+    submit_train "\$E13_EXP" false "resnet34_noposw_lr2e4" "resnet34" "0.0002" "$WEIGHT_DECAY"
+    submit_train "\$E13_EXP" false "deepcnn_w64d8_noposw_lr3e4" "deepcnn:w64:d8" "0.0003" "$WEIGHT_DECAY"
+    ;;
+  *)
+    echo "Unknown experiment set: $EXPERIMENT_SET" >&2
+    exit 2
+    ;;
+esac
 
 echo "Submitted training jobs:"
 cat "\$SUBMITTED_TSV"
