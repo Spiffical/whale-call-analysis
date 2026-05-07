@@ -9,6 +9,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)"
 
 FINAL2025_ROOT="/project/6070467/merileo/data/finwhales/final2025_resnet_20260423"
 PROJECT_ROOT="$FINAL2025_ROOT/multispecies_calltype_experiments"
+REPO_ON_NIBI_OVERRIDE=""
 WEEKEND_ROOT="/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502"
 RUN_NAME="E12prep_scale40s"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -71,12 +72,14 @@ Key options:
   --source-key-fields FIELDS            Default: source_kind
   --experiment-set NAME                 standard or sourcecal_arch (Default: standard)
   --dry-run                             Write the sbatch but do not submit
+  --repo-root PATH                      Override repo used inside submitted jobs
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --final2025-root) FINAL2025_ROOT="$2"; PROJECT_ROOT="$2/multispecies_calltype_experiments"; shift 2 ;;
+    --repo-root) REPO_ON_NIBI_OVERRIDE="$2"; shift 2 ;;
     --weekend-root) WEEKEND_ROOT="$2"; shift 2 ;;
     --run-name) RUN_NAME="$2"; shift 2 ;;
     --stamp) STAMP="$2"; shift 2 ;;
@@ -114,7 +117,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REPO_ON_NIBI="$PROJECT_ROOT/repo"
+REPO_ON_NIBI="${REPO_ON_NIBI_OVERRIDE:-$PROJECT_ROOT/repo}"
 PIPELINE_DIR="$WEEKEND_ROOT/pipeline_runs/scaleup40s_archive_${STAMP}"
 SOURCE_DIR="$WEEKEND_ROOT/manifests/scaleup40s_sources_${STAMP}"
 CACHE_DIR="$WEEKEND_ROOT/mat_archives/scaleup40s_${STAMP}"
