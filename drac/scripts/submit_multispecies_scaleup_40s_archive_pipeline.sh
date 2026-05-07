@@ -36,6 +36,7 @@ SEED="2026"
 SBATCH_TIME="12:00:00"
 SBATCH_CPUS="16"
 SBATCH_MEM="96G"
+PREP_PARALLEL_JOBS="8"
 SBATCH_GRES="gpu:h100:1"
 GPU_TIME="08:00:00"
 GPU_MEM="72G"
@@ -62,6 +63,7 @@ Key options:
   --dclde-max-hard-negative N           Default: 2000
   --epochs N                            Default: 30
   --batch-size N                        Default: 64
+  --prep-parallel-jobs N                Default: 8
   --dry-run                             Write the sbatch but do not submit
 USAGE
 }
@@ -92,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --time) SBATCH_TIME="$2"; shift 2 ;;
     --cpus-per-task) SBATCH_CPUS="$2"; shift 2 ;;
     --mem) SBATCH_MEM="$2"; shift 2 ;;
+    --prep-parallel-jobs) PREP_PARALLEL_JOBS="$2"; shift 2 ;;
     --gpu-time) GPU_TIME="$2"; shift 2 ;;
     --gpu-mem) GPU_MEM="$2"; shift 2 ;;
     --gres) SBATCH_GRES="$2"; shift 2 ;;
@@ -157,10 +160,130 @@ mkdir -p "\$PIPELINE_DIR" "\$SOURCE_DIR" "\$BUILD_MAT_DIR" "\$ARCHIVE_META_DIR" 
 cd "\$REPO"
 source .venv/bin/activate
 export PYTHONPATH="\$PWD:\${PYTHONPATH:-}"
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 export XDG_CACHE_HOME="\${XDG_CACHE_HOME:-/scratch/merileo/.cache}"
 export WANDB_CACHE_DIR="\${WANDB_CACHE_DIR:-/scratch/merileo/.cache/wandb}"
 export PIP_CACHE_DIR="\${PIP_CACHE_DIR:-/scratch/merileo/.cache/pip}"
 mkdir -p "\$XDG_CACHE_HOME" "\$WANDB_CACHE_DIR" "\$PIP_CACHE_DIR"
+PREP_PARALLEL_JOBS="$PREP_PARALLEL_JOBS"
+
+run_trainstyle_prepare() {
+  local label="\$1"
+  local calls_csv="\$2"
+  local audio_dir="\$3"
+  local edge_context_s="\$4"
+  local chunk_root="\$BUILD_DIR/prepare_chunks/\$label"
+  local chunk_csv_dir="\$chunk_root/csv"
+  local chunk_out_root="\$chunk_root/out"
+  local report_dir="\$BUILD_DIR/prepare_reports"
+  rm -rf "\$chunk_root"
+  mkdir -p "\$chunk_csv_dir" "\$chunk_out_root" "\$report_dir"
+  python - "\$calls_csv" "\$chunk_csv_dir" "\$PREP_PARALLEL_JOBS" <<'PY'
+import csv
+import math
+import sys
+from pathlib import Path
+
+calls_csv = Path(sys.argv[1])
+chunk_dir = Path(sys.argv[2])
+jobs = max(1, int(sys.argv[3]))
+with calls_csv.open(newline="", encoding="utf-8-sig") as handle:
+    reader = csv.DictReader(handle)
+    rows = list(reader)
+    fieldnames = list(reader.fieldnames or [])
+if not rows:
+    raise SystemExit(f"No rows to prepare in {calls_csv}")
+chunk_count = min(jobs, len(rows))
+chunk_size = int(math.ceil(len(rows) / chunk_count))
+for idx in range(chunk_count):
+    chunk_rows = rows[idx * chunk_size : (idx + 1) * chunk_size]
+    if not chunk_rows:
+        continue
+    out = chunk_dir / f"chunk_{idx:03d}.csv"
+    with out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(chunk_rows)
+print(f"Split {len(rows)} rows from {calls_csv} into {chunk_count} chunks")
+PY
+
+  mapfile -t chunks < <(find "\$chunk_csv_dir" -maxdepth 1 -type f -name 'chunk_*.csv' | sort)
+  echo "Generating \$label 40s MATs from \${#chunks[@]} chunks with up to \$PREP_PARALLEL_JOBS workers"
+  local active=0
+  local failed=0
+  for chunk in "\${chunks[@]}"; do
+    local chunk_name
+    chunk_name="\$(basename "\$chunk" .csv)"
+    local chunk_out="\$chunk_out_root/\$chunk_name"
+    mkdir -p "\$chunk_out"
+    (
+      python -u scripts/data/part2/prepare_trainstyle_windows.py \\
+        --calls-csv "\$chunk" \\
+        --audio-dir "\$audio_dir" \\
+        --dataset-doc "\$DATASET_DOC" \\
+        --out-dir "\$chunk_out" \\
+        --spec-backend auto \\
+        --window-s 40 \\
+        --edge-context-s "\$edge_context_s"
+    ) > "\$chunk_out/prepare_stdout.log" 2>&1 &
+    active=\$((active + 1))
+    if [[ "\$active" -ge "\$PREP_PARALLEL_JOBS" ]]; then
+      if ! wait -n; then
+        failed=1
+      fi
+      active=\$((active - 1))
+    fi
+  done
+  while [[ "\$active" -gt 0 ]]; do
+    if ! wait -n; then
+      failed=1
+    fi
+    active=\$((active - 1))
+  done
+  if [[ "\$failed" -ne 0 ]]; then
+    echo "At least one \$label MAT chunk failed" >&2
+    find "\$chunk_out_root" -name 'prepare_stdout.log' -print -exec tail -40 {} \\; >&2
+    exit 2
+  fi
+  python - "\$chunk_out_root" "\$BUILD_MAT_DIR" "\$report_dir/\${label}_report.csv" <<'PY'
+import csv
+import shutil
+import sys
+from pathlib import Path
+
+chunk_out_root = Path(sys.argv[1])
+mat_dir = Path(sys.argv[2])
+report_out = Path(sys.argv[3])
+mat_dir.mkdir(parents=True, exist_ok=True)
+report_rows = []
+fieldnames = []
+for mat in sorted(chunk_out_root.glob("chunk_*/**/*.mat")):
+    dest = mat_dir / mat.name
+    if dest.exists():
+        if dest.stat().st_size != mat.stat().st_size:
+            raise SystemExit(f"Duplicate MAT name with different size: {dest}")
+        mat.unlink()
+    else:
+        shutil.move(str(mat), str(dest))
+for report in sorted(chunk_out_root.glob("chunk_*/report.csv")):
+    with report.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        for key in reader.fieldnames or []:
+            if key not in fieldnames:
+                fieldnames.append(key)
+        report_rows.extend(dict(row) for row in reader)
+if fieldnames:
+    report_out.parent.mkdir(parents=True, exist_ok=True)
+    with report_out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(report_rows)
+print(f"Moved {len(list(mat_dir.glob('*.mat')))} total MATs into {mat_dir}; combined {len(report_rows)} report rows for {report_out.name}")
+PY
+}
 
 git rev-parse HEAD
 
@@ -183,14 +306,7 @@ python -u scripts/data/multilabel/build_multispecies_prep_manifest.py \\
   > "\$SOURCE_DIR/onc/build_stdout.json"
 
 echo "Generating ONC 40s MATs"
-python -u scripts/data/part2/prepare_trainstyle_windows.py \\
-  --calls-csv "\$SOURCE_DIR/onc/selected_calls.csv" \\
-  --audio-dir "\$ONC_AUDIO" \\
-  --dataset-doc "\$DATASET_DOC" \\
-  --out-dir "\$BUILD_MAT_DIR" \\
-  --spec-backend auto \\
-  --window-s 40 \\
-  --edge-context-s 10.5
+run_trainstyle_prepare "onc_selected" "\$SOURCE_DIR/onc/selected_calls.csv" "\$ONC_AUDIO" "10.5"
 
 echo "Building ONC primary-adjacent gap rows"
 python - <<'PY'
@@ -277,14 +393,7 @@ summary = {"selected_gap_rows": len(rows), "excluded_gap_rows": len(excluded), "
 (source / "onc_primary_adjacent_gap_selection_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
 print(json.dumps(summary, indent=2, sort_keys=True))
 PY
-python -u scripts/data/part2/prepare_trainstyle_windows.py \\
-  --calls-csv "\$SOURCE_DIR/onc_primary_adjacent_gaps_selected.csv" \\
-  --audio-dir "\$ONC_AUDIO" \\
-  --dataset-doc "\$DATASET_DOC" \\
-  --out-dir "\$BUILD_MAT_DIR" \\
-  --spec-backend auto \\
-  --window-s 40 \\
-  --edge-context-s 10.5
+run_trainstyle_prepare "onc_primary_adjacent_gap" "\$SOURCE_DIR/onc_primary_adjacent_gaps_selected.csv" "\$ONC_AUDIO" "10.5"
 
 echo "Building BioDCASE source manifest"
 mkdir -p "\$SOURCE_DIR/biodcase" "\$SOURCE_DIR/biodcase_raw_audio"
@@ -340,14 +449,7 @@ print(json.dumps(summary, indent=2, sort_keys=True))
 if missing:
     raise SystemExit(f"{len(missing)} BioDCASE audio files missing")
 PY
-python -u scripts/data/part2/prepare_trainstyle_windows.py \\
-  --calls-csv "\$SOURCE_DIR/biodcase/selected_calls.csv" \\
-  --audio-dir "\$SOURCE_DIR/biodcase_raw_audio" \\
-  --dataset-doc "\$DATASET_DOC" \\
-  --out-dir "\$BUILD_MAT_DIR" \\
-  --spec-backend auto \\
-  --window-s 40 \\
-  --edge-context-s 10.5
+run_trainstyle_prepare "biodcase" "\$SOURCE_DIR/biodcase/selected_calls.csv" "\$SOURCE_DIR/biodcase_raw_audio" "10.5"
 
 echo "Building DCLDE source manifest"
 mkdir -p "\$SOURCE_DIR/dclde" "\$SOURCE_DIR/dclde_raw_audio"
@@ -434,14 +536,7 @@ if failed:
             writer.writeheader()
             writer.writerows(kept)
 PY
-python -u scripts/data/part2/prepare_trainstyle_windows.py \\
-  --calls-csv "\$SOURCE_DIR/dclde/selected_calls.csv" \\
-  --audio-dir "\$SOURCE_DIR/dclde_raw_audio" \\
-  --dataset-doc "\$DATASET_DOC" \\
-  --out-dir "\$BUILD_MAT_DIR" \\
-  --spec-backend auto \\
-  --window-s 40 \\
-  --edge-context-s 0
+run_trainstyle_prepare "dclde" "\$SOURCE_DIR/dclde/selected_calls.csv" "\$SOURCE_DIR/dclde_raw_audio" "0"
 
 echo "Standardizing large manifests"
 standardize_raw() {
