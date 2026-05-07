@@ -51,6 +51,24 @@ def _resolve_path(value: str, root: Optional[Path]) -> str:
     return str((root / path).resolve())
 
 
+def _mat_path_text(row: Dict[str, Any]) -> str:
+    explicit = (
+        clean_text(row.get("mat_path"))
+        or clean_text(row.get("spectrogram_mat_path"))
+        or clean_text(row.get("spectrogram_path"))
+        or clean_text(row.get("relative_path"))
+    )
+    if explicit:
+        return explicit
+    expected_name = clean_text(row.get("expected_mat_name"))
+    if not expected_name:
+        return ""
+    expected_path = Path(expected_name)
+    if len(expected_path.parts) == 1:
+        return str(Path("mat_files") / expected_path)
+    return expected_name
+
+
 def _source_label_ids(row: Dict[str, Any]) -> List[str]:
     explicit = split_pipe(row.get("source_label_ids"))
     if explicit:
@@ -121,7 +139,7 @@ def standardize_rows(
             out["analysis_label_ids"] = "|".join(analysis_ids)
             out["label_ids"] = "|".join(canonical_ids)
             out["canonical_schema_version"] = SCHEMA_VERSION
-            out["mat_path"] = _resolve_path(clean_text(out.get("mat_path")), dataset_root)
+            out["mat_path"] = _resolve_path(_mat_path_text(out), dataset_root)
             if clean_text(out.get("source_audio")):
                 out["source_audio"] = _resolve_path(clean_text(out.get("source_audio")), dataset_root)
             split = clean_text(out.get("split")) or "unsplit"

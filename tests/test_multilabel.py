@@ -104,6 +104,31 @@ class TestMultiLabelHelpers(unittest.TestCase):
             vocab = build_vocabulary_from_rows(rows)
             self.assertNotIn("species:OD", vocab.label_ids)
 
+    def test_standardize_rows_uses_expected_mat_name_when_mat_path_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.csv"
+            write_csv_rows(
+                manifest,
+                [
+                    {
+                        "item_id": "fin",
+                        "expected_mat_name": "clip_0.0s_10.0s_trainstyle.mat",
+                        "label_ids": "species:Bp",
+                    },
+                ],
+            )
+            rows, _ = standardize_rows(
+                [f"unit|{manifest}|{root}"],
+                include_species=True,
+                include_call_types=False,
+                primary_species=("Bm", "Bp", "Mn", "Oo"),
+            )
+            self.assertEqual(
+                rows[0]["mat_path"],
+                str((root / "mat_files" / "clip_0.0s_10.0s_trainstyle.mat").resolve()),
+            )
+
     def test_evaluation_bucket_separates_demoted_signal_from_background(self):
         self.assertEqual(
             evaluation_bucket_from_row({"target_label_ids": "species:Oo"}),

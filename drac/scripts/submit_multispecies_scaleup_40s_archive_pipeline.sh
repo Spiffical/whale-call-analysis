@@ -538,6 +538,9 @@ if failed:
 PY
 run_trainstyle_prepare "dclde" "\$SOURCE_DIR/dclde/selected_calls.csv" "\$SOURCE_DIR/dclde_raw_audio" "0"
 
+echo "Removing staged DCLDE raw audio after MAT generation to reduce scratch pressure"
+rm -rf "\$SOURCE_DIR/dclde_raw_audio"
+
 echo "Standardizing large manifests"
 standardize_raw() {
   local exp="\$1"
@@ -564,7 +567,9 @@ missing = []
 with p.open(newline="", encoding="utf-8-sig") as handle:
     for i, row in enumerate(csv.DictReader(handle), start=2):
         mp = row.get("mat_path", "")
-        if mp and not os.path.exists(mp):
+        if not mp:
+            missing.append((i, "<blank>", row.get("item_id", "")))
+        elif not os.path.exists(mp):
             missing.append((i, mp, row.get("item_id", "")))
 summary = json.loads((Path("\$out_dir/raw_absolute/standardization_summary.json")).read_text())
 print(json.dumps({"manifest": str(p), "rows": summary["row_count"], "labels": summary["canonical_label_counts"], "missing": len(missing), "missing_examples": missing[:5]}, indent=2, sort_keys=True))
