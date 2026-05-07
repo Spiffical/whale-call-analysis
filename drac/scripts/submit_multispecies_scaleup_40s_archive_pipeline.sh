@@ -543,7 +543,7 @@ standardize_raw() {
   local exp="\$1"
   local include_bio="\$2"
   local out_dir="\$MANIFEST_ROOT/\$exp"
-  mkdir -p "\$out_dir"
+  mkdir -p "\$out_dir/raw_absolute"
   local cmd=(python -u scripts/data/multilabel/standardize_multilabel_manifest.py
     --output-dir "\$out_dir/raw_absolute"
     --mode species
