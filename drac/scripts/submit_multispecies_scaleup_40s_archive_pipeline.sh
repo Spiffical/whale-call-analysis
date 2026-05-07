@@ -626,6 +626,7 @@ for exp, rows in datasets.items():
 PY
 
 for exp in "\$E12_EXP" "\$E13_EXP"; do
+  mkdir -p "\$MANIFEST_ROOT/\$exp/splits"
   python -u scripts/data/multilabel/build_candidate_splits.py \\
     --manifest-csv "\$MANIFEST_ROOT/\$exp/archive_manifest_unsplit.csv" \\
     --output-dir "\$MANIFEST_ROOT/\$exp/splits" \\
@@ -689,7 +690,7 @@ export WANDB_DIR="\$run_dir/wandb"
 export WANDB_CACHE_DIR="\$run_dir/wandb_cache"
 export WANDB_DATA_DIR="\$run_dir/wandb_data"
 export WANDB_CONFIG_DIR="\$run_dir/wandb_config"
-mkdir -p "\$train_dir" "\$WANDB_DIR" "\$WANDB_CACHE_DIR" "\$WANDB_DATA_DIR" "\$WANDB_CONFIG_DIR"
+mkdir -p "\$train_dir" "\\\$WANDB_DIR" "\\\$WANDB_CACHE_DIR" "\\\$WANDB_DATA_DIR" "\\\$WANDB_CONFIG_DIR"
 train_cmd=(
   python -u scripts/train/train_multilabel_resnet_smoke.py
   --manifest-csv "\$manifest_dir/standardized_manifest.csv"
@@ -720,7 +721,7 @@ train_cmd=(
 if [[ "\$use_pos_weight" == "true" ]]; then
   train_cmd+=(--use-pos-weight)
 fi
-"\${train_cmd[@]}"
+"\\\${train_cmd[@]}"
 cat > "\$run_dir/run_metadata.json" <<META
 {
   "experiment": "\$run_exp",
