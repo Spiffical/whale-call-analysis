@@ -76,23 +76,41 @@ def _resolve_path(value: Any, dataset_root: Optional[Path]) -> Path:
     return path.resolve()
 
 
-def _load_spectrogram_raw(path: Path) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
+def _find_band_or_generic_key(data: Mapping[str, Any], keys: Sequence[str], band: Optional[str]) -> Optional[str]:
+    if band:
+        for key in keys:
+            prefixed = f"{band}_{key}"
+            if prefixed in data:
+                return prefixed
+    return _find_key(data, keys)
+
+
+def _load_mat_data(path: Path) -> Mapping[str, Any]:
     if sio is None:
         raise RuntimeError("scipy is required to load .mat files")
-    data = sio.loadmat(str(path), simplify_cells=True)
-    key = _find_key(data, POWER_KEYS)
+    return sio.loadmat(str(path), simplify_cells=True)
+
+
+def _extract_spectrogram_raw(
+    data: Mapping[str, Any],
+    path: Path,
+    *,
+    band: Optional[str] = None,
+) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
+    key = _find_band_or_generic_key(data, POWER_KEYS, band)
     kind = "power"
     if key is None:
-        key = _find_key(data, DB_KEYS) or _find_key(data, SPECTRO_KEYS)
+        key = _find_band_or_generic_key(data, DB_KEYS, band) or _find_band_or_generic_key(data, SPECTRO_KEYS, band)
         kind = "db"
     if key is None:
-        raise KeyError(f"No spectrogram-like key found in {path.name}")
+        suffix = "" if band is None else f" for band {band!r}"
+        raise KeyError(f"No spectrogram-like key found in {path.name}{suffix}")
     spec = np.asarray(data[key])
     if spec.ndim != 2:
         raise ValueError(f"Unexpected spectrogram ndim {spec.ndim} in {path.name}")
 
-    freq_key = _find_key(data, FREQ_KEYS)
-    time_key = _find_key(data, TIME_KEYS)
+    freq_key = _find_band_or_generic_key(data, FREQ_KEYS, band)
+    time_key = _find_band_or_generic_key(data, TIME_KEYS, band)
     freqs = np.asarray(data[freq_key]).squeeze() if freq_key in data else None
     times = np.asarray(data[time_key]).squeeze() if time_key in data else None
     if freqs is not None and times is not None:
@@ -102,6 +120,10 @@ def _load_spectrogram_raw(path: Path) -> Tuple[np.ndarray, str, Optional[np.ndar
         if (rows, cols) == (time_len, freq_len):
             spec = spec.T
     return spec, kind, freqs, times
+
+
+def _load_spectrogram_raw(path: Path, *, band: Optional[str] = None) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
+    return _extract_spectrogram_raw(_load_mat_data(path), path, band=band)
 
 
 def _crop_freq(spec: np.ndarray, target_f: int) -> np.ndarray:
@@ -225,8 +247,14 @@ class MultiBandMatDataset(Dataset):
         tensors: Dict[str, torch.Tensor] = {}
         full_shapes: Dict[str, List[int]] = {}
         crop_starts: Dict[str, int] = {}
+        mat_cache: Dict[Path, Mapping[str, Any]] = {}
         for band in self.bands:
-            spec, kind, _, times = _load_spectrogram_raw(paths[band])
+            path = paths[band]
+            data = mat_cache.get(path)
+            if data is None:
+                data = _load_mat_data(path)
+                mat_cache[path] = data
+            spec, kind, _, times = _extract_spectrogram_raw(data, path, band=band)
             full_shapes[band] = list(spec.shape)
             if kind == "power":
                 spec = _power_to_db_norm(spec)

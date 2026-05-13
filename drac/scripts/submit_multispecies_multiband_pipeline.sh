@@ -237,6 +237,7 @@ run_multiband_prepare() {
         --audio-dir "\$audio_dir" \\
         --out-dir "\$out_dir" \\
         --window-s 40 \\
+        --combined-mat \\
         > "\$out_dir/stdout.log" 2> "\$out_dir/stderr.log"
     ) &
     pids+=(\$!)

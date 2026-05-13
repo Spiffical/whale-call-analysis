@@ -386,6 +386,7 @@ def prepare_multiband_windows(
     window_seconds: float,
     n: Optional[int] = None,
     bands: Sequence[BandConfig] = DEFAULT_BANDS,
+    combined_mat: bool = False,
 ) -> Dict[str, Any]:
     rows, input_fieldnames = _read_rows(calls_csv)
     if n is not None and int(n) > 0:
@@ -423,19 +424,16 @@ def prepare_multiband_windows(
                 audio_index,
                 audio_index_by_second,
             )
+            combined_payload: Dict[str, Any] = {}
+            combined_path = out_dir / "multiband" / f"{out_stem}__multiband.mat"
             for band in bands:
-                band_dir = out_dir / band.name
-                band_dir.mkdir(parents=True, exist_ok=True)
-                band_path = band_dir / f"{out_stem}__{band.name}.mat"
                 freqs, times, db, info = compute_band_spectrogram(
                     np.asarray(audio, dtype=np.float32),
                     int(source_sr),
                     band,
                     context_seconds=float(window_seconds),
                 )
-                scipy.io.savemat(
-                    str(band_path),
-                    {
+                payload = {
                         "F": freqs.astype(np.float32),
                         "T": times.astype(np.float32),
                         "PdB_norm": db.astype(np.float32),
@@ -451,13 +449,27 @@ def prepare_multiband_windows(
                         "empty_reason": str(info.get("empty_reason", "")),
                         "time_axis_reference": "context_window_center",
                         "band_name": band.name,
-                    },
-                )
+                }
+                if combined_mat:
+                    combined_path.parent.mkdir(parents=True, exist_ok=True)
+                    for key, value in payload.items():
+                        combined_payload[f"{band.name}_{key}"] = value
+                    band_path = combined_path
+                else:
+                    band_dir = out_dir / band.name
+                    band_dir.mkdir(parents=True, exist_ok=True)
+                    band_path = band_dir / f"{out_stem}__{band.name}.mat"
+                    scipy.io.savemat(str(band_path), payload)
                 report[f"{band.name}_mat_path"] = str(band_path)
                 report[f"{band.name}_shape"] = f"{db.shape[0]}x{db.shape[1]}"
                 report[f"{band.name}_compute_sample_rate_hz"] = int(info["compute_sample_rate_hz"])
                 report[f"{band.name}_source_nyquist_hz"] = float(info["source_nyquist_hz"])
                 report[f"{band.name}_empty_reason"] = str(info.get("empty_reason", ""))
+            if combined_mat:
+                combined_payload["mat_storage"] = "combined_multiband"
+                combined_payload["window_s"] = float(window_seconds)
+                scipy.io.savemat(str(combined_path), combined_payload)
+                report["mat_path"] = str(combined_path)
             report["status"] = "ok"
             report_rows.append(report)
         except Exception as exc:  # noqa: BLE001 - batch prep should report row-level failures.
@@ -475,6 +487,7 @@ def prepare_multiband_windows(
         "multiband_context_seconds",
         "multiband_context_start_s",
         "multiband_context_end_s",
+        "mat_path",
         *[f"{band.name}_mat_path" for band in bands],
         *[f"{band.name}_shape" for band in bands],
         *[f"{band.name}_compute_sample_rate_hz" for band in bands],
@@ -501,6 +514,7 @@ def prepare_multiband_windows(
         "report_csv": str(report_csv),
         "failure_csv": str(failure_csv) if failures else "",
         "bands": [band.__dict__ for band in bands],
+        "combined_mat": bool(combined_mat),
     }
     (out_dir / "multiband_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     if failures:
@@ -516,6 +530,7 @@ def main() -> int:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--window-s", type=float, default=40.0)
     parser.add_argument("--n", type=int, default=None)
+    parser.add_argument("--combined-mat", action="store_true", help="Store all bands for each row in one MAT file.")
     args = parser.parse_args()
     summary = prepare_multiband_windows(
         calls_csv=Path(args.calls_csv),
@@ -523,6 +538,7 @@ def main() -> int:
         out_dir=Path(args.out_dir),
         window_seconds=float(args.window_s),
         n=args.n,
+        combined_mat=bool(args.combined_mat),
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
