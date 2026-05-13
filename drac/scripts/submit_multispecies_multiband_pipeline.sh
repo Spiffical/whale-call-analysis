@@ -136,7 +136,7 @@ echo "Repo: \$REPO"
 git rev-parse HEAD || true
 echo "Source dir: \$SOURCE_DIR"
 echo "Cache dir: \$CACHE_DIR"
-diskusage_report || true
+timeout 180 diskusage_report || true
 
 if [[ ! -f "\$SOURCE_E13/standardized_manifest.csv" ]]; then
   echo "Missing source E13 manifest: \$SOURCE_E13/standardized_manifest.csv" >&2
@@ -461,7 +461,7 @@ build_variant "\$E12_MB" "E16_e12_multiband_oncrare_dcldecap" \\
 echo "Queue/accounting check before GPU submissions"
 squeue -u merileo || true
 sacct -u merileo --starttime now-7days || true
-diskusage_report || true
+timeout 180 diskusage_report || true
 
 echo -e "experiment\tmanifest\tvocab\tdataset_root\tencoder\tfusion\tlr\tweight_decay\tuse_pos_weight\trun_dir\tarchive_path\twandb_group" > "\$PLAN_TSV"
 echo -e "job_id\texperiment\trun_dir\tjob_script" > "\$SUBMITTED_TSV"
