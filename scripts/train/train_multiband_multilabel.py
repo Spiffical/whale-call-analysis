@@ -46,6 +46,53 @@ from src.models.multiband import create_multiband_model, load_resnet_encoder_che
 from src.utils.model_utils import create_checkpoint_metadata  # noqa: E402
 
 
+def build_label_band_mask(
+    *,
+    label_ids: Sequence[str],
+    bands: Sequence[str],
+    mode: str,
+) -> torch.Tensor:
+    mode = str(mode or "none").strip().lower()
+    band_index = {band: idx for idx, band in enumerate(bands)}
+    mask = torch.ones(len(bands), len(label_ids), dtype=torch.float32)
+    if mode in {"", "none", "all"}:
+        return mask
+
+    def apply(label_id: str, allowed: Sequence[str]) -> None:
+        if label_id not in label_ids:
+            return
+        col = list(label_ids).index(label_id)
+        mask[:, col] = 0.0
+        for band in allowed:
+            idx = band_index.get(band)
+            if idx is not None:
+                mask[idx, col] = 1.0
+        if float(mask[:, col].sum()) <= 0.0:
+            mask[:, col] = 1.0
+
+    if mode == "audit_v1":
+        apply("species:Bm", ("low",))
+        apply("species:Bp", ("low",))
+        apply("species:Mn", ("low", "mid"))
+        apply("species:Oo", ("mid", "high"))
+        return mask
+    if mode == "audit_v2":
+        apply("species:Bm", ("low", "mid"))
+        apply("species:Bp", ("low", "mid"))
+        apply("species:Mn", ("low", "mid"))
+        apply("species:Oo", ("mid", "high"))
+        return mask
+    if mode == "odont_high":
+        apply("species:Bm", ("low", "mid"))
+        apply("species:Bp", ("low", "mid"))
+        apply("species:Mn", ("low", "mid", "high"))
+        apply("species:Oo", ("mid", "high"))
+        return mask
+    raise ValueError(
+        "--class-band-mask-mode must be one of: none, audit_v1, audit_v2, odont_high"
+    )
+
+
 def collate_batch(batch: Sequence[Sequence[Any]]) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, Optional[List[Dict[str, Any]]]]:
     bands = list(batch[0][0].keys())
     xs = {band: torch.stack([item[0][band] for item in batch], dim=0) for band in bands}
@@ -188,6 +235,8 @@ def main() -> int:
     parser.add_argument("--context-seconds", type=float, default=40.0)
     parser.add_argument("--center-bias-sigma-frac", type=float, default=0.25)
     parser.add_argument("--positive-crop-mode", default="edge_mix")
+    parser.add_argument("--band-availability-mode", default="all", choices=["all", "metadata", "source", "source_or_metadata", "audit_v1"])
+    parser.add_argument("--class-band-mask-mode", default="none", choices=["none", "audit_v1", "audit_v2", "odont_high"])
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=2026)
@@ -224,6 +273,7 @@ def main() -> int:
         context_seconds=float(args.context_seconds),
         center_bias_sigma_frac=float(args.center_bias_sigma_frac),
         positive_crop_mode=str(args.positive_crop_mode),
+        band_availability_mode=str(args.band_availability_mode),
         return_meta=True,
     )
     train_ds_full = MultiBandMatDataset(args.manifest_csv, vocab, split="train", seed=int(args.seed), **ds_kwargs)
@@ -252,6 +302,11 @@ def main() -> int:
         fusion=str(args.fusion),
         dropout=float(args.dropout),
         in_ch=1,
+        label_band_mask=build_label_band_mask(
+            label_ids=vocab.label_ids,
+            bands=bands,
+            mode=str(args.class_band_mask_mode),
+        ),
     ).to(device)
     init_info: Dict[str, Any] = {}
     if args.init_all_branches_checkpoint:
@@ -325,6 +380,8 @@ def main() -> int:
                     "pos_weight": pos_weight.detach().cpu().tolist() if pos_weight is not None else None,
                     "bands": bands,
                     "band_crop_shapes": band_shapes,
+                    "band_availability_mode": args.band_availability_mode,
+                    "class_band_mask_mode": args.class_band_mask_mode,
                 }
             )
             torch.save(checkpoint, best_path)
@@ -396,6 +453,8 @@ def main() -> int:
         "init_checkpoint": init_info,
         "bands": bands,
         "band_crop_shapes": band_shapes,
+        "band_availability_mode": args.band_availability_mode,
+        "class_band_mask_mode": args.class_band_mask_mode,
         "threshold_sweep": {key: value for key, value in threshold_sweep.items() if key != "paths"},
         "test_metrics": test_metrics,
         "history": history,

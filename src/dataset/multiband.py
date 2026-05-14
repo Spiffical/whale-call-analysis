@@ -37,6 +37,7 @@ from src.training.mat_dataset import (
 
 
 DEFAULT_BANDS = ("low", "mid", "high")
+SPECIAL_BAND_MASK_KEY = "__band_mask__"
 DEFAULT_BAND_CROP_SHAPES: Dict[str, Tuple[int, int]] = {
     "low": (391, 50),
     "mid": (256, 100),
@@ -126,6 +127,22 @@ def _load_spectrogram_raw(path: Path, *, band: Optional[str] = None) -> Tuple[np
     return _extract_spectrogram_raw(_load_mat_data(path), path, band=band)
 
 
+def _band_available_from_row(row: Mapping[str, Any], band: str, mode: str) -> float:
+    mode = str(mode or "all").strip().lower()
+    if mode in {"", "all", "none"}:
+        return 1.0
+    empty_reason = clean_text(row.get(f"{band}_empty_reason"))
+    if mode in {"metadata", "report", "source_or_metadata"} and empty_reason:
+        return 0.0
+    source_kind = clean_text(row.get("source_kind"))
+    if mode in {"source", "source_or_metadata", "audit_v1"}:
+        # E16 audit: every BioDCASE row has 125 Hz Nyquist, so high-band
+        # inputs are structurally empty and should not be a learned source cue.
+        if source_kind == "BioDCASE" and band == "high":
+            return 0.0
+    return 1.0
+
+
 def _crop_freq(spec: np.ndarray, target_f: int) -> np.ndarray:
     freq_bins = spec.shape[0]
     if freq_bins < target_f:
@@ -185,6 +202,7 @@ class MultiBandMatDataset(Dataset):
         max_db: float = 0.0,
         center_bias_sigma_frac: float = 0.25,
         positive_crop_mode: str = "edge_mix",
+        band_availability_mode: str = "all",
         seed: int = 0,
         return_meta: bool = False,
     ) -> None:
@@ -202,6 +220,7 @@ class MultiBandMatDataset(Dataset):
         self.max_db = float(max_db)
         self.center_bias_sigma_frac = float(center_bias_sigma_frac)
         self.positive_crop_mode = str(positive_crop_mode)
+        self.band_availability_mode = str(band_availability_mode)
         self.rng = np.random.default_rng(seed)
         self.return_meta = bool(return_meta)
 
@@ -264,6 +283,11 @@ class MultiBandMatDataset(Dataset):
             crop_starts[band] = crop_idx
             spec = _normalize_db_to_unit(spec, self.min_db, self.max_db)
             tensors[band] = torch.from_numpy(spec).unsqueeze(0).float()
+        band_mask = np.asarray(
+            [_band_available_from_row(row, band, self.band_availability_mode) for band in self.bands],
+            dtype=np.float32,
+        )
+        tensors[SPECIAL_BAND_MASK_KEY] = torch.from_numpy(band_mask)
         y = torch.from_numpy(target.astype(np.float32))
         if not self.return_meta:
             return tensors, y

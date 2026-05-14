@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Literal, Sequence
+from typing import Dict, Iterable, Literal, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -105,6 +105,7 @@ class MultiBandFusionModel(nn.Module):
         fusion: str = "gated",
         dropout: float = 0.3,
         in_ch: int = 1,
+        label_band_mask: Optional[torch.Tensor] = None,
     ) -> None:
         super().__init__()
         self.bands = tuple(str(band) for band in bands)
@@ -118,6 +119,15 @@ class MultiBandFusionModel(nn.Module):
             raise ValueError(f"All branch encoders must expose the same embedding_dim, got {dims}")
         self.embedding_dim = dims[0]
         self.dropout = nn.Dropout(dropout)
+        if label_band_mask is None:
+            label_band_mask = torch.ones(len(self.bands), self.num_classes, dtype=torch.float32)
+        label_band_mask = torch.as_tensor(label_band_mask, dtype=torch.float32)
+        if tuple(label_band_mask.shape) != (len(self.bands), self.num_classes):
+            raise ValueError(
+                "label_band_mask must have shape "
+                f"({len(self.bands)}, {self.num_classes}), got {tuple(label_band_mask.shape)}"
+            )
+        self.register_buffer("label_band_mask", label_band_mask.clamp(0.0, 1.0), persistent=True)
         self.branch_heads = nn.ModuleDict(
             {band: nn.Linear(self.embedding_dim, self.num_classes) for band in self.bands}
         )
@@ -130,6 +140,21 @@ class MultiBandFusionModel(nn.Module):
         else:
             raise ValueError("fusion must be one of: gated, concat, mean_logits")
 
+    def _valid_band_class_mask(self, inputs: Dict[str, torch.Tensor], batch_size: int, device: torch.device) -> torch.Tensor:
+        valid = self.label_band_mask.to(device=device).unsqueeze(0).expand(batch_size, -1, -1)
+        sample_mask = inputs.get("__band_mask__")
+        if sample_mask is not None:
+            if sample_mask.ndim == 1:
+                sample_mask = sample_mask.unsqueeze(0)
+            sample_mask = sample_mask.to(device=device, dtype=valid.dtype)
+            if tuple(sample_mask.shape) != (batch_size, len(self.bands)):
+                raise ValueError(
+                    f"__band_mask__ must have shape ({batch_size}, {len(self.bands)}), "
+                    f"got {tuple(sample_mask.shape)}"
+                )
+            valid = valid * sample_mask.clamp(0.0, 1.0).unsqueeze(-1)
+        return valid
+
     def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         embeddings = []
         branch_logits = []
@@ -140,13 +165,18 @@ class MultiBandFusionModel(nn.Module):
             embeddings.append(emb)
             branch_logits.append(self.branch_heads[band](emb))
         stacked_logits = torch.stack(branch_logits, dim=1)
+        valid = self._valid_band_class_mask(inputs, stacked_logits.shape[0], stacked_logits.device)
         if self.fusion in {"mean", "mean_logits"}:
-            return stacked_logits.mean(dim=1)
+            denom = valid.sum(dim=1).clamp_min(1.0)
+            return (stacked_logits * valid).sum(dim=1) / denom
         concat = torch.cat(embeddings, dim=1)
         if self.fusion == "concat":
             return self.head(concat)
         gate_logits = self.gate(concat).view(concat.shape[0], len(self.bands), self.num_classes)
+        gate_logits = gate_logits.masked_fill(valid <= 0, -1.0e4)
         weights = torch.softmax(gate_logits, dim=1)
+        weights = weights * valid
+        weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0e-8)
         return (weights * stacked_logits).sum(dim=1)
 
 
@@ -158,6 +188,7 @@ def create_multiband_model(
     fusion: str = "gated",
     dropout: float = 0.3,
     in_ch: int = 1,
+    label_band_mask: Optional[torch.Tensor] = None,
 ) -> MultiBandFusionModel:
     return MultiBandFusionModel(
         bands=bands,
@@ -166,6 +197,7 @@ def create_multiband_model(
         fusion=fusion,
         dropout=dropout,
         in_ch=in_ch,
+        label_band_mask=label_band_mask,
     )
 
 
