@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 try:
@@ -44,6 +45,40 @@ from src.dataset.multiband import MultiBandMatDataset, parse_band_crop_shapes  #
 from src.dataset.multilabel import LabelVocabulary, multilabel_metrics  # noqa: E402
 from src.models.multiband import create_multiband_model, load_resnet_encoder_checkpoint  # noqa: E402
 from src.utils.model_utils import create_checkpoint_metadata  # noqa: E402
+
+
+class BalancedBCEWithLogitsLoss(nn.Module):
+    """Batch-balanced BCE that gives positive and negative examples equal label weight."""
+
+    def __init__(self, pos_weight: Optional[torch.Tensor] = None) -> None:
+        super().__init__()
+        if pos_weight is None:
+            self.register_buffer("pos_weight", None, persistent=False)
+        else:
+            self.register_buffer("pos_weight", pos_weight.detach().clone(), persistent=False)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        loss = F.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            pos_weight=self.pos_weight,
+            reduction="none",
+        )
+        pos_mask = targets >= 0.5
+        neg_mask = ~pos_mask
+        pos_count = pos_mask.sum(dim=0).clamp_min(1)
+        neg_count = neg_mask.sum(dim=0).clamp_min(1)
+        pos_loss = (loss * pos_mask.to(loss.dtype)).sum(dim=0) / pos_count
+        neg_loss = (loss * neg_mask.to(loss.dtype)).sum(dim=0) / neg_count
+        has_pos = pos_mask.any(dim=0)
+        has_neg = neg_mask.any(dim=0)
+        both = has_pos & has_neg
+        per_label = torch.where(
+            both,
+            0.5 * (pos_loss + neg_loss),
+            torch.where(has_pos, pos_loss, neg_loss),
+        )
+        return per_label.mean()
 
 
 def build_label_band_mask(
@@ -213,6 +248,24 @@ def _load_checkpoint_state(path: Path) -> Dict[str, torch.Tensor]:
     raise ValueError(f"Could not read checkpoint state from {path}")
 
 
+def _freeze_branch_encoders(model: nn.Module) -> Dict[str, int]:
+    branches = getattr(model, "branches", None)
+    if branches is None:
+        return {"frozen_parameters": 0, "frozen_tensors": 0}
+    frozen_parameters = 0
+    frozen_tensors = 0
+    for param in branches.parameters():
+        if param.requires_grad:
+            frozen_parameters += int(param.numel())
+            frozen_tensors += 1
+        param.requires_grad_(False)
+    return {"frozen_parameters": frozen_parameters, "frozen_tensors": frozen_tensors}
+
+
+def _trainable_parameter_count(model: nn.Module) -> int:
+    return sum(int(param.numel()) for param in model.parameters() if param.requires_grad)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest-csv", required=True)
@@ -241,6 +294,8 @@ def main() -> int:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--use-pos-weight", action="store_true")
+    parser.add_argument("--loss-mode", default="bce", choices=["bce", "balanced_bce"])
+    parser.add_argument("--freeze-branches", action="store_true")
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
@@ -316,9 +371,20 @@ def main() -> int:
         state = _load_checkpoint_state(Path(args.init_low_checkpoint).resolve())
         init_info["low"] = load_resnet_encoder_checkpoint(model, state, bands=["low"])
 
+    freeze_info: Dict[str, Any] = {"freeze_branches": bool(args.freeze_branches)}
+    if args.freeze_branches:
+        freeze_info.update(_freeze_branch_encoders(model))
+    freeze_info["trainable_parameters"] = _trainable_parameter_count(model)
+
     pos_weight = compute_pos_weight(train_ds).to(device) if args.use_pos_weight else None
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
+    if str(args.loss_mode) == "balanced_bce":
+        loss_fn = BalancedBCEWithLogitsLoss(pos_weight=pos_weight)
+    else:
+        loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    trainable_params = [param for param in model.parameters() if param.requires_grad]
+    if not trainable_params:
+        raise SystemExit("No trainable parameters remain after applying freeze options")
+    optimizer = torch.optim.AdamW(trainable_params, lr=float(args.lr), weight_decay=float(args.weight_decay))
 
     history: List[Dict[str, Any]] = []
     best_metric = -1.0
@@ -376,8 +442,9 @@ def main() -> int:
                     "label_vocabulary": vocab.to_dict(),
                     "best_metric": best_metric,
                     "init_checkpoint": init_info,
-                    "loss": "BCEWithLogitsLoss",
+                    "loss": str(args.loss_mode),
                     "pos_weight": pos_weight.detach().cpu().tolist() if pos_weight is not None else None,
+                    "freeze_info": freeze_info,
                     "bands": bands,
                     "band_crop_shapes": band_shapes,
                     "band_availability_mode": args.band_availability_mode,
@@ -451,6 +518,9 @@ def main() -> int:
         "best_metric": best_metric,
         "best_checkpoint": str(best_path),
         "init_checkpoint": init_info,
+        "loss": str(args.loss_mode),
+        "pos_weight": pos_weight.detach().cpu().tolist() if pos_weight is not None else None,
+        "freeze_info": freeze_info,
         "bands": bands,
         "band_crop_shapes": band_shapes,
         "band_availability_mode": args.band_availability_mode,
