@@ -153,7 +153,7 @@ def _available_audio_names(audio_dir: Optional[Path]) -> Optional[set[str]]:
 def _label_record(row: Dict[str, Any]) -> Dict[str, Any]:
     species = annotation_species_code(row)
     call_type = annotation_call_type(row)
-    return {
+    record = {
         "species_code": species or None,
         "species": species_display_name(species) if species else None,
         "call_type": call_type or None,
@@ -163,6 +163,52 @@ def _label_record(row: Dict[str, Any]) -> Dict[str, Any]:
         "confidence": None,
         "trainable": bool(species and species not in NONBIOLOGICAL_SPECIES_CODES) or bool(call_type),
     }
+    begin_s = _float_or_none(row.get("begin_time_s") or row.get("begin_time"))
+    end_s = _float_or_none(row.get("end_time_s") or row.get("end_time"))
+    low_hz = _float_or_none(row.get("low_freq_hz") or row.get("low_freq"))
+    high_hz = _float_or_none(row.get("high_freq_hz") or row.get("high_freq"))
+    if begin_s is not None and end_s is not None:
+        extent: Dict[str, float] = {
+            "begin_time_s": float(begin_s),
+            "end_time_s": float(end_s),
+        }
+        if low_hz is not None:
+            extent["low_freq_hz"] = float(low_hz)
+        if high_hz is not None:
+            extent["high_freq_hz"] = float(high_hz)
+        record["annotation_extent"] = extent
+    return record
+
+
+def _format_optional_float(value: Any) -> str:
+    numeric = _float_or_none(value)
+    return "" if numeric is None else f"{numeric:.6f}"
+
+
+def _copy_annotation_metadata(row: Dict[str, Any]) -> Dict[str, str]:
+    """Preserve source annotation metadata that is useful for localization QA."""
+    out = {
+        "sheet": clean_text(row.get("sheet")),
+        "row_index": clean_text(row.get("row_index")),
+        "filename": clean_text(row.get("filename")),
+        "call_type_raw": clean_text(row.get("call_type_raw")),
+        "call_type_bucket": clean_text(row.get("call_type_bucket")),
+        "begin_time_s": _format_optional_float(row.get("begin_time_s") or row.get("begin_time")),
+        "end_time_s": _format_optional_float(row.get("end_time_s") or row.get("end_time")),
+        "low_freq_hz": _format_optional_float(row.get("low_freq_hz") or row.get("low_freq")),
+        "high_freq_hz": _format_optional_float(row.get("high_freq_hz") or row.get("high_freq")),
+        "peak_freq_hz": _format_optional_float(row.get("peak_freq_hz") or row.get("peak_freq")),
+        "peak_power": _format_optional_float(row.get("peak_power")),
+        "comments": clean_text(row.get("comments")),
+        "verified_flag": clean_text(row.get("verified_flag")),
+        "vessel_flag": clean_text(row.get("vessel_flag")),
+        "granularity": clean_text(row.get("granularity")),
+    }
+    # External manifests use this naming, so keep both aliases populated for
+    # downstream coverage audits and source-agnostic renderers.
+    out["low_frequency_hz"] = out["low_freq_hz"]
+    out["high_frequency_hz"] = out["high_freq_hz"]
+    return out
 
 
 def _expected_mat_name(filename: str, begin_s: float, end_s: float) -> str:
@@ -198,6 +244,7 @@ def _positive_manifest_row(row: Dict[str, Any], dataset_name: str) -> Dict[str, 
         "context_tags": "" if not negative_bucket else negative_bucket,
         "labels_json": json.dumps(labels, sort_keys=True, separators=(",", ":")),
     }
+    out.update(_copy_annotation_metadata(row))
     out["label_ids"] = "|".join(label_ids_from_row(out))
     return out
 

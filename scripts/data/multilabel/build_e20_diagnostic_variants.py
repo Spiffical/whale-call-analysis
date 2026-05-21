@@ -167,6 +167,10 @@ def split_pipe(value: Any) -> List[str]:
     return [token.strip() for token in clean(value).split("|") if token.strip()]
 
 
+def is_truthy(value: Any) -> bool:
+    return clean(value).lower() in {"1", "true", "yes", "y"}
+
+
 def labels(row: Mapping[str, Any]) -> Tuple[str, ...]:
     for key in ("label_ids", "target_label_ids", "canonical_label_ids", "analysis_label_ids", "source_label_ids"):
         value = clean(row.get(key))
@@ -196,6 +200,158 @@ def month_bin(row: Mapping[str, Any]) -> str:
         if match:
             return f"{match.group(1)}-{match.group(2)}"
     return "<unknown>"
+
+
+def source_audio_basename(row: Mapping[str, Any]) -> str:
+    for key in ("clip", "source_audio", "filename", "source_soundfile", "item_id"):
+        text = clean(row.get(key))
+        if text:
+            return Path(text).name
+    return clean(row.get("item_id")) or "<missing>"
+
+
+def source_date_key(row: Mapping[str, Any]) -> str:
+    text = " ".join(
+        clean(row.get(key))
+        for key in ("clip", "source_audio", "filename", "source_soundfile", "item_id", "mat_path")
+    )
+    match = re.search(r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)", text)
+    if match:
+        return f"{match.group(1)}{match.group(2)}{match.group(3)}"
+    month = month_bin(row)
+    return month if month != "<unknown>" else source_audio_basename(row)
+
+
+def split_group_key(row: Mapping[str, Any], mode: str) -> str:
+    source = clean(row.get("source_kind")) or "<source>"
+    if mode == "source_audio":
+        return f"{source}:{source_audio_basename(row)}"
+    if mode == "source_date":
+        return f"{source}:{source_date_key(row)}"
+    if mode == "event_group":
+        return f"{source}:{clean(row.get('event_group')) or source_audio_basename(row)}"
+    raise ValueError(f"Unknown split_grouping mode {mode!r}")
+
+
+def reassign_splits_by_group(
+    rows: Sequence[Dict[str, str]],
+    *,
+    mode: str,
+    source_kinds: Sequence[str],
+    stratify_label_ids: Sequence[str] = (),
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+    selected_sources = {clean(source) for source in source_kinds if clean(source)}
+    target_rows = [
+        dict(row)
+        for row in rows
+        if not selected_sources or clean(row.get("source_kind")) in selected_sources
+    ]
+    untouched_rows = [
+        dict(row)
+        for row in rows
+        if selected_sources and clean(row.get("source_kind")) not in selected_sources
+    ]
+    if not target_rows:
+        return list(rows), {
+            "mode": mode,
+            "source_kinds": sorted(selected_sources),
+            "reason": "no_matching_rows",
+        }
+
+    groups: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    for row in target_rows:
+        groups[split_group_key(row, mode)].append(row)
+
+    ordered = sorted(
+        groups.items(),
+        key=lambda item: (
+            min(month_bin(row) for row in item[1]),
+            item[0],
+        ),
+    )
+
+    def desired_counts(n_groups: int) -> Dict[str, int]:
+        if n_groups == 1:
+            return {"train": 1, "val": 0, "test": 0}
+        n_train = max(1, int(n_groups * float(train_ratio)))
+        n_val = int(n_groups * float(val_ratio))
+        if n_groups >= 3 and n_val < 1:
+            n_val = 1
+        if n_train + n_val >= n_groups:
+            n_train = max(1, n_groups - n_val - 1)
+        return {
+            "train": n_train,
+            "val": n_val,
+            "test": n_groups - n_train - n_val,
+        }
+
+    n_groups = len(ordered)
+    split_group_counts = desired_counts(n_groups)
+    stratify_labels = {clean(label) for label in stratify_label_ids if clean(label)}
+    positive_group_counts = {"train": 0, "val": 0, "test": 0}
+    assigned: Dict[str, str] = {}
+    if stratify_labels:
+        positive = [
+            (key, group_rows)
+            for key, group_rows in ordered
+            if any(stratify_labels.intersection(labels(row)) for row in group_rows)
+        ]
+        negative = [(key, group_rows) for key, group_rows in ordered if key not in {item[0] for item in positive}]
+        positive_counts = desired_counts(len(positive)) if positive else {"train": 0, "val": 0, "test": 0}
+        cursor = 0
+        for split in ("train", "val", "test"):
+            for key, _ in positive[cursor : cursor + positive_counts[split]]:
+                assigned[key] = split
+                positive_group_counts[split] += 1
+            cursor += positive_counts[split]
+
+        remaining_counts = {
+            split: max(0, split_group_counts[split] - positive_counts.get(split, 0))
+            for split in ("train", "val", "test")
+        }
+        cursor = 0
+        for split in ("train", "val", "test"):
+            for key, _ in negative[cursor : cursor + remaining_counts[split]]:
+                assigned[key] = split
+            cursor += remaining_counts[split]
+        for key, _ in negative[cursor:]:
+            assigned[key] = min(("train", "val", "test"), key=lambda split: sum(1 for value in assigned.values() if value == split))
+    else:
+        cursor = 0
+        for split in ("train", "val", "test"):
+            for key, _ in ordered[cursor : cursor + split_group_counts[split]]:
+                assigned[key] = split
+            cursor += split_group_counts[split]
+
+    reassigned: List[Dict[str, str]] = []
+    for key, group_rows in ordered:
+        split = assigned.get(key, "train")
+        for row in group_rows:
+            out = dict(row)
+            out["split"] = split
+            reassigned.append(out)
+
+    split_rows = Counter(clean(row.get("split")) for row in reassigned)
+    leaked = 0
+    for key, group_rows in groups.items():
+        splits = {assigned.get(key, clean(row.get("split"))) for row in group_rows}
+        if len(splits) > 1:
+            leaked += 1
+    summary = {
+        "mode": mode,
+        "source_kinds": sorted(selected_sources) if selected_sources else ["<all>"],
+        "group_count": n_groups,
+        "target_row_count": len(target_rows),
+        "untouched_row_count": len(untouched_rows),
+        "split_group_counts": dict(split_group_counts),
+        "stratify_label_ids": sorted(stratify_labels),
+        "positive_group_counts": dict(positive_group_counts),
+        "split_row_counts": dict(split_rows.most_common()),
+        "leaked_group_count": leaked,
+    }
+    return sorted(untouched_rows + reassigned, key=lambda row: (clean(row.get("split")), source_audio_basename(row), clean(row.get("item_id")))), summary
 
 
 def subset_vocab(vocab_payload: Mapping[str, Any], active_labels: Sequence[str]) -> Dict[str, Any]:
@@ -424,8 +580,28 @@ def build_variants(
             for row in rows
             if keep_row(row, variant)
         ]
+        oversample_summary: Dict[str, Any] = {"dropped_oversampled_rows": 0}
+        if variant.get("drop_oversampled_rows"):
+            before = len(selected)
+            selected = [row for row in selected if not is_truthy(row.get("is_oversampled"))]
+            oversample_summary = {
+                "dropped_oversampled_rows": before - len(selected),
+                "remaining_rows": len(selected),
+            }
+        split_grouping_summary: Dict[str, Any] = {"mode": "preserve_input"}
+        if variant.get("split_grouping"):
+            selected, split_grouping_summary = reassign_splits_by_group(
+                selected,
+                mode=str(variant["split_grouping"]),
+                source_kinds=variant.get("split_grouping_source_kinds", []),
+                stratify_label_ids=variant.get("split_grouping_label_ids", []),
+                train_ratio=float(variant.get("train_ratio", 0.7)),
+                val_ratio=float(variant.get("val_ratio", 0.15)),
+            )
         selected, cap_summary = apply_cap(selected, variant, seed=seed)
         summary = summarize(selected, variant, fieldnames, cap_summary)
+        summary["oversample_summary"] = dict(oversample_summary)
+        summary["split_grouping_summary"] = dict(split_grouping_summary)
         summary.update(
             {
                 "input_manifest": str(input_manifest),
