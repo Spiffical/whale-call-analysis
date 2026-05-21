@@ -103,6 +103,7 @@ class MultiBandFusionModel(nn.Module):
         num_classes: int,
         encoder: str = "resnet18",
         fusion: str = "gated",
+        head_type: str = "shared",
         dropout: float = 0.3,
         in_ch: int = 1,
         label_band_mask: Optional[torch.Tensor] = None,
@@ -113,6 +114,11 @@ class MultiBandFusionModel(nn.Module):
             raise ValueError("At least one band is required")
         self.num_classes = int(num_classes)
         self.fusion = str(fusion).lower()
+        if self.fusion not in {"gated", "concat", "mean", "mean_logits"}:
+            raise ValueError("fusion must be one of: gated, concat, mean_logits")
+        self.head_type = str(head_type or "shared").lower()
+        if self.head_type not in {"shared", "per_species"}:
+            raise ValueError("head_type must be one of: shared, per_species")
         self.branches = nn.ModuleDict({band: _make_encoder(encoder, in_ch=in_ch) for band in self.bands})
         dims = [int(getattr(self.branches[band], "embedding_dim")) for band in self.bands]
         if len(set(dims)) != 1:
@@ -128,17 +134,31 @@ class MultiBandFusionModel(nn.Module):
                 f"({len(self.bands)}, {self.num_classes}), got {tuple(label_band_mask.shape)}"
             )
         self.register_buffer("label_band_mask", label_band_mask.clamp(0.0, 1.0), persistent=True)
-        self.branch_heads = nn.ModuleDict(
-            {band: nn.Linear(self.embedding_dim, self.num_classes) for band in self.bands}
-        )
-        if self.fusion == "gated":
-            self.gate = nn.Linear(self.embedding_dim * len(self.bands), len(self.bands) * self.num_classes)
-        elif self.fusion == "concat":
-            self.head = nn.Linear(self.embedding_dim * len(self.bands), self.num_classes)
-        elif self.fusion in {"mean", "mean_logits"}:
-            pass
+        if self.head_type == "shared":
+            self.branch_heads = nn.ModuleDict(
+                {band: nn.Linear(self.embedding_dim, self.num_classes) for band in self.bands}
+            )
+            if self.fusion == "gated":
+                self.gate = nn.Linear(self.embedding_dim * len(self.bands), len(self.bands) * self.num_classes)
+            elif self.fusion == "concat":
+                self.head = nn.Linear(self.embedding_dim * len(self.bands), self.num_classes)
         else:
-            raise ValueError("fusion must be one of: gated, concat, mean_logits")
+            self.branch_heads = nn.ModuleDict(
+                {
+                    band: nn.ModuleList(
+                        [nn.Linear(self.embedding_dim, 1) for _ in range(self.num_classes)]
+                    )
+                    for band in self.bands
+                }
+            )
+            if self.fusion == "gated":
+                self.gates = nn.ModuleList(
+                    [nn.Linear(self.embedding_dim * len(self.bands), len(self.bands)) for _ in range(self.num_classes)]
+                )
+            elif self.fusion == "concat":
+                self.heads = nn.ModuleList(
+                    [nn.Linear(self.embedding_dim * len(self.bands), 1) for _ in range(self.num_classes)]
+                )
 
     def _valid_band_class_mask(self, inputs: Dict[str, torch.Tensor], batch_size: int, device: torch.device) -> torch.Tensor:
         valid = self.label_band_mask.to(device=device).unsqueeze(0).expand(batch_size, -1, -1)
@@ -163,13 +183,28 @@ class MultiBandFusionModel(nn.Module):
                 raise KeyError(f"Missing input band {band!r}")
             emb = self.dropout(self.branches[band](inputs[band]))
             embeddings.append(emb)
-            branch_logits.append(self.branch_heads[band](emb))
+            heads = self.branch_heads[band]
+            if self.head_type == "shared":
+                branch_logits.append(heads(emb))
+            else:
+                branch_logits.append(torch.cat([head(emb) for head in heads], dim=1))
         stacked_logits = torch.stack(branch_logits, dim=1)
         valid = self._valid_band_class_mask(inputs, stacked_logits.shape[0], stacked_logits.device)
         if self.fusion in {"mean", "mean_logits"}:
             denom = valid.sum(dim=1).clamp_min(1.0)
             return (stacked_logits * valid).sum(dim=1) / denom
         concat = torch.cat(embeddings, dim=1)
+        if self.head_type == "per_species":
+            if self.fusion == "concat":
+                return torch.cat([head(concat) for head in self.heads], dim=1)
+            logits = []
+            for class_idx, gate in enumerate(self.gates):
+                class_valid = valid[:, :, class_idx]
+                gate_logits = gate(concat).masked_fill(class_valid <= 0, -1.0e4)
+                weights = torch.softmax(gate_logits, dim=1) * class_valid
+                weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0e-8)
+                logits.append((weights * stacked_logits[:, :, class_idx]).sum(dim=1, keepdim=True))
+            return torch.cat(logits, dim=1)
         if self.fusion == "concat":
             return self.head(concat)
         gate_logits = self.gate(concat).view(concat.shape[0], len(self.bands), self.num_classes)
@@ -186,6 +221,7 @@ def create_multiband_model(
     num_classes: int,
     bands: Sequence[str] = ("low", "mid", "high"),
     fusion: str = "gated",
+    head_type: str = "shared",
     dropout: float = 0.3,
     in_ch: int = 1,
     label_band_mask: Optional[torch.Tensor] = None,
@@ -195,6 +231,7 @@ def create_multiband_model(
         num_classes=num_classes,
         encoder=encoder,
         fusion=fusion,
+        head_type=head_type,
         dropout=dropout,
         in_ch=in_ch,
         label_band_mask=label_band_mask,

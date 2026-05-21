@@ -276,6 +276,7 @@ def main() -> int:
     parser.add_argument("--band-crop-shapes", default="low:391x50,mid:256x100,high:256x312")
     parser.add_argument("--encoder", default="resnet18")
     parser.add_argument("--fusion", default="gated", choices=["gated", "concat", "mean_logits", "mean"])
+    parser.add_argument("--head-type", default="shared", choices=["shared", "per_species"])
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--init-low-checkpoint", default=None)
     parser.add_argument("--init-all-branches-checkpoint", default=None)
@@ -355,6 +356,7 @@ def main() -> int:
         num_classes=vocab.size,
         bands=bands,
         fusion=str(args.fusion),
+        head_type=str(args.head_type),
         dropout=float(args.dropout),
         in_ch=1,
         label_band_mask=build_label_band_mask(
@@ -437,7 +439,7 @@ def main() -> int:
                 {
                     "model_state": model.state_dict(),
                     "epoch": epoch,
-                    "architecture": f"multiband-{args.encoder}-{args.fusion}",
+                    "architecture": f"multiband-{args.encoder}-{args.fusion}-{args.head_type}",
                     "num_labels": vocab.size,
                     "label_vocabulary": vocab.to_dict(),
                     "best_metric": best_metric,
@@ -446,6 +448,7 @@ def main() -> int:
                     "pos_weight": pos_weight.detach().cpu().tolist() if pos_weight is not None else None,
                     "freeze_info": freeze_info,
                     "bands": bands,
+                    "head_type": args.head_type,
                     "band_crop_shapes": band_shapes,
                     "band_availability_mode": args.band_availability_mode,
                     "class_band_mask_mode": args.class_band_mask_mode,
@@ -509,6 +512,7 @@ def main() -> int:
         "exp_dir": str(exp_dir),
         "encoder": args.encoder,
         "fusion": args.fusion,
+        "head_type": args.head_type,
         "device": str(device),
         "train_samples": len(train_ds),
         "val_samples": len(val_ds),
