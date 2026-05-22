@@ -59,7 +59,7 @@ def is_onc_killer_whale_annotation(row: Mapping[str, Any]) -> bool:
 
 
 def annotation_key(row: Mapping[str, Any]) -> Tuple[str, str]:
-    begin = safe_float(row.get("begin_time_s") or row.get("begin_time"))
+    begin = safe_float(row.get("begin_time_s") or row.get("begin_time") or row.get("begin_s") or row.get("window_start_s"))
     return clean_text(row.get("filename") or row.get("clip") or Path(clean_text(row.get("source_audio"))).name), (
         "" if begin is None else f"{begin:.3f}"
     )
