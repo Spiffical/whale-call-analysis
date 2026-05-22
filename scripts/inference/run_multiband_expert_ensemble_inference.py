@@ -47,6 +47,7 @@ LABEL_NAMES = {
     "species:Mn": "humpback whale",
     "species:Oo": "killer whale",
 }
+STITCH_EDGE_SECONDS = 20.0
 
 
 def clean(value: Any) -> str:
@@ -304,6 +305,7 @@ class StitchedAudio:
     sample_rate_hz: int
     target_offset_s: float
     context_seconds: float
+    edge_context_seconds: float
     current_path: Path
     previous_path: Optional[Path]
     next_path: Optional[Path]
@@ -311,6 +313,7 @@ class StitchedAudio:
     def row_metadata(self) -> Dict[str, str]:
         return {
             "stitch_context_seconds": f"{self.context_seconds:.6f}",
+            "stitch_edge_context_seconds": f"{self.edge_context_seconds:.6f}",
             "stitch_target_offset_s": f"{self.target_offset_s:.6f}",
             "stitch_current_audio_path": str(self.current_path),
             "stitch_previous_audio_path": str(self.previous_path or ""),
@@ -327,8 +330,9 @@ def load_stitched_audio(
     clip_seconds: float,
     audio_index: Mapping[str, Path],
     audio_index_by_second: Mapping[str, Path],
+    edge_context_seconds: float = STITCH_EDGE_SECONDS,
 ) -> StitchedAudio:
-    """Load previous/current/next 5-minute files for edge-safe spectrograms."""
+    """Load adjacent edge audio plus the target file for edge-safe spectrograms."""
 
     current_path = _find_audio_file_with_index(raw_audio_dir, source_audio, audio_index, audio_index_by_second)
     if current_path is None:
@@ -342,8 +346,9 @@ def load_stitched_audio(
     next_path: Optional[Path] = None
     chunks: List[np.ndarray] = []
     target_offset_s = 0.0
+    edge_samples = max(0, int(round(float(edge_context_seconds) * sample_rate_hz)))
 
-    if clip_dt is not None and device:
+    if edge_samples > 0 and clip_dt is not None and device:
         candidate = _find_adjacent_file_with_index(
             raw_audio_dir,
             device,
@@ -354,13 +359,14 @@ def load_stitched_audio(
             previous_audio, previous_sr = _read_audio(candidate)
             if int(previous_sr) == int(sample_rate_hz):
                 previous_audio = np.asarray(previous_audio, dtype=np.float32)
+                previous_audio = previous_audio[-edge_samples:]
                 chunks.append(previous_audio)
                 target_offset_s = len(previous_audio) / float(sample_rate_hz)
                 previous_path = candidate
 
     chunks.append(current_audio)
 
-    if clip_dt is not None and device:
+    if edge_samples > 0 and clip_dt is not None and device:
         candidate = _find_adjacent_file_with_index(
             raw_audio_dir,
             device,
@@ -370,7 +376,7 @@ def load_stitched_audio(
         if candidate is not None and candidate.exists():
             next_audio, next_sr = _read_audio(candidate)
             if int(next_sr) == int(sample_rate_hz):
-                chunks.append(np.asarray(next_audio, dtype=np.float32))
+                chunks.append(np.asarray(next_audio, dtype=np.float32)[:edge_samples])
                 next_path = candidate
 
     stitched = np.concatenate(chunks).astype(np.float32, copy=False)
@@ -380,6 +386,7 @@ def load_stitched_audio(
         sample_rate_hz=int(sample_rate_hz),
         target_offset_s=float(target_offset_s),
         context_seconds=len(stitched) / float(sample_rate_hz),
+        edge_context_seconds=float(edge_context_seconds),
         current_path=current_path,
         previous_path=previous_path,
         next_path=next_path,
@@ -776,6 +783,7 @@ def add_audio_crop_cache(
             best_end_s=clean(row.get("best_end_s")),
             max_score=clean(row.get("max_score")),
             stitch_context_seconds=f"{stitched.context_seconds:.6f}",
+            stitch_edge_context_seconds=f"{stitched.edge_context_seconds:.6f}",
             stitch_target_offset_s=f"{stitched.target_offset_s:.6f}",
             stitch_previous_audio_path=str(stitched.previous_path or ""),
             stitch_next_audio_path=str(stitched.next_path or ""),
