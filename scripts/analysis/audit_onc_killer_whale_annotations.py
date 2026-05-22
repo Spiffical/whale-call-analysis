@@ -53,7 +53,9 @@ def safe_float(value: Any) -> Optional[float]:
 
 
 def is_onc_killer_whale_annotation(row: Mapping[str, Any]) -> bool:
-    return clean_text(row.get("species")) == "Oo" or clean_text(row.get("call_type_raw")) == "CK"
+    # ONC call_type_raw=CK is mostly generic odontocete click under species OD.
+    # The killer whale support set is keyed by species code Oo.
+    return clean_text(row.get("species")) == "Oo"
 
 
 def annotation_key(row: Mapping[str, Any]) -> Tuple[str, str]:

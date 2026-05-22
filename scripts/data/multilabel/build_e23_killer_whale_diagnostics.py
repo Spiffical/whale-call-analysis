@@ -187,10 +187,13 @@ def hydrate_onc_annotation_metadata(
 ) -> Dict[str, Any]:
     fieldnames, rows = read_csv(input_manifest)
     _, raw_rows = read_csv(raw_onc_annotations)
+    # ONC uses call_type_raw=CK for many generic odontocete clicks. Killer
+    # whale positives are the rows whose species code is Oo, regardless of
+    # their raw call type.
     raw_by_key = {
         annotation_key_from_raw(row): metadata_from_raw(row)
         for row in raw_rows
-        if clean(row.get("species")) == "Oo" or clean(row.get("call_type_raw")) == "CK"
+        if clean(row.get("species")) == "Oo"
     }
     fieldnames_out = list(fieldnames)
     for field in ANNOTATION_METADATA_FIELDS:
