@@ -25,7 +25,7 @@ GPU_CPUS="4"
 GPU_MEM="48G"
 GPU_GRES="gpu:nvidia_h100_80gb_hbm3_1g.10gb:1"
 GPU_EXCLUDE=""
-CHAIN_DEPTH="4"
+CHAIN_DEPTH="1"
 STOP_AFTER_SECONDS="9000"
 WANDB_GROUP="weekend-20260502-e26-onc-only"
 DRY_RUN="false"
@@ -37,8 +37,8 @@ Usage:
   bash drac/scripts/submit_multispecies_e26_onc_only_experts.sh [options]
 
 E26 repeats the best E24 expert ensemble setup while training only on ONC
-annotations. It submits three resumable 3-hour MIG chains, one each for fin
-whale, blue whale, and humpback whale, followed by an ONC-calibrated report.
+annotations. It submits one 3-hour MIG slice per species by default, followed
+by an ONC-calibrated report. Reuse the same --stamp to resume another slice.
 
 Options:
   --repo-root PATH          Repo used inside Nibi jobs
@@ -48,7 +48,7 @@ Options:
   --epochs N                Default: 45
   --batch-size N            Default: 32
   --num-workers N           Default: 4
-  --chain-depth N           Default: 4
+  --chain-depth N           Default: 1
   --stop-after-seconds N    Default: 9000
   --gres SPEC               Default: gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
   --gpu-exclude LIST        Default: empty
