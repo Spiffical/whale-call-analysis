@@ -266,6 +266,13 @@ def _trainable_parameter_count(model: nn.Module) -> int:
     return sum(int(param.numel()) for param in model.parameters() if param.requires_grad)
 
 
+def _optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in list(state.items()):
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest-csv", required=True)
@@ -280,6 +287,8 @@ def main() -> int:
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--init-low-checkpoint", default=None)
     parser.add_argument("--init-all-branches-checkpoint", default=None)
+    parser.add_argument("--resume-checkpoint", default=None, help="Resume model/optimizer/history from a full training checkpoint")
+    parser.add_argument("--stop-after-seconds", type=float, default=None, help="Stop cleanly after the current epoch once this runtime is exceeded")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -391,8 +400,27 @@ def main() -> int:
     history: List[Dict[str, Any]] = []
     best_metric = -1.0
     best_path = exp_dir / "best.pt"
+    last_path = exp_dir / "last.pt"
     best_eval: Optional[Dict[str, Any]] = None
-    for epoch in range(1, int(args.epochs) + 1):
+    start_epoch = 1
+    if args.resume_checkpoint:
+        resume_path = Path(args.resume_checkpoint).resolve()
+        if resume_path.exists():
+            resume = torch.load(resume_path, map_location=device)
+            if isinstance(resume, dict) and isinstance(resume.get("model_state"), dict):
+                model.load_state_dict(resume["model_state"])
+            if isinstance(resume, dict) and isinstance(resume.get("optimizer_state"), dict):
+                optimizer.load_state_dict(resume["optimizer_state"])
+                _optimizer_state_to_device(optimizer, device)
+            history = list(resume.get("history", [])) if isinstance(resume, dict) else []
+            best_metric = float(resume.get("best_metric", best_metric)) if isinstance(resume, dict) else best_metric
+            start_epoch = int(resume.get("epoch", 0)) + 1 if isinstance(resume, dict) else start_epoch
+            print(f"Resumed from {resume_path} at epoch {start_epoch}", flush=True)
+        else:
+            print(f"Resume checkpoint not found, starting fresh: {resume_path}", flush=True)
+
+    run_start = time.time()
+    for epoch in range(start_epoch, int(args.epochs) + 1):
         train_result = train_one_epoch(model, train_loader, optimizer, device, loss_fn)
         train_metrics = multilabel_metrics(train_result["targets"], train_result["scores"], threshold=float(args.threshold))
         val_result = evaluate(
@@ -438,6 +466,7 @@ def main() -> int:
             checkpoint.update(
                 {
                     "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
                     "epoch": epoch,
                     "architecture": f"multiband-{args.encoder}-{args.fusion}-{args.head_type}",
                     "num_labels": vocab.size,
@@ -452,11 +481,42 @@ def main() -> int:
                     "band_crop_shapes": band_shapes,
                     "band_availability_mode": args.band_availability_mode,
                     "class_band_mask_mode": args.class_band_mask_mode,
+                    "history": history,
                 }
             )
             torch.save(checkpoint, best_path)
+        last_checkpoint = create_checkpoint_metadata(model, args, wandb_run_id=None)
+        last_checkpoint.update(
+            {
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "epoch": epoch,
+                "architecture": f"multiband-{args.encoder}-{args.fusion}-{args.head_type}",
+                "num_labels": vocab.size,
+                "label_vocabulary": vocab.to_dict(),
+                "best_metric": best_metric,
+                "init_checkpoint": init_info,
+                "loss": str(args.loss_mode),
+                "pos_weight": pos_weight.detach().cpu().tolist() if pos_weight is not None else None,
+                "freeze_info": freeze_info,
+                "bands": bands,
+                "head_type": args.head_type,
+                "band_crop_shapes": band_shapes,
+                "band_availability_mode": args.band_availability_mode,
+                "class_band_mask_mode": args.class_band_mask_mode,
+                "history": history,
+            }
+        )
+        torch.save(last_checkpoint, last_path)
+        if args.stop_after_seconds is not None and (time.time() - run_start) >= float(args.stop_after_seconds):
+            print(f"Stopping cleanly after epoch {epoch} due to --stop-after-seconds", flush=True)
+            break
 
     if best_eval is None:
+        if best_path.exists():
+            checkpoint = torch.load(best_path, map_location=device)
+            if isinstance(checkpoint, dict) and isinstance(checkpoint.get("model_state"), dict):
+                model.load_state_dict(checkpoint["model_state"])
         best_eval = evaluate(model, val_loader, device, loss_fn, float(args.threshold), max_example_images=int(args.max_example_images))
     write_prediction_exports(exp_dir, vocab, best_eval, threshold=float(args.threshold), prefix="validation")
     plot_paths: List[Path] = []
