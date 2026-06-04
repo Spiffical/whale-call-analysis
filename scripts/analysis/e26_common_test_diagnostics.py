@@ -60,6 +60,14 @@ def _read_csv(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def _first_present(row: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = clean(row.get(key))
+        if value:
+            return value
+    return ""
+
+
 def _merge_label_text(existing: str, new: Iterable[str]) -> str:
     labels: List[str] = []
     for label in [*split_labels(existing), *new]:
@@ -73,14 +81,15 @@ def _common_rows(plan_rows: Sequence[Mapping[str, str]], *, split: str, source_k
     provenance: Counter[str] = Counter()
     skipped: List[Dict[str, str]] = []
     for plan in plan_rows:
-        manifest = Path(clean(plan.get("manifest_csv")))
+        manifest_text = _first_present(plan, "manifest_csv", "manifest")
+        manifest = Path(manifest_text)
         variant = clean(plan.get("variant"))
         if not variant or not clean(plan.get("experiment")) or not manifest.is_file():
             skipped.append(
                 {
                     "experiment": clean(plan.get("experiment")),
                     "variant": variant,
-                    "manifest_csv": clean(plan.get("manifest_csv")),
+                    "manifest_csv": manifest_text,
                     "reason": "missing_or_invalid_manifest",
                 }
             )
