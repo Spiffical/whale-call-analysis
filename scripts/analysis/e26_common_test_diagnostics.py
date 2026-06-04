@@ -526,6 +526,13 @@ def _write_report(
         "",
         "This report reruns the three E26 single-species experts on the same ONC validation/test rows. It is intended to check cross-species false positives directly. The original E26 ensemble report merged filtered expert exports; rows not seen by a non-target expert were filled with a zero score, so that report should not be used as the only cross-species confusion check.",
         "",
+        "## Key Findings",
+        "",
+        "- The original E26 filtered-expert report is valid for each expert's own filtered test export, but it is optimistic for cross-species confusion.",
+        f"- On the common ONC test set, original E26 thresholds give macro F1 `{_fmt(original_summary['macro_f1'])}`, micro F1 `{_fmt(original_summary['micro_f1'])}`, precision `{_fmt(original_summary['precision'])}`, and recall `{_fmt(original_summary['recall'])}`.",
+        f"- Recalibrating thresholds on the common ONC validation set improves precision only modestly (`{_fmt(common_summary['precision'])}`) and leaves macro F1 low (`{_fmt(common_summary['macro_f1'])}`).",
+        "- Most of the damage is cross-species false positives: blue and humpback experts fire heavily on fin-whale rows, and the fin expert also fires on humpback rows.",
+        "",
         "## Common Split Support",
         "",
     ]
@@ -600,6 +607,21 @@ def _write_report(
             )
         )
         lines.append("")
+    lines.extend(["## Cross-Species FP Burden By Predicted Species", ""])
+    lines.extend(
+        _markdown_table(
+            ["predicted species", "FP on other species rows", "FP on background rows"],
+            [
+                [
+                    row["label_name"],
+                    row["fp_other_species"],
+                    row["fp_background"],
+                ]
+                for row in original_per_label
+            ],
+        )
+    )
+    lines.append("")
     lines.extend(["## Thresholds", ""])
     lines.extend(
         _markdown_table(
