@@ -71,9 +71,20 @@ def _merge_label_text(existing: str, new: Iterable[str]) -> str:
 def _common_rows(plan_rows: Sequence[Mapping[str, str]], *, split: str, source_kind: str) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
     merged: Dict[str, Dict[str, str]] = {}
     provenance: Counter[str] = Counter()
+    skipped: List[Dict[str, str]] = []
     for plan in plan_rows:
         manifest = Path(clean(plan.get("manifest_csv")))
         variant = clean(plan.get("variant"))
+        if not variant or not clean(plan.get("experiment")) or not manifest.is_file():
+            skipped.append(
+                {
+                    "experiment": clean(plan.get("experiment")),
+                    "variant": variant,
+                    "manifest_csv": clean(plan.get("manifest_csv")),
+                    "reason": "missing_or_invalid_manifest",
+                }
+            )
+            continue
         for row in _read_csv(manifest):
             if clean(row.get("split")) != split:
                 continue
@@ -113,6 +124,7 @@ def _common_rows(plan_rows: Sequence[Mapping[str, str]], *, split: str, source_k
         "source_kind": source_kind,
         "rows": len(rows),
         "input_rows_by_variant": dict(provenance),
+        "skipped_plan_rows": skipped,
         "support": dict(support),
     }
 
@@ -661,6 +673,8 @@ def main() -> int:
         raise SystemExit(f"No E26 plan rows found in {args.pipeline_dir}")
     run_metas: Dict[str, Mapping[str, Any]] = {}
     for plan in plan_rows:
+        if not clean(plan.get("run_dir")) or not clean(plan.get("experiment")):
+            continue
         labels = split_labels(plan.get("eval_label_ids"))
         if len(labels) != 1 or labels[0] not in LABEL_ORDER:
             continue
