@@ -387,6 +387,8 @@ def keep_row(row: Mapping[str, Any], variant: Mapping[str, Any]) -> bool:
     labs = set(labels(row))
     if not labs:
         return True
+    if variant.get("keep_nonactive_labels_as_background"):
+        return True
     return bool(labs.intersection(set(variant["active_label_ids"])))
 
 
