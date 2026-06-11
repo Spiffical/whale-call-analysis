@@ -98,7 +98,7 @@ for value in "${CANDIDATES[@]}"; do
   args+=(--candidate "$value")
 done
 
-printf '%q ' "${args[@]}" > "$OUTPUT_DIR/logs/summary_args.shell"
+printf '%s\0' "${args[@]}" > "$OUTPUT_DIR/logs/summary_args.nul"
 
 cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
@@ -117,8 +117,13 @@ elif [[ -f .venv/bin/activate ]]; then
 fi
 export PYTHONPATH="$REPO_ON_NIBI:\${PYTHONPATH:-}"
 
+SUMMARY_ARGS=()
+if [[ -f "$OUTPUT_DIR/logs/summary_args.nul" ]]; then
+  mapfile -d '' -t SUMMARY_ARGS < "$OUTPUT_DIR/logs/summary_args.nul"
+fi
+
 $PYTHON_BIN scripts/analysis/e124_compare_production_candidates.py \\
-  \$(cat "$OUTPUT_DIR/logs/summary_args.shell") \\
+  "\${SUMMARY_ARGS[@]}" \\
   --output-dir "$OUTPUT_DIR"
 EOF
 
