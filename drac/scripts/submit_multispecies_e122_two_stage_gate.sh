@@ -31,6 +31,7 @@ DEPENDENCY=""
 BASE_DECISION_MODE="calibrated"
 SPECIES_STAGE_MODE="force_species_argmax"
 DRY_RUN="false"
+VARIANT_TAG="ONConly"
 BASE_RUN_DIRS=()
 BASE_RUN_GLOBS=()
 SOURCE_KINDS=()
@@ -48,6 +49,7 @@ Options:
   --base-run-dir PATH          Species classifier base run; may be repeated
   --base-run-glob GLOB         Glob for species classifier base runs; may be repeated
   --source-kind KIND           Keep only source kind in gate manifest; may be repeated
+  --variant-tag TAG            Path tag for this data variant. Default: ONConly
   --weekend-root PATH          Default: /scratch/.../multispecies_weekend_20260502
   --repo-root PATH             Default: $weekend_root/repo_e24_expert_hparam_68be99f
   --dataset-root PATH          Multiband MAT extracted dataset root
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --base-run-dir) BASE_RUN_DIRS+=("$2"); shift 2 ;;
     --base-run-glob) BASE_RUN_GLOBS+=("$2"); shift 2 ;;
     --source-kind) SOURCE_KINDS+=("$2"); shift 2 ;;
+    --variant-tag) VARIANT_TAG="$2"; shift 2 ;;
     --weekend-root) WEEKEND_ROOT="$2"; shift 2 ;;
     --repo-root) REPO_ON_NIBI="$2"; shift 2 ;;
     --dataset-root) DATASET_ROOT="$2"; shift 2 ;;
@@ -133,17 +136,18 @@ if [[ ! -f "$SOURCE_MANIFEST" ]]; then
   echo "Missing source manifest: $SOURCE_MANIFEST" >&2
   exit 1
 fi
+SAFE_VARIANT_TAG="$(printf '%s' "$VARIANT_TAG" | tr -c 'A-Za-z0-9_.-' '_')"
 if [[ -z "$MANIFEST_ROOT" ]]; then
   MANIFEST_ROOT="$WEEKEND_ROOT/manifests/e122_two_stage_gate_${STAMP}"
 fi
 if [[ -z "$RUN_DIR" ]]; then
-  RUN_DIR="$WEEKEND_ROOT/runs/E122_whale_call_gate_ONConly_3band_lr3e4_${STAMP}"
+  RUN_DIR="$WEEKEND_ROOT/runs/E122_whale_call_gate_${SAFE_VARIANT_TAG}_3band_lr3e4_${STAMP}"
 fi
 if [[ -z "$REPORT_DIR" ]]; then
-  REPORT_DIR="$WEEKEND_ROOT/pipeline_runs/e122_two_stage_gate_${STAMP}"
+  REPORT_DIR="$WEEKEND_ROOT/pipeline_runs/e122_two_stage_gate_${SAFE_VARIANT_TAG}_${STAMP}"
 fi
 
-VARIANT_DIR="$MANIFEST_ROOT/E122_whale_call_gate"
+VARIANT_DIR="$MANIFEST_ROOT/E122_whale_call_gate_${SAFE_VARIANT_TAG}"
 MANIFEST="$VARIANT_DIR/standardized_manifest.csv"
 VOCAB="$VARIANT_DIR/label_vocabulary.json"
 mkdir -p "$VARIANT_DIR" "$RUN_DIR/logs" "$RUN_DIR/train"

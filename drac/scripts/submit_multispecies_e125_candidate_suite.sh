@@ -16,11 +16,13 @@ SKIP_E122="false"
 SKIP_E124="false"
 INCLUDE_E123="false"
 SSL_REPO_ROOT="$WEEKEND_ROOT/selfsupervision_anomalies_onc"
+VARIANT_TAG="ONConly"
 BASE_RUN_DIRS=()
 BASE_RUN_GLOBS=()
 PAIRWISE_RUN_DIRS=()
 PAIRWISE_RUN_GLOBS=()
 E120_PAIRS=()
+SOURCE_KINDS=()
 EXTRA_E124_SUMMARY_GLOBS=()
 EXTRA_E124_SUMMARY_JSONS=()
 
@@ -41,9 +43,12 @@ Options:
   --pairwise-run-dir PATH   Existing pairwise run to include in E121; may be repeated
   --pairwise-run-glob GLOB  Existing pairwise run glob to include in E121; may be repeated
   --pair A:B                E120 pair to train; may be repeated. Default: Bm:Bp and Bm:Mn
+  --source-kind KIND        Keep only source kind for E120/E122; may be repeated.
+                            Omit to use every source in --source-manifest.
+  --variant-tag TAG         Path/report tag for data variant. Default: ONConly
   --weekend-root PATH       Default: /scratch/.../multispecies_weekend_20260502
   --repo-root PATH          Default: $weekend_root/repo_e24_expert_hparam_68be99f
-  --source-manifest PATH    Standardized manifest for ONC-only pairwise/gate experiments
+  --source-manifest PATH    Standardized manifest for pairwise/gate experiments
   --python-bin NAME         Default: python3
   --suite-dir PATH          Default: $weekend_root/pipeline_runs/e125_candidate_suite_$stamp
   --stamp STAMP             Default: current UTC stamp
@@ -88,6 +93,8 @@ while [[ $# -gt 0 ]]; do
     --pairwise-run-dir) PAIRWISE_RUN_DIRS+=("$2"); shift 2 ;;
     --pairwise-run-glob) PAIRWISE_RUN_GLOBS+=("$2"); shift 2 ;;
     --pair) E120_PAIRS+=("$2"); shift 2 ;;
+    --source-kind) SOURCE_KINDS+=("$2"); shift 2 ;;
+    --variant-tag) VARIANT_TAG="$2"; shift 2 ;;
     --weekend-root) WEEKEND_ROOT="$2"; shift 2 ;;
     --repo-root) REPO_ON_NIBI="$2"; shift 2 ;;
     --source-manifest) SOURCE_MANIFEST="$2"; shift 2 ;;
@@ -109,7 +116,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$SUITE_DIR" ]]; then
-  SUITE_DIR="$WEEKEND_ROOT/pipeline_runs/e125_candidate_suite_${STAMP}"
+  SAFE_VARIANT_TAG="$(printf '%s' "$VARIANT_TAG" | tr -c 'A-Za-z0-9_.-' '_')"
+  SUITE_DIR="$WEEKEND_ROOT/pipeline_runs/e125_candidate_suite_${SAFE_VARIANT_TAG}_${STAMP}"
+else
+  SAFE_VARIANT_TAG="$(printf '%s' "$VARIANT_TAG" | tr -c 'A-Za-z0-9_.-' '_')"
 fi
 LOG_DIR="$SUITE_DIR/logs"
 mkdir -p "$LOG_DIR"
@@ -151,6 +161,12 @@ cd "$REPO_ON_NIBI"
 echo "Suite dir: $SUITE_DIR"
 echo "Plan: $PLAN_TSV"
 echo "Repo: $REPO_ON_NIBI"
+echo "Variant tag: $VARIANT_TAG"
+if [[ "${#SOURCE_KINDS[@]}" -gt 0 ]]; then
+  echo "Source kinds: ${SOURCE_KINDS[*]}"
+else
+  echo "Source kinds: all sources in manifest"
+fi
 git rev-parse HEAD || true
 
 dry_arg=()
@@ -168,7 +184,11 @@ if [[ "$SKIP_E120" == "false" ]]; then
     --source-manifest "$SOURCE_MANIFEST"
     --manifest-root "$E120_MANIFEST_ROOT"
     --stamp "$STAMP"
-    --python-bin "$PYTHON_BIN")
+    --python-bin "$PYTHON_BIN"
+    --variant-tag "$VARIANT_TAG")
+  for source_kind in "${SOURCE_KINDS[@]}"; do
+    e120_cmd+=(--source-kind "$source_kind")
+  done
   for pair in "${E120_PAIRS[@]}"; do
     e120_cmd+=(--pair "$pair")
   done
@@ -225,7 +245,11 @@ if [[ "$SKIP_E122" == "false" ]]; then
     --run-dir "$E122_RUN_DIR"
     --report-dir "$E122_REPORT_DIR"
     --stamp "$STAMP"
-    --python-bin "$PYTHON_BIN")
+    --python-bin "$PYTHON_BIN"
+    --variant-tag "$VARIANT_TAG")
+  for source_kind in "${SOURCE_KINDS[@]}"; do
+    e122_cmd+=(--source-kind "$source_kind")
+  done
   for base_run_dir in "${BASE_RUN_DIRS[@]}"; do
     e122_cmd+=(--base-run-dir "$base_run_dir")
   done

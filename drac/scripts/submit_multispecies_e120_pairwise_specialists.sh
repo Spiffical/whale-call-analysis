@@ -24,20 +24,25 @@ SBATCH_MEM="48G"
 SBATCH_GRES="gpu:nvidia_h100_80gb_hbm3_1g.10gb:1"
 DEPENDENCY=""
 DRY_RUN="false"
+VARIANT_TAG="ONConly"
 PAIRS=()
+SOURCE_KINDS=()
 
 usage() {
   cat <<'USAGE'
 Usage:
   bash drac/scripts/submit_multispecies_e120_pairwise_specialists.sh [options]
 
-Build pairwise ONC-only species manifests and submit one initial 3-hour MIG job
+Build pairwise species manifests and submit one initial 3-hour MIG job
 plus one afterany continuation for each pair. Intended follow-up to E118 when
 blue-vs-fin/humpback discrimination needs direct pairwise specialists.
 
 Options:
   --pair A:B                  Species pair, e.g. Bm:Bp. May be repeated.
                               Default: Bm:Bp and Bm:Mn.
+  --source-kind KIND          Keep only source kind in pairwise manifest; may be repeated.
+                              Omit to use every source in --source-manifest.
+  --variant-tag TAG           Path tag for this data variant. Default: ONConly.
   --weekend-root PATH         Default: /scratch/.../multispecies_weekend_20260502
   --repo-root PATH            Default: $weekend_root/repo_e24_expert_hparam_68be99f
   --dataset-root PATH         Multiband MAT extracted dataset root
@@ -65,6 +70,8 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pair) PAIRS+=("$2"); shift 2 ;;
+    --source-kind) SOURCE_KINDS+=("$2"); shift 2 ;;
+    --variant-tag) VARIANT_TAG="$2"; shift 2 ;;
     --weekend-root) WEEKEND_ROOT="$2"; shift 2 ;;
     --repo-root) REPO_ON_NIBI="$2"; shift 2 ;;
     --dataset-root) DATASET_ROOT="$2"; shift 2 ;;
@@ -105,6 +112,8 @@ fi
 mkdir -p "$MANIFEST_ROOT"
 SUBMITTED_TSV="$MANIFEST_ROOT/e120_pairwise_submitted.tsv"
 echo -e "pair\tinitial_job_id\tcontinuation_job_id\trun_dir\tmanifest\tvocab\tjob_script" > "$SUBMITTED_TSV"
+SAFE_VARIANT_TAG="$(printf '%s' "$VARIANT_TAG" | tr -c 'A-Za-z0-9_.-' '_')"
+SOURCE_KIND_CSV="$(IFS=,; echo "${SOURCE_KINDS[*]}")"
 
 for pair in "${PAIRS[@]}"; do
   IFS=: read -r SPECIES_A SPECIES_B extra <<<"$pair"
@@ -113,8 +122,8 @@ for pair in "${PAIRS[@]}"; do
     exit 1
   fi
   PAIR_TAG="${SPECIES_A}${SPECIES_B}"
-  VARIANT_DIR="$MANIFEST_ROOT/E120_pairwise_${PAIR_TAG}_ONConly_blocked_nov20_25_30_val"
-  RUN_DIR="$WEEKEND_ROOT/runs/E120_pairwise_${PAIR_TAG}_ONConly_3band_lr3e5_${STAMP}"
+  VARIANT_DIR="$MANIFEST_ROOT/E120_pairwise_${PAIR_TAG}_${SAFE_VARIANT_TAG}_blocked_nov20_25_30_val"
+  RUN_DIR="$WEEKEND_ROOT/runs/E120_pairwise_${PAIR_TAG}_${SAFE_VARIANT_TAG}_3band_lr3e5_${STAMP}"
   LOG_DIR="$RUN_DIR/logs"
   TRAIN_DIR="$RUN_DIR/train"
   mkdir -p "$VARIANT_DIR" "$LOG_DIR" "$TRAIN_DIR"
@@ -122,13 +131,15 @@ for pair in "${PAIRS[@]}"; do
   VOCAB="$VARIANT_DIR/label_vocabulary.json"
   COUNTS="$VARIANT_DIR/manifest_counts.json"
 
-  "$PYTHON_BIN" - <<'PYMAKE' "$SOURCE_MANIFEST" "$MANIFEST" "$VOCAB" "$COUNTS" "$SPECIES_A" "$SPECIES_B"
+  "$PYTHON_BIN" - <<'PYMAKE' "$SOURCE_MANIFEST" "$MANIFEST" "$VOCAB" "$COUNTS" "$SPECIES_A" "$SPECIES_B" "$SOURCE_KIND_CSV" "$VARIANT_TAG"
 import csv, json, sys
 from collections import Counter
 from pathlib import Path
 
 src, out_csv, out_vocab, out_counts = map(Path, sys.argv[1:5])
 species_a, species_b = sys.argv[5], sys.argv[6]
+source_kinds = {part.strip() for part in sys.argv[7].split(",") if part.strip()}
+variant_tag = sys.argv[8]
 display = {
     "Bm": ("Blue whale", "Biophony > Marine mammal > Cetacean > Baleen whale > Blue whale"),
     "Bp": ("Fin whale", "Biophony > Marine mammal > Cetacean > Baleen whale > Fin whale"),
@@ -140,6 +151,8 @@ with src.open(newline="", encoding="utf-8-sig") as handle:
     reader = csv.DictReader(handle)
     fields = list(reader.fieldnames or [])
     for row in reader:
+        if source_kinds and (row.get("source_kind") or "").strip() not in source_kinds:
+            continue
         species = (row.get("species") or row.get("species_code") or "").strip()
         if species not in keep:
             continue
@@ -159,12 +172,17 @@ with out_csv.open("w", newline="", encoding="utf-8") as handle:
     writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-counts = Counter((row.get("split", ""), row.get("species", "")) for row in rows)
+counts = Counter((row.get("split", ""), row.get("source_kind", ""), row.get("species", "")) for row in rows)
 summary = {
     "source_manifest": str(src),
+    "variant_tag": variant_tag,
+    "source_kinds": sorted(source_kinds),
     "species_pair": [species_a, species_b],
     "rows": len(rows),
-    "split_species_counts": {f"{split}|{species}": count for (split, species), count in sorted(counts.items())},
+    "split_source_species_counts": {
+        f"{split}|{source}|{species}": count
+        for (split, source, species), count in sorted(counts.items())
+    },
 }
 out_counts.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 labels = []
