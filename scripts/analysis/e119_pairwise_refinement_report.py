@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a pairwise fin-vs-humpback refinement on multiclass predictions.
+"""Evaluate a pairwise species refinement on multiclass predictions.
 
 The report tunes a conservative "flip only when confident" rule on validation
 rows, then applies it to test rows. Metrics keep the production-style accounting:
@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-PAIRWISE_LABELS = ("species:Bp", "species:Mn")
 SPECIES_NAMES = {
     "species:Bm": "blue whale",
     "species:Bp": "fin whale",
@@ -67,6 +66,20 @@ def load_class_ids(summary_path: Optional[Path], fallback: Sequence[str]) -> Lis
         if isinstance(class_ids, list) and class_ids:
             return [clean(value) for value in class_ids]
     return list(fallback)
+
+
+def species_class_ids(class_ids: Sequence[str]) -> List[str]:
+    return [label for label in class_ids if label != "background" and label.startswith("species:")]
+
+
+def require_pairwise_labels(parser: argparse.ArgumentParser, class_ids: Sequence[str]) -> Tuple[str, str]:
+    labels = species_class_ids(class_ids)
+    if len(labels) != 2:
+        parser.error(
+            "pairwise summary must define exactly two species class_ids; "
+            f"got {labels or list(class_ids)}"
+        )
+    return labels[0], labels[1]
 
 
 def first_existing(paths: Iterable[Path]) -> Optional[Path]:
@@ -365,26 +378,37 @@ def tune_base_rule(
     return rule, sweep_rows
 
 
-def load_pairwise(path: Path, class_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+def pairwise_prob_field(label: str) -> str:
+    return f"prob__{label}"
+
+
+def load_pairwise(
+    path: Path,
+    class_ids: Sequence[str],
+    pairwise_labels: Tuple[str, str],
+) -> Dict[str, Dict[str, Any]]:
     pairwise: Dict[str, Dict[str, Any]] = {}
+    left_label, right_label = pairwise_labels
     for index, row in enumerate(read_csv(path)):
         key = row_key(row, index)
-        bp = probability(row, "species:Bp")
-        mn = probability(row, "species:Mn")
-        if bp is None or mn is None:
+        left_prob = probability(row, left_label)
+        right_prob = probability(row, right_label)
+        if left_prob is None or right_prob is None:
             pred = pred_label(row, class_ids)
-            if pred == "species:Bp":
-                bp, mn = 1.0, 0.0
-            elif pred == "species:Mn":
-                bp, mn = 0.0, 1.0
+            if pred == left_label:
+                left_prob, right_prob = 1.0, 0.0
+            elif pred == right_label:
+                left_prob, right_prob = 0.0, 1.0
             else:
                 continue
+        left_prob = float(left_prob)
+        right_prob = float(right_prob)
         pairwise[key] = {
             "key": key,
-            "prob_species:Bp": float(bp),
-            "prob_species:Mn": float(mn),
-            "pairwise_pred": "species:Bp" if bp >= mn else "species:Mn",
-            "pairwise_margin": abs(float(bp) - float(mn)),
+            pairwise_prob_field(left_label): left_prob,
+            pairwise_prob_field(right_label): right_prob,
+            "pairwise_pred": left_label if left_prob >= right_prob else right_label,
+            "pairwise_margin": abs(left_prob - right_prob),
             "pairwise_true": true_label(row, class_ids),
         }
     return pairwise
@@ -476,22 +500,24 @@ def apply_refinement(
     pairwise: Mapping[str, Mapping[str, Any]],
     *,
     threshold: float,
+    pairwise_labels: Tuple[str, str],
 ) -> List[Dict[str, Any]]:
     refined: List[Dict[str, Any]] = []
+    candidate_labels = set(pairwise_labels)
     for row in rows:
         out = dict(row)
         base_pred = clean(row.get("_pred")) or "background"
         out["_refined"] = base_pred
         out["refinement_action"] = "not_candidate"
         pair = pairwise.get(clean(row.get("_key")))
-        if base_pred in PAIRWISE_LABELS and pair is not None:
+        if base_pred in candidate_labels and pair is not None:
             pair_pred = clean(pair.get("pairwise_pred"))
             margin = float(pair.get("pairwise_margin") or 0.0)
             out["pairwise_pred"] = pair_pred
             out["pairwise_margin"] = margin
-            out["pairwise_prob_species:Bp"] = pair.get("prob_species:Bp")
-            out["pairwise_prob_species:Mn"] = pair.get("prob_species:Mn")
-            if pair_pred in PAIRWISE_LABELS and pair_pred != base_pred and margin >= threshold:
+            for label in pairwise_labels:
+                out[f"pairwise_{pairwise_prob_field(label)}"] = pair.get(pairwise_prob_field(label))
+            if pair_pred in candidate_labels and pair_pred != base_pred and margin >= threshold:
                 out["_refined"] = pair_pred
                 out["refinement_action"] = "flipped"
             else:
@@ -504,15 +530,22 @@ def tune_threshold(
     val_rows: Sequence[Mapping[str, Any]],
     pairwise: Mapping[str, Mapping[str, Any]],
     labels: Sequence[str],
+    pairwise_labels: Tuple[str, str],
 ) -> Tuple[float, List[Dict[str, Any]]]:
     candidates = [round(i / 100, 2) for i in range(0, 101, 5)]
     rows: List[Dict[str, Any]] = []
     for threshold in candidates:
-        refined = apply_refinement(val_rows, pairwise, threshold=threshold)
+        refined = apply_refinement(
+            val_rows,
+            pairwise,
+            threshold=threshold,
+            pairwise_labels=pairwise_labels,
+        )
         metrics = species_metrics(refined, "_refined", labels)
         rows.append(
             {
                 "threshold": threshold,
+                "pairwise_labels": "|".join(pairwise_labels),
                 "macro_f1": metrics["macro_f1"],
                 "micro_f1": metrics["micro_f1"],
                 "micro_precision": metrics["micro_precision"],
@@ -577,7 +610,12 @@ def example_rows(rows: Sequence[Mapping[str, Any]], limit_per_bucket: int = 50) 
     for bucket, bucket_rows in buckets.items():
         ordered = sorted(bucket_rows, key=lambda row: float(row.get("pairwise_margin") or 0.0), reverse=True)
         for row in ordered[:limit_per_bucket]:
-            examples.append(
+            example = {
+                key: row.get(key, "")
+                for key in row
+                if key.startswith("pairwise_prob__")
+            }
+            example.update(
                 {
                     "bucket": bucket,
                     "item_id": clean(row.get("item_id")) or clean(row.get("_key")),
@@ -586,14 +624,13 @@ def example_rows(rows: Sequence[Mapping[str, Any]], limit_per_bucket: int = 50) 
                     "refined_pred": clean(row.get("_refined")),
                     "pairwise_pred": clean(row.get("pairwise_pred")),
                     "pairwise_margin": row.get("pairwise_margin", ""),
-                    "pairwise_prob_species:Bp": row.get("pairwise_prob_species:Bp", ""),
-                    "pairwise_prob_species:Mn": row.get("pairwise_prob_species:Mn", ""),
                     "clip": clean(row.get("clip")) or clean(row.get("filename")),
                     "begin_s": clean(row.get("begin_s")) or clean(row.get("begin_time_s")),
                     "end_s": clean(row.get("end_s")) or clean(row.get("end_time_s")),
                     "mat_path": clean(row.get("mat_path")) or clean(row.get("low_mat_path")),
                 }
             )
+            examples.append(example)
     return examples
 
 
@@ -621,6 +658,7 @@ def markdown_report(
     name: str,
     output_dir: Path,
     threshold: float,
+    pairwise_labels: Tuple[str, str],
     base_decision_mode: str,
     base_rule: Mapping[str, Any],
     metric_rows: Sequence[Mapping[str, Any]],
@@ -628,11 +666,13 @@ def markdown_report(
     examples: Sequence[Mapping[str, Any]],
 ) -> str:
     base_rule_text = json.dumps(dict(base_rule), sort_keys=True) if base_rule else "{}"
+    pairwise_label_text = " vs ".join(pairwise_labels)
     lines = [
         f"# E119 Pairwise Refinement Report: {name}",
         "",
-        "This evaluates a fin-vs-humpback specialist as a conservative refinement on top of an existing production-style multiclass model.",
+        "This evaluates a pairwise species specialist as a conservative refinement on top of an existing production-style multiclass model.",
         "",
+        f"Pairwise specialist labels: `{pairwise_label_text}`.",
         f"Base decision mode: `{base_decision_mode}`.",
         f"Base calibration rule: `{base_rule_text}`.",
         f"Validation-tuned flip threshold: `{threshold:.2f}`.",
@@ -758,12 +798,13 @@ def run_refinement_report(
 
     base_class_ids = load_class_ids(base_summary_json, ("background", "species:Bp", "species:Bm", "species:Mn"))
     pair_class_ids = load_class_ids(pairwise_summary_json, ("background", "species:Bp", "species:Mn"))
-    metric_labels = [label for label in base_class_ids if label != "background" and label.startswith("species:")]
+    pairwise_labels = require_pairwise_labels(parser, pair_class_ids)
+    metric_labels = species_class_ids(base_class_ids)
 
     base_val = load_predictions(base_val_predictions, base_class_ids)
     base_test = load_predictions(base_test_predictions, base_class_ids)
-    pair_val = load_pairwise(pairwise_val_predictions, pair_class_ids)
-    pair_test = load_pairwise(pairwise_test_predictions, pair_class_ids)
+    pair_val = load_pairwise(pairwise_val_predictions, pair_class_ids, pairwise_labels)
+    pair_test = load_pairwise(pairwise_test_predictions, pair_class_ids, pairwise_labels)
 
     base_rule: Optional[Dict[str, Any]] = None
     base_rule_sweep: List[Dict[str, Any]] = []
@@ -778,9 +819,9 @@ def run_refinement_report(
         base_val = apply_base_rule(base_val, metric_labels, base_rule)
         base_test = apply_base_rule(base_test, metric_labels, base_rule)
 
-    threshold, threshold_rows = tune_threshold(base_val, pair_val, metric_labels)
-    refined_val = apply_refinement(base_val, pair_val, threshold=threshold)
-    refined_test = apply_refinement(base_test, pair_test, threshold=threshold)
+    threshold, threshold_rows = tune_threshold(base_val, pair_val, metric_labels, pairwise_labels)
+    refined_val = apply_refinement(base_val, pair_val, threshold=threshold, pairwise_labels=pairwise_labels)
+    refined_test = apply_refinement(base_test, pair_test, threshold=threshold, pairwise_labels=pairwise_labels)
 
     model_metrics = [
         metric_row(name, "val", "_pred", base_val, metric_labels),
@@ -812,6 +853,7 @@ def run_refinement_report(
         "pairwise_run_dir": "" if pairwise_run_dir is None else str(pairwise_run_dir),
         "base_class_ids": base_class_ids,
         "pairwise_class_ids": pair_class_ids,
+        "pairwise_labels": list(pairwise_labels),
         "metric_labels": metric_labels,
         "inputs": {
             "base_val_predictions": str(base_val_predictions),
@@ -836,6 +878,7 @@ def run_refinement_report(
         name=name,
         output_dir=output_dir,
         threshold=threshold,
+        pairwise_labels=pairwise_labels,
         base_decision_mode=base_decision_mode,
         base_rule=base_rule or {},
         metric_rows=model_metrics,

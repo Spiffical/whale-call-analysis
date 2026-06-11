@@ -230,6 +230,80 @@ class TestE119PairwiseRefinementReport(unittest.TestCase):
             self.assertEqual(test_base["macro_f1"], 1.0)
             self.assertTrue((output / "e119_base_calibration_sweep.csv").is_file())
 
+    def test_pairwise_labels_are_inferred_for_blue_specialist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "base"
+            pairwise = root / "pairwise"
+            (base / "train").mkdir(parents=True)
+            (pairwise / "train").mkdir(parents=True)
+            (base / "train" / "run_summary.json").write_text(
+                json.dumps({"class_ids": ["background", "species:Bp", "species:Bm", "species:Mn"]}),
+                encoding="utf-8",
+            )
+            (pairwise / "train" / "run_summary.json").write_text(
+                json.dumps({"class_ids": ["background", "species:Bm", "species:Bp"]}),
+                encoding="utf-8",
+            )
+
+            base_rows = [
+                {"item_id": "bm", "true_class_index": "2", "pred_class_index": "1"},
+                {"item_id": "bp", "true_class_index": "1", "pred_class_index": "1"},
+                {"item_id": "mn", "true_class_index": "3", "pred_class_index": "3"},
+                {"item_id": "bg", "true_class_index": "0", "pred_class_index": "0"},
+            ]
+            pair_rows = [
+                {
+                    "item_id": "bm",
+                    "true_class_index": "1",
+                    "pred_class_index": "1",
+                    "prob__species:Bm": "0.95",
+                    "prob__species:Bp": "0.05",
+                },
+                {
+                    "item_id": "bp",
+                    "true_class_index": "2",
+                    "pred_class_index": "2",
+                    "prob__species:Bm": "0.05",
+                    "prob__species:Bp": "0.95",
+                },
+            ]
+            write_csv(base / "train" / "val_predictions_best_val_rule.csv", base_rows)
+            write_csv(base / "train" / "test_predictions_best_val_rule.csv", base_rows)
+            write_csv(pairwise / "train" / "val_predictions_argmax.csv", pair_rows)
+            write_csv(pairwise / "train" / "test_predictions_argmax.csv", pair_rows)
+
+            output = root / "out"
+            old_argv = sys.argv
+            try:
+                sys.argv = [
+                    "e119_pairwise_refinement_report.py",
+                    "--name",
+                    "unit-blue-pairwise",
+                    "--base-run-dir",
+                    str(base),
+                    "--pairwise-run-dir",
+                    str(pairwise),
+                    "--output-dir",
+                    str(output),
+                ]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(e119.main(), 0)
+            finally:
+                sys.argv = old_argv
+
+            summary = json.loads((output / "e119_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["pairwise_labels"], ["species:Bm", "species:Bp"])
+            test_base = [row for row in summary["model_metrics"] if row["split"] == "test" and row["prediction"] == "pred"][0]
+            test_refined = [row for row in summary["model_metrics"] if row["split"] == "test" and row["prediction"] == "refined"][0]
+            self.assertGreater(test_refined["macro_f1"], test_base["macro_f1"])
+
+            with (output / "e119_examples.csv").open(newline="", encoding="utf-8") as handle:
+                examples = list(csv.DictReader(handle))
+            self.assertEqual(examples[0]["pairwise_prob__species:Bm"], "0.95")
+            report = (output / "e119_pairwise_refinement_report.md").read_text(encoding="utf-8")
+            self.assertIn("species:Bm vs species:Bp", report)
+
     def test_multiple_base_run_dirs_write_ranked_comparison(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
