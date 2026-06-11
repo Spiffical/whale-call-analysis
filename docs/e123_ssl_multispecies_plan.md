@@ -25,17 +25,30 @@ The SSAMBA code expects an H5 file with at least:
 
 The current `/home/sbialek/ONC/selfsupervision_anomalies_onc` checkout is useful, but its documented DRAC runner expects `src/run_amba_spectrogram.py`, which is not present in the current checkout. The launcher checks this before submitting. Restore/adapt that runner in the SSL repo, or pass `--runner-py` to a valid replacement.
 
+The H5 bridge is `scripts/data/multilabel/build_e123_ssl_h5_dataset.py`. It exports one band from a standardized multiband manifest into the SSAMBA H5 schema. By default it:
+
+- uses manifest splits `train,val`, leaving the held-out test split untouched for external evaluation
+- maps `species:Bm/Bp/Mn` to `Bm/Bp/Mn`
+- maps unlabeled rows to `normal`
+- skips labeled non-target rows, so the self-supervised normal pretrain is not accidentally polluted with killer whale or other biological calls
+- caps normal rows at 10,000 unless overridden
+
 ## Launch Sketch
+
+One-command launch with H5 build, pretrain, and fine-tune chained:
 
 ```bash
 bash drac/scripts/submit_multispecies_e123_ssl_ssamba.sh \
   --ssl-repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/selfsupervision_anomalies_onc \
-  --dataset-h5 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e123_multispecies_ssl_onc.h5 \
+  --manifest-csv /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/manifests/e100_onc_only_blocked_nov_validation_20260611T020900Z/E101_stage2_ONConly_blocked_nov20_25_30_val/standardized_manifest.csv \
+  --dataset-root /project/def-kmoran/merileo/whale-call-analysis/multispecies_weekend_20260502/mat_archives/multiband40s_20260514T002301Z/extracted \
   --num-pretrain-jobs 2 \
   --num-finetune-jobs 1 \
   --time 03:00:00 \
   --gres gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 ```
+
+If the H5 already exists, pass `--dataset-h5` instead of `--manifest-csv`.
 
 ## Evaluation
 
