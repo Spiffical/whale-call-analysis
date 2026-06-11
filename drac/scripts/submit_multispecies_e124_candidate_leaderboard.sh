@@ -11,6 +11,7 @@ OUTPUT_DIR=""
 SBATCH_TIME="00:30:00"
 SBATCH_CPUS="1"
 SBATCH_MEM="4G"
+DEPENDENCY=""
 DRY_RUN="false"
 SUMMARY_JSONS=()
 SUMMARY_GLOBS=()
@@ -36,6 +37,7 @@ Options:
   --time HH:MM:SS           Default: 00:30:00
   --cpus-per-task N         Default: 1
   --mem MEM                 Default: 4G
+  --dependency SPEC         Passed to sbatch, e.g. afterany:123:124
   --dry-run                 Write the sbatch script but do not submit it
 USAGE
 }
@@ -53,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --time) SBATCH_TIME="$2"; shift 2 ;;
     --cpus-per-task) SBATCH_CPUS="$2"; shift 2 ;;
     --mem) SBATCH_MEM="$2"; shift 2 ;;
+    --dependency) DEPENDENCY="$2"; shift 2 ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
@@ -124,5 +127,9 @@ echo "E124 job script: $JOB_SCRIPT"
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "Dry run; not submitting."
 else
-  sbatch "$JOB_SCRIPT"
+  submit_args=()
+  if [[ -n "$DEPENDENCY" ]]; then
+    submit_args+=(--dependency="$DEPENDENCY")
+  fi
+  sbatch "${submit_args[@]}" "$JOB_SCRIPT"
 fi
