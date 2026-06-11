@@ -19,6 +19,7 @@ BIAS_GRID="-0.30,-0.15,0.0,0.15,0.30"
 DEPENDENCY=""
 DRY_RUN="false"
 BASE_RUN_DIRS=()
+BASE_RUN_GLOBS=()
 
 usage() {
   cat <<'USAGE'
@@ -31,6 +32,7 @@ on one or more base multiclass runs. This is intended to run after E118.
 Required:
   --pairwise-run-dir PATH      E118 pairwise run directory
   --base-run-dir PATH          Base run directory; may be repeated
+  --base-run-glob GLOB         Glob for base run directories; may be repeated
 
 Options:
   --weekend-root PATH          Default: /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502
@@ -56,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --repo-root) REPO_ON_NIBI="$2"; shift 2 ;;
     --pairwise-run-dir) PAIRWISE_RUN_DIR="$2"; shift 2 ;;
     --base-run-dir) BASE_RUN_DIRS+=("$2"); shift 2 ;;
+    --base-run-glob) BASE_RUN_GLOBS+=("$2"); shift 2 ;;
     --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
     --stamp) STAMP="$2"; shift 2 ;;
     --run-name) RUN_NAME="$2"; shift 2 ;;
@@ -84,8 +87,16 @@ if [[ -z "$PAIRWISE_RUN_DIR" ]]; then
   usage >&2
   exit 1
 fi
+for base_run_glob in "${BASE_RUN_GLOBS[@]}"; do
+  mapfile -t matches < <(compgen -G "$base_run_glob" | sort)
+  if [[ "${#matches[@]}" -eq 0 ]]; then
+    echo "No base runs matched glob: $base_run_glob" >&2
+    exit 1
+  fi
+  BASE_RUN_DIRS+=("${matches[@]}")
+done
 if [[ "${#BASE_RUN_DIRS[@]}" -eq 0 ]]; then
-  echo "Provide at least one --base-run-dir" >&2
+  echo "Provide at least one --base-run-dir or --base-run-glob" >&2
   usage >&2
   exit 1
 fi
@@ -105,6 +116,8 @@ base_args=""
 for base_run_dir in "${BASE_RUN_DIRS[@]}"; do
   base_args+=" --base-run-dir \"$base_run_dir\""
 done
+echo "Base run dirs:"
+printf '  %s\n' "${BASE_RUN_DIRS[@]}"
 
 cat > "$JOB_SCRIPT" <<EOF
 #!/bin/bash
