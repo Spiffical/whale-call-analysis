@@ -283,7 +283,8 @@ if [[ "$SKIP_E124" == "false" ]]; then
   e124_cmd+=("${dry_arg[@]}")
   E124_LOG="$LOG_DIR/e124_submit.log"
   "${e124_cmd[@]}" | tee "$E124_LOG"
-  append_plan "E124" "submitted_or_prepared" "$e124_dep" "$E124_OUTPUT"
+  E124_JOB="$(awk '/Submitted E124 leaderboard job:/ {print $NF}' "$E124_LOG" | tail -n 1)"
+  append_plan "E124" "submitted_or_prepared" "$E124_JOB" "$E124_OUTPUT"
 fi
 
 echo "E125 suite plan written: $PLAN_TSV"

@@ -136,5 +136,6 @@ else
   if [[ -n "$DEPENDENCY" ]]; then
     submit_args+=(--dependency="$DEPENDENCY")
   fi
-  sbatch "${submit_args[@]}" "$JOB_SCRIPT"
+  job_id="$(sbatch --parsable "${submit_args[@]}" "$JOB_SCRIPT")"
+  echo "Submitted E124 leaderboard job: $job_id"
 fi
