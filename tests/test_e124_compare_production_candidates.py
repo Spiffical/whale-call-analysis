@@ -19,6 +19,13 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
         with path.open(newline="", encoding="utf-8") as handle:
             return list(csv.DictReader(handle))
 
+    def write_csv(self, path: Path, rows):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
     def test_ranks_by_f1_then_production_false_positive_counts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -131,6 +138,64 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
             self.assertEqual(rows[0]["species_as_background_fn"], "7")
             payload = json.loads((out / "e124_candidate_leaderboard.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["candidates"][0]["baseline_prediction"], "original_thresholds")
+
+    def test_supports_e27_ensemble_ranking_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ensemble_dir = root / "e27" / "ensembles" / "ensemble_0002"
+            rankings = root / "e27" / "e27_ensemble_rankings.csv"
+            self.write_csv(
+                rankings,
+                [
+                    {
+                        "ensemble": "ensemble_0001",
+                        "macro_f1": 0.72,
+                        "micro_f1": 0.76,
+                        "precision": 0.77,
+                        "recall": 0.75,
+                        "tp": 70,
+                        "fp": 10,
+                        "fn": 8,
+                        "hard_fp": 4,
+                        "hard_total": 20,
+                        "hard_fp_rate": 0.20,
+                        "ensemble_dir": str(root / "e27" / "ensembles" / "ensemble_0001"),
+                    },
+                    {
+                        "ensemble": "ensemble_0002",
+                        "macro_f1": 0.78,
+                        "micro_f1": 0.79,
+                        "precision": 0.80,
+                        "recall": 0.78,
+                        "tp": 76,
+                        "fp": 7,
+                        "fn": 5,
+                        "hard_fp": 2,
+                        "hard_total": 20,
+                        "hard_fp_rate": 0.10,
+                        "ensemble_dir": str(ensemble_dir),
+                    },
+                ],
+            )
+
+            out = root / "out"
+            e124.build_leaderboard([("ovr", rankings)], out, "Unit Leaderboard")
+            rows = self.read_csv(out / "e124_candidate_leaderboard.csv")
+
+            self.assertEqual(rows[0]["candidate"], "ovr")
+            self.assertEqual(rows[0]["experiment"], "E27")
+            self.assertEqual(rows[0]["selected_prediction"], "ensemble_0002")
+            self.assertEqual(rows[0]["rows"], "81")
+            self.assertEqual(rows[0]["cross_species_fp"], "5")
+            self.assertEqual(rows[0]["background_fp"], "2")
+            self.assertEqual(rows[0]["species_as_background_fn"], "5")
+            self.assertEqual(rows[0]["background_fp_rate"], "0.1")
+            self.assertEqual(rows[0]["report"], str(root / "e27" / "e27_one_vs_rest_report.md"))
+            self.assertEqual(rows[0]["per_species_csv"], str(root / "e27" / "e27_individual_metrics.csv"))
+            self.assertEqual(rows[0]["examples_csv"], str(ensemble_dir))
+
+            args = e124.build_parser().parse_args(["--summary-csv", str(rankings), "--output-dir", str(out / "cli")])
+            self.assertEqual(e124.collect_summary_paths(args), [("", rankings.resolve())])
 
 
 if __name__ == "__main__":

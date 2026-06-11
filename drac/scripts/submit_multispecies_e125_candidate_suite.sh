@@ -25,6 +25,7 @@ E120_PAIRS=()
 SOURCE_KINDS=()
 EXTRA_E124_SUMMARY_GLOBS=()
 EXTRA_E124_SUMMARY_JSONS=()
+EXTRA_E124_SUMMARY_CSVS=()
 
 usage() {
   cat <<'USAGE'
@@ -59,6 +60,7 @@ Options:
   --include-e123            Also submit optional SSAMBA SSL launcher using --source-manifest
   --ssl-repo-root PATH      Default: $weekend_root/selfsupervision_anomalies_onc
   --e124-summary-json PATH  Extra summary JSON for leaderboard; may be repeated
+  --e124-summary-csv PATH   Extra E27/E28 ensemble rankings CSV; may be repeated
   --e124-summary-glob GLOB  Extra summary glob for leaderboard; may be repeated
   --dry-run                 Create scripts/plans but do not submit jobs
 USAGE
@@ -108,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --include-e123) INCLUDE_E123="true"; shift ;;
     --ssl-repo-root) SSL_REPO_ROOT="$2"; shift 2 ;;
     --e124-summary-json) EXTRA_E124_SUMMARY_JSONS+=("$2"); shift 2 ;;
+    --e124-summary-csv) EXTRA_E124_SUMMARY_CSVS+=("$2"); shift 2 ;;
     --e124-summary-glob) EXTRA_E124_SUMMARY_GLOBS+=("$2"); shift 2 ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -287,7 +290,9 @@ if [[ "$SKIP_E124" == "false" ]]; then
     --output-dir "$E124_OUTPUT"
     --stamp "$STAMP"
     --summary-glob "$WEEKEND_ROOT/pipeline_runs/e119*/**/e119_summary.json"
-    --summary-glob "$WEEKEND_ROOT/pipeline_runs/e26*/**/diagnostic_summary.json")
+    --summary-glob "$WEEKEND_ROOT/pipeline_runs/e26*/**/diagnostic_summary.json"
+    --summary-glob "$WEEKEND_ROOT/pipeline_runs/e27*/**/e27_ensemble_rankings.csv"
+    --summary-glob "$WEEKEND_ROOT/pipeline_runs/e28*/**/e28_ensemble_rankings.csv")
   if [[ "$SKIP_E121" == "false" ]]; then
     e124_cmd+=(--summary-json "$E121_OUTPUT/e121_summary.json")
   fi
@@ -296,6 +301,9 @@ if [[ "$SKIP_E124" == "false" ]]; then
   fi
   for path in "${EXTRA_E124_SUMMARY_JSONS[@]}"; do
     e124_cmd+=(--summary-json "$path")
+  done
+  for path in "${EXTRA_E124_SUMMARY_CSVS[@]}"; do
+    e124_cmd+=(--summary-csv "$path")
   done
   for pattern in "${EXTRA_E124_SUMMARY_GLOBS[@]}"; do
     e124_cmd+=(--summary-glob "$pattern")

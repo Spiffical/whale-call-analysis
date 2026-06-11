@@ -4,8 +4,8 @@
 E119/E121/E122 reports already use the production-style species accounting we
 want: cross-species mistakes are false positives for the predicted species and
 false negatives for the true species. This helper collects those summaries, plus
-E26 common-test diagnostics, into one compact ranking table so the next model
-selection step is driven by the same metrics.
+E26 common-test diagnostics and E27/E28 ensemble rankings, into one compact
+ranking table so the next model selection step is driven by the same metrics.
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ PREFERRED_PREDICTIONS = {
     "E121": ("refined", "pred"),
     "E122": ("two_stage", "pred"),
     "E26": ("common_thresholds", "original_thresholds"),
+    "E27": ("ensemble_rank1",),
+    "E28": ("ensemble_rank1",),
     "unknown": ("refined", "two_stage", "common_thresholds", "pred", "original_thresholds"),
 }
 
@@ -63,6 +65,11 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
+def read_csv(path: Path) -> List[Dict[str, str]]:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        return list(csv.DictReader(handle))
+
+
 def detect_experiment(summary_path: Path, payload: Mapping[str, Any]) -> str:
     name = summary_path.name.lower()
     if "original_summary" in payload and "common_summary" in payload:
@@ -75,6 +82,15 @@ def detect_experiment(summary_path: Path, payload: Mapping[str, Any]) -> str:
         return "E121"
     if "pairwise_run_dir" in payload or "pairwise_labels" in payload:
         return "E119"
+    return "unknown"
+
+
+def detect_experiment_path(path: Path) -> str:
+    name = path.name.lower()
+    if name == "e27_ensemble_rankings.csv":
+        return "E27"
+    if name == "e28_ensemble_rankings.csv":
+        return "E28"
     return "unknown"
 
 
@@ -124,6 +140,25 @@ def normalize_metric(metric: Mapping[str, Any], *, e26: bool = False) -> Dict[st
     }
 
 
+def normalize_ensemble_metric(metric: Mapping[str, Any]) -> Dict[str, Any]:
+    hard_fp = as_int(metric.get("hard_fp", 0))
+    total_fp = as_int(metric.get("fp", 0))
+    rows = as_int(metric.get("rows", metric.get("samples", 0)))
+    if rows == 0:
+        rows = as_int(metric.get("tp", 0)) + as_int(metric.get("fn", 0))
+    return {
+        "rows": rows,
+        "macro_f1": as_float(metric.get("macro_f1")),
+        "micro_f1": as_float(metric.get("micro_f1")),
+        "precision": as_float(metric.get("precision")),
+        "recall": as_float(metric.get("recall")),
+        "exact_accuracy": "",
+        "cross_species_fp": max(total_fp - hard_fp, 0),
+        "background_fp": hard_fp,
+        "species_as_background_fn": as_int(metric.get("fn", 0)),
+    }
+
+
 def select_metric_row(
     rows: Sequence[Mapping[str, Any]],
     preferred: Sequence[str],
@@ -165,7 +200,62 @@ def e26_metric_rows(payload: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Opti
     raise ValueError("E26 diagnostic summary lacks original_summary/common_summary")
 
 
+def candidate_from_ensemble_csv(path: Path, *, alias: str = "") -> Dict[str, Any]:
+    rows = read_csv(path)
+    if not rows:
+        raise ValueError(f"{path} has no ensemble ranking rows")
+    experiment = detect_experiment_path(path)
+    if experiment not in ("E27", "E28"):
+        raise ValueError(f"{path} is not a supported E27/E28 ensemble rankings CSV")
+    selected = max(
+        rows,
+        key=lambda row: (
+            as_float(row.get("macro_f1")),
+            as_float(row.get("micro_f1")),
+            as_float(row.get("precision")),
+            -as_float(row.get("hard_fp_rate"), 1.0),
+        ),
+    )
+    selected_metrics = normalize_ensemble_metric(selected)
+    report_name = "e27_one_vs_rest_report.md" if experiment == "E27" else "e28_full_one_vs_rest_report.md"
+    candidate_name = alias or path.parent.name
+    return {
+        "rank": "",
+        "candidate": candidate_name,
+        "experiment": experiment,
+        "summary_json": str(path),
+        "selected_prediction": clean(selected.get("ensemble")) or "ensemble_rank1",
+        "baseline_prediction": "",
+        "rows": selected_metrics["rows"],
+        "metric_labels": "species:Bp|species:Bm|species:Mn",
+        "macro_f1": selected_metrics["macro_f1"],
+        "micro_f1": selected_metrics["micro_f1"],
+        "precision": selected_metrics["precision"],
+        "recall": selected_metrics["recall"],
+        "exact_accuracy": selected_metrics["exact_accuracy"],
+        "cross_species_fp": selected_metrics["cross_species_fp"],
+        "background_fp": selected_metrics["background_fp"],
+        "species_as_background_fn": selected_metrics["species_as_background_fn"],
+        "background_fp_rate": clean(selected.get("hard_fp_rate")),
+        "baseline_macro_f1": "",
+        "delta_macro_f1": "",
+        "baseline_micro_f1": "",
+        "delta_micro_f1": "",
+        "threshold": "",
+        "base_decision_mode": "ONC-calibrated one-vs-rest ensemble",
+        "report": str(path.parent / report_name),
+        "metrics_csv": str(path),
+        "per_species_csv": str(path.parent / ("e27_individual_metrics.csv" if experiment == "E27" else "e28_individual_metrics.csv")),
+        "examples_csv": clean(selected.get("ensemble_dir")),
+        "threshold_sweep_csv": "",
+        "confusion_csv": "",
+        "comparability_note": "verify same common ONC test rows before comparing absolute ranks",
+    }
+
+
 def candidate_from_summary(summary_path: Path, *, alias: str = "") -> Dict[str, Any]:
+    if summary_path.suffix.lower() == ".csv":
+        return candidate_from_ensemble_csv(summary_path, alias=alias)
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     experiment = detect_experiment(summary_path, payload)
     outputs = dict(payload.get("outputs") or {})
@@ -219,6 +309,7 @@ def candidate_from_summary(summary_path: Path, *, alias: str = "") -> Dict[str, 
         "cross_species_fp": selected_metrics["cross_species_fp"],
         "background_fp": selected_metrics["background_fp"],
         "species_as_background_fn": selected_metrics["species_as_background_fn"],
+        "background_fp_rate": "",
         "baseline_macro_f1": baseline_macro,
         "delta_macro_f1": delta_macro,
         "baseline_micro_f1": baseline_micro,
@@ -256,7 +347,7 @@ def load_candidates(summary_paths: Sequence[Tuple[str, Path]]) -> List[Dict[str,
         except Exception as exc:  # noqa: BLE001 - collect all bad summaries for one useful error.
             errors.append(f"{path}: {exc}")
     if errors:
-        raise ValueError("failed to load summary JSON(s):\n" + "\n".join(errors))
+        raise ValueError("failed to load summary JSON/CSV file(s):\n" + "\n".join(errors))
     rows.sort(key=ranking_key, reverse=True)
     for index, row in enumerate(rows, start=1):
         row["rank"] = index
@@ -333,15 +424,17 @@ def collect_summary_paths(args: argparse.Namespace) -> List[Tuple[str, Path]]:
         items.append((alias.strip(), Path(path_text)))
     for path in args.summary_json or []:
         items.append(("", path))
+    for path in args.summary_csv or []:
+        items.append(("", path))
     for pattern in args.summary_glob or []:
         for match in sorted(glob.glob(pattern, recursive=True)):
             items.append(("", Path(match)))
     items = unique_paths(items)
     missing = [str(path) for _, path in items if not path.is_file()]
     if missing:
-        raise ValueError("summary JSON not found:\n" + "\n".join(missing))
+        raise ValueError("summary JSON/CSV not found:\n" + "\n".join(missing))
     if not items:
-        raise ValueError("provide at least one --summary-json, --summary-glob, or --candidate NAME=PATH")
+        raise ValueError("provide at least one --summary-json, --summary-csv, --summary-glob, or --candidate NAME=PATH")
     return items
 
 
@@ -364,7 +457,8 @@ def build_leaderboard(summary_paths: Sequence[Tuple[str, Path]], output_dir: Pat
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--summary-json", action="append", type=Path, default=[], help="Path to an E119/E121/E122/E26 summary JSON")
-    parser.add_argument("--summary-glob", action="append", default=[], help="Glob for summary JSONs; supports ** with recursive=True")
+    parser.add_argument("--summary-csv", action="append", type=Path, default=[], help="Path to an E27/E28 ensemble rankings CSV")
+    parser.add_argument("--summary-glob", action="append", default=[], help="Glob for summary JSONs or CSVs; supports ** with recursive=True")
     parser.add_argument("--candidate", action="append", default=[], help="Named candidate in NAME=PATH form")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--title", default="E124 Production Candidate Leaderboard")

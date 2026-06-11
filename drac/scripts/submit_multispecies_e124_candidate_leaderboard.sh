@@ -14,6 +14,7 @@ SBATCH_MEM="4G"
 DEPENDENCY=""
 DRY_RUN="false"
 SUMMARY_JSONS=()
+SUMMARY_CSVS=()
 SUMMARY_GLOBS=()
 CANDIDATES=()
 
@@ -22,13 +23,14 @@ usage() {
 Usage:
   bash drac/scripts/submit_multispecies_e124_candidate_leaderboard.sh [options]
 
-Build a compact leaderboard across completed E119/E121/E122/E26 reports.
+Build a compact leaderboard across completed E119/E121/E122/E26/E27/E28 reports.
 This is a CPU-only report job; it does not run training or inference.
 
 Options:
   --summary-json PATH       Summary JSON; may be repeated
-  --summary-glob GLOB       Summary JSON glob; may be repeated
-  --candidate NAME=PATH     Named summary JSON; may be repeated
+  --summary-csv PATH        E27/E28 ensemble rankings CSV; may be repeated
+  --summary-glob GLOB       Summary JSON/CSV glob; may be repeated
+  --candidate NAME=PATH     Named summary JSON/CSV; may be repeated
   --weekend-root PATH       Default: /scratch/.../multispecies_weekend_20260502
   --repo-root PATH          Default: $weekend_root/repo_e24_expert_hparam_68be99f
   --python-bin NAME         Default: python3
@@ -45,6 +47,7 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --summary-json) SUMMARY_JSONS+=("$2"); shift 2 ;;
+    --summary-csv) SUMMARY_CSVS+=("$2"); shift 2 ;;
     --summary-glob) SUMMARY_GLOBS+=("$2"); shift 2 ;;
     --candidate) CANDIDATES+=("$2"); shift 2 ;;
     --weekend-root) WEEKEND_ROOT="$2"; shift 2 ;;
@@ -71,7 +74,7 @@ if [[ ! -d "$REPO_ON_NIBI" ]]; then
   exit 1
 fi
 
-if [[ "${#SUMMARY_JSONS[@]}" -eq 0 && "${#SUMMARY_GLOBS[@]}" -eq 0 && "${#CANDIDATES[@]}" -eq 0 ]]; then
+if [[ "${#SUMMARY_JSONS[@]}" -eq 0 && "${#SUMMARY_CSVS[@]}" -eq 0 && "${#SUMMARY_GLOBS[@]}" -eq 0 && "${#CANDIDATES[@]}" -eq 0 ]]; then
   SUMMARY_GLOBS+=(
     "$WEEKEND_ROOT/pipeline_runs/e119*/e119_summary.json"
     "$WEEKEND_ROOT/pipeline_runs/e119*/*/e119_summary.json"
@@ -81,6 +84,10 @@ if [[ "${#SUMMARY_JSONS[@]}" -eq 0 && "${#SUMMARY_GLOBS[@]}" -eq 0 && "${#CANDID
     "$WEEKEND_ROOT/pipeline_runs/e122*/*/e122_summary.json"
     "$WEEKEND_ROOT/pipeline_runs/e26*/diagnostic_summary.json"
     "$WEEKEND_ROOT/pipeline_runs/e26*/*/diagnostic_summary.json"
+    "$WEEKEND_ROOT/pipeline_runs/e27*/e27_ensemble_rankings.csv"
+    "$WEEKEND_ROOT/pipeline_runs/e27*/*/e27_ensemble_rankings.csv"
+    "$WEEKEND_ROOT/pipeline_runs/e28*/e28_ensemble_rankings.csv"
+    "$WEEKEND_ROOT/pipeline_runs/e28*/*/e28_ensemble_rankings.csv"
   )
 fi
 
@@ -90,6 +97,9 @@ JOB_SCRIPT="$OUTPUT_DIR/logs/E124leaderboard.sbatch"
 args=()
 for value in "${SUMMARY_JSONS[@]}"; do
   args+=(--summary-json "$value")
+done
+for value in "${SUMMARY_CSVS[@]}"; do
+  args+=(--summary-csv "$value")
 done
 for value in "${SUMMARY_GLOBS[@]}"; do
   args+=(--summary-glob "$value")
