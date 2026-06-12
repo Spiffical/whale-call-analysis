@@ -20,6 +20,51 @@ heads fire. Expert-only one-vs-rest metrics are useful diagnostics, but they can
 be optimistic if each expert is not evaluated against the same cross-species
 negative examples.
 
+## Logging Future Experiments
+
+Every completed experiment should update this file before we treat the result as
+reviewed. For E126-style binary gate reports, pass the ledger arguments directly
+to the report command:
+
+```bash
+python scripts/analysis/e126_binary_gate_report.py \
+  --name EXPERIMENT_NAME \
+  --val-predictions VAL_PREDICTIONS.csv \
+  --test-predictions TEST_PREDICTIONS.csv \
+  --output-dir OUTPUT_DIR \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --training-set "brief training-set description" \
+  --validation-set "brief validation-set description" \
+  --test-set "brief test-set description" \
+  --evaluation-note "whether this is common-row production-style evaluation"
+```
+
+Existing binary gate summaries can also be appended after the fact:
+
+```bash
+python scripts/analysis/multispecies_experiment_ledger.py binary-gate \
+  --summary-json OUTPUT_DIR/e126_binary_gate_summary.json \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --training-set "brief training-set description" \
+  --validation-set "brief validation-set description" \
+  --test-set "brief test-set description"
+```
+
+For production-style model comparisons, build the E124 leaderboard with ledger
+arguments:
+
+```bash
+python scripts/analysis/e124_compare_production_candidates.py \
+  --candidate SSL_BASELINE=PATH_TO_SUMMARY.json \
+  --candidate SSL_FINETUNED=PATH_TO_SUMMARY.json \
+  --output-dir OUTPUT_DIR \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --training-set "candidate-specific; see source summaries" \
+  --validation-set "candidate-specific; see source summaries" \
+  --test-set "shared common-row ONC test set" \
+  --evaluation-note "production-style common-row comparison with cross-species false positives counted"
+```
+
 ## Dataset And Evaluation References
 
 | Reference | Description | Notes |

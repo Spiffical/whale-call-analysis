@@ -197,6 +197,55 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
             args = e124.build_parser().parse_args(["--summary-csv", str(rankings), "--output-dir", str(out / "cli")])
             self.assertEqual(e124.collect_summary_paths(args), [("", rankings.resolve())])
 
+    def test_can_append_living_ledger_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary = root / "e122" / "e122_summary.json"
+            ledger_path = root / "ledger.md"
+            self.write_summary(
+                summary,
+                {
+                    "name": "two_stage_candidate",
+                    "gate_threshold": 0.4,
+                    "metric_labels": ["species:Bp", "species:Bm", "species:Mn"],
+                    "model_metrics": [
+                        {
+                            "model": "base",
+                            "split": "test",
+                            "prediction": "two_stage",
+                            "rows": 10,
+                            "macro_f1": 0.5,
+                            "micro_f1": 0.8,
+                            "micro_precision": 0.75,
+                            "micro_recall": 0.85,
+                            "cross_species_fp": 2,
+                            "background_fp": 1,
+                            "species_as_background_fn": 1,
+                        },
+                    ],
+                    "outputs": {"report": str(root / "e122" / "report.md")},
+                },
+            )
+
+            result = e124.build_leaderboard(
+                [("", summary)],
+                root / "out",
+                "Unit Ledger Leaderboard",
+                ledger_path=ledger_path,
+                training_set="unit candidate train sets",
+                validation_set="unit validation sets",
+                test_set="unit common ONC test",
+                evaluation_note="unit production comparison",
+            )
+
+            self.assertEqual(result["ledger"], str(ledger_path))
+            payload = json.loads((root / "out" / "e124_candidate_leaderboard.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["ledger"], str(ledger_path))
+            ledger_text = ledger_path.read_text(encoding="utf-8")
+            self.assertIn("Unit Ledger Leaderboard", ledger_text)
+            self.assertIn("Training set: unit candidate train sets.", ledger_text)
+            self.assertIn("two_stage_candidate", ledger_text)
+
 
 if __name__ == "__main__":
     unittest.main()

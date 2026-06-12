@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from scripts.analysis import multispecies_experiment_ledger as experiment_ledger
+
 
 PREFERRED_PREDICTIONS = {
     "E119": ("refined", "pred"),
@@ -438,20 +440,45 @@ def collect_summary_paths(args: argparse.Namespace) -> List[Tuple[str, Path]]:
     return items
 
 
-def build_leaderboard(summary_paths: Sequence[Tuple[str, Path]], output_dir: Path, title: str) -> Dict[str, Any]:
+def build_leaderboard(
+    summary_paths: Sequence[Tuple[str, Path]],
+    output_dir: Path,
+    title: str,
+    *,
+    ledger_path: Optional[Path] = None,
+    ledger_entry_id: str = "",
+    training_set: str = "",
+    validation_set: str = "",
+    test_set: str = "",
+    evaluation_note: str = "",
+) -> Dict[str, Any]:
     rows = load_candidates(summary_paths)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(output_dir / "e124_candidate_leaderboard.csv", rows)
-    (output_dir / "e124_candidate_leaderboard.json").write_text(json.dumps({"candidates": rows}, indent=2), encoding="utf-8")
+    payload = {
+        "title": title,
+        "candidates": rows,
+        "report": str(output_dir / "e124_candidate_leaderboard.md"),
+        "leaderboard_csv": str(output_dir / "e124_candidate_leaderboard.csv"),
+        "leaderboard_json": str(output_dir / "e124_candidate_leaderboard.json"),
+    }
+    if ledger_path is not None:
+        ledger_written = experiment_ledger.append_leaderboard_summary(
+            leaderboard=payload,
+            ledger_path=ledger_path,
+            training_set=training_set,
+            validation_set=validation_set,
+            test_set=test_set,
+            evaluation_note=evaluation_note,
+            entry_id=ledger_entry_id,
+        )
+        payload["ledger"] = str(ledger_written)
+    (output_dir / "e124_candidate_leaderboard.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     report = markdown_report(rows, output_dir, title)
     report_path = output_dir / "e124_candidate_leaderboard.md"
     report_path.write_text(report, encoding="utf-8")
-    return {
-        "report": str(report_path),
-        "leaderboard_csv": str(output_dir / "e124_candidate_leaderboard.csv"),
-        "leaderboard_json": str(output_dir / "e124_candidate_leaderboard.json"),
-        "candidates": rows,
-    }
+    payload["report"] = str(report_path)
+    return payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -462,6 +489,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate", action="append", default=[], help="Named candidate in NAME=PATH form")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--title", default="E124 Production Candidate Leaderboard")
+    parser.add_argument("--ledger-path", default=None, type=Path)
+    parser.add_argument("--ledger-entry-id", default="")
+    parser.add_argument("--training-set", default="")
+    parser.add_argument("--validation-set", default="")
+    parser.add_argument("--test-set", default="")
+    parser.add_argument("--evaluation-note", default="")
     return parser
 
 
@@ -470,7 +503,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         summary_paths = collect_summary_paths(args)
-        result = build_leaderboard(summary_paths, args.output_dir, args.title)
+        result = build_leaderboard(
+            summary_paths,
+            args.output_dir,
+            args.title,
+            ledger_path=args.ledger_path,
+            ledger_entry_id=args.ledger_entry_id,
+            training_set=args.training_set,
+            validation_set=args.validation_set,
+            test_set=args.test_set,
+            evaluation_note=args.evaluation_note,
+        )
     except ValueError as exc:
         parser.error(str(exc))
     print(json.dumps({key: value for key, value in result.items() if key != "candidates"}, indent=2))

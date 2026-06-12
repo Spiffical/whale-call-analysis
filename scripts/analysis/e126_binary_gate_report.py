@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.analysis import e119_pairwise_refinement_report as e119
+from scripts.analysis import multispecies_experiment_ledger as experiment_ledger
 
 
 DEFAULT_CLASS_IDS = ("background", "species:Bp", "species:Bm", "species:Mn")
@@ -282,6 +283,12 @@ def run_report(
     score_label: str,
     score_field: Optional[str],
     thresholds: Sequence[float],
+    ledger_path: Optional[Path] = None,
+    ledger_entry_id: str = "",
+    training_set: str = "",
+    validation_set: str = "",
+    test_set: str = "",
+    evaluation_note: str = "",
 ) -> Dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     val_rows = load_gate_rows(
@@ -339,8 +346,22 @@ def run_report(
             "breakdown": str(output_dir / "e126_binary_gate_breakdown.csv"),
             "examples": str(output_dir / "e126_binary_gate_examples.csv"),
         },
+        "test_breakdown": breakdown,
     }
-    (output_dir / "e126_binary_gate_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary_path = output_dir / "e126_binary_gate_summary.json"
+    if ledger_path is not None:
+        ledger_written = experiment_ledger.append_binary_gate_summary(
+            summary=summary,
+            summary_path=summary_path,
+            ledger_path=ledger_path,
+            training_set=training_set,
+            validation_set=validation_set,
+            test_set=test_set,
+            evaluation_note=evaluation_note,
+            entry_id=ledger_entry_id,
+        )
+        summary["outputs"]["ledger"] = str(ledger_written)
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
 
@@ -355,6 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--score-label", default=DEFAULT_SCORE_LABEL)
     parser.add_argument("--score-field", default=None)
     parser.add_argument("--thresholds", default="centile")
+    parser.add_argument("--ledger-path", default=None, type=Path)
+    parser.add_argument("--ledger-entry-id", default="")
+    parser.add_argument("--training-set", default="")
+    parser.add_argument("--validation-set", default="")
+    parser.add_argument("--test-set", default="")
+    parser.add_argument("--evaluation-note", default="")
     return parser
 
 
@@ -371,6 +398,12 @@ def main() -> int:
         score_label=args.score_label,
         score_field=args.score_field,
         thresholds=parse_thresholds(args.thresholds),
+        ledger_path=args.ledger_path,
+        ledger_entry_id=args.ledger_entry_id,
+        training_set=args.training_set,
+        validation_set=args.validation_set,
+        test_set=args.test_set,
+        evaluation_note=args.evaluation_note,
     )
     print(json.dumps({"report": summary["outputs"]["report"], "summary": summary["outputs"]}, indent=2))
     return 0

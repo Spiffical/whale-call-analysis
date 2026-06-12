@@ -13,6 +13,12 @@ SBATCH_CPUS="1"
 SBATCH_MEM="4G"
 DEPENDENCY=""
 DRY_RUN="false"
+LEDGER_PATH=""
+LEDGER_ENTRY_ID=""
+TRAINING_SET=""
+VALIDATION_SET=""
+TEST_SET=""
+EVALUATION_NOTE=""
 SUMMARY_JSONS=()
 SUMMARY_CSVS=()
 SUMMARY_GLOBS=()
@@ -40,6 +46,12 @@ Options:
   --cpus-per-task N         Default: 1
   --mem MEM                 Default: 4G
   --dependency SPEC         Passed to sbatch, e.g. afterany:123:124
+  --ledger-path PATH        Optional living results ledger to append/update
+  --ledger-entry-id ID      Optional stable ledger block id
+  --training-set TEXT       Training-set description for ledger entry
+  --validation-set TEXT     Validation-set description for ledger entry
+  --test-set TEXT           Test-set description for ledger entry
+  --evaluation-note TEXT    Evaluation description for ledger entry
   --dry-run                 Write the sbatch script but do not submit it
 USAGE
 }
@@ -59,6 +71,12 @@ while [[ $# -gt 0 ]]; do
     --cpus-per-task) SBATCH_CPUS="$2"; shift 2 ;;
     --mem) SBATCH_MEM="$2"; shift 2 ;;
     --dependency) DEPENDENCY="$2"; shift 2 ;;
+    --ledger-path) LEDGER_PATH="$2"; shift 2 ;;
+    --ledger-entry-id) LEDGER_ENTRY_ID="$2"; shift 2 ;;
+    --training-set) TRAINING_SET="$2"; shift 2 ;;
+    --validation-set) VALIDATION_SET="$2"; shift 2 ;;
+    --test-set) TEST_SET="$2"; shift 2 ;;
+    --evaluation-note) EVALUATION_NOTE="$2"; shift 2 ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 1 ;;
@@ -107,6 +125,24 @@ done
 for value in "${CANDIDATES[@]}"; do
   args+=(--candidate "$value")
 done
+if [[ -n "$LEDGER_PATH" ]]; then
+  args+=(--ledger-path "$LEDGER_PATH")
+fi
+if [[ -n "$LEDGER_ENTRY_ID" ]]; then
+  args+=(--ledger-entry-id "$LEDGER_ENTRY_ID")
+fi
+if [[ -n "$TRAINING_SET" ]]; then
+  args+=(--training-set "$TRAINING_SET")
+fi
+if [[ -n "$VALIDATION_SET" ]]; then
+  args+=(--validation-set "$VALIDATION_SET")
+fi
+if [[ -n "$TEST_SET" ]]; then
+  args+=(--test-set "$TEST_SET")
+fi
+if [[ -n "$EVALUATION_NOTE" ]]; then
+  args+=(--evaluation-note "$EVALUATION_NOTE")
+fi
 
 printf '%s\0' "${args[@]}" > "$OUTPUT_DIR/logs/summary_args.nul"
 
