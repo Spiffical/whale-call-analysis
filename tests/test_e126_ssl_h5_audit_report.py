@@ -47,6 +47,7 @@ class TestE126SslH5AuditReport(unittest.TestCase):
         self.assertEqual(summary["normal_train_months"], 1)
         self.assertEqual(summary["months"], 6)
         self.assertEqual(summary["target_label_counts"], {"Bm": 2, "Bp": 1, "Mn": 2})
+        self.assertEqual(summary["unexpected_label_count"], 0)
         checks = audit.quality_checks(
             summary,
             min_normal_rows=2,
@@ -60,7 +61,36 @@ class TestE126SslH5AuditReport(unittest.TestCase):
         self.assertFalse(by_name["normal_train_rows"]["passed"])
         self.assertFalse(by_name["normal_months"]["passed"])
         self.assertFalse(by_name["normal_train_months"]["passed"])
+        self.assertTrue(by_name["label_strings_expected"]["passed"])
         self.assertTrue(by_name["target_rows:Bm"]["passed"])
+
+    def test_quality_checks_flag_unexpected_label_strings(self):
+        summary = audit.summarize_rows(
+            label_strings=["normal", "target", "background", "Bm;Mn"],
+            splits=["train", "train", "val", "train"],
+            source_kinds=["ONC"] * 4,
+            item_ids=[
+                "normal_20250101T000000",
+                "target_20250201T000000",
+                "background_20250301T000000",
+                "multi_20250401T000000",
+            ],
+            sources=[""] * 4,
+            target_labels=["Bm", "Bp", "Mn"],
+            spectrogram_shape=[4, 16, 16, 1],
+        )
+        self.assertEqual(summary["unexpected_label_counts"], {"background": 1, "target": 1})
+        checks = audit.quality_checks(
+            summary,
+            min_normal_rows=1,
+            min_normal_train_rows=1,
+            min_normal_months=1,
+            min_normal_train_months=1,
+            target_labels=["Bm", "Bp", "Mn"],
+        )
+        by_name = {row["check"]: row for row in checks}
+        self.assertFalse(by_name["label_strings_expected"]["passed"])
+        self.assertEqual(by_name["label_strings_expected"]["value"], 2)
 
     @unittest.skipIf(h5py is None or np is None, "h5py/numpy are required for H5 audit round-trip")
     def test_run_audit_writes_report_and_ledger(self):
@@ -95,9 +125,11 @@ class TestE126SslH5AuditReport(unittest.TestCase):
             self.assertTrue((out / "e126_ssl_h5_audit_report.md").is_file())
             self.assertTrue((out / "e126_ssl_h5_quality_checks.csv").is_file())
             self.assertTrue((out / "e126_ssl_h5_normal_train_month_counts.csv").is_file())
+            self.assertTrue((out / "e126_ssl_h5_unexpected_label_counts.csv").is_file())
             self.assertEqual(payload["outputs"]["ledger"], str(ledger))
             self.assertEqual(payload["summary"]["normal_train_rows"], 1)
             self.assertEqual(payload["summary"]["normal_train_months"], 1)
+            self.assertEqual(payload["summary"]["unexpected_label_count"], 0)
             self.assertIn("E126 SSL H5 Coverage Audit", ledger.read_text(encoding="utf-8"))
 
 

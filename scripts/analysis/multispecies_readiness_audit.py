@@ -351,6 +351,17 @@ def audit_h5(
         value=normal_months,
         threshold=min_normal_months,
     )
+    unexpected_labels = int(summary.get("unexpected_label_count") or 0)
+    add_check(
+        checks,
+        artifact_type="h5_audit",
+        artifact=artifact,
+        check="label_strings_expected",
+        status="PASS" if unexpected_labels == 0 else "FAIL",
+        value=unexpected_labels,
+        threshold=0,
+        detail=",".join(sorted((summary.get("unexpected_label_counts") or {}).keys())),
+    )
     failed = [row for row in quality_checks if not bool(row.get("passed"))]
     add_check(
         checks,

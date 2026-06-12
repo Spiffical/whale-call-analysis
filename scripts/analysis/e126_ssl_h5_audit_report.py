@@ -113,9 +113,11 @@ def summarize_rows(
     normal_train_month_counts: Counter = Counter()
     split_normal_counts: Counter = Counter()
     target_counts: Counter = Counter()
+    unexpected_label_counts: Counter = Counter()
     unknown_month_rows = 0
 
     targets = set(target_labels)
+    expected_labels = set(target_labels) | {"normal"}
     for label_string, split, source_kind, item_id, source in zip(
         label_strings, splits, source_kinds, item_ids, sources
     ):
@@ -131,6 +133,8 @@ def summarize_rows(
             split_label_counts[(split_key, label)] += 1
             if label in targets:
                 target_counts[label] += 1
+            if label not in expected_labels:
+                unexpected_label_counts[label] += 1
         if "normal" in labels:
             normal_month_counts[month] += 1
             split_normal_counts[split_key] += 1
@@ -150,6 +154,10 @@ def summarize_rows(
     target_label_rows = [
         {"label": label, "rows": int(target_counts.get(label, 0))}
         for label in target_labels
+    ]
+    unexpected_label_rows = [
+        {"label": label, "rows": int(rows)}
+        for label, rows in sorted(unexpected_label_counts.items())
     ]
     normal_rows = int(label_counts.get("normal", 0))
     normal_months = sorted(month for month, rows in normal_month_counts.items() if month != "unknown" and rows > 0)
@@ -171,6 +179,10 @@ def summarize_rows(
         "split_counts": dict(sorted(split_counts.items())),
         "source_kind_counts": dict(sorted(source_kind_counts.items())),
         "target_label_counts": {label: int(target_counts.get(label, 0)) for label in target_labels},
+        "expected_label_strings": sorted(expected_labels),
+        "unexpected_label_count": int(sum(unexpected_label_counts.values())),
+        "unexpected_label_counts": dict(sorted(unexpected_label_counts.items())),
+        "unexpected_label_rows": unexpected_label_rows,
         "label_count_rows": label_count_rows,
         "split_count_rows": split_count_rows,
         "source_kind_count_rows": source_kind_count_rows,
@@ -193,6 +205,12 @@ def quality_checks(
 ) -> List[Dict[str, Any]]:
     target_counts = summary.get("target_label_counts") or {}
     checks = [
+        {
+            "check": "label_strings_expected",
+            "value": int(summary.get("unexpected_label_count", 0)),
+            "threshold": 0,
+            "passed": int(summary.get("unexpected_label_count", 0)) == 0,
+        },
         {
             "check": "normal_rows",
             "value": int(summary.get("normal_rows", 0)),
@@ -288,6 +306,11 @@ def markdown_report(
     lines.extend(["", "## Label Counts", "", "| label | rows |", "| --- | ---: |"])
     for row in summary.get("label_count_rows", []):
         lines.append(f"| {row.get('label')} | {row.get('rows')} |")
+    unexpected = list(summary.get("unexpected_label_rows", []))
+    if unexpected:
+        lines.extend(["", "## Unexpected Label Strings", "", "| label | rows |", "| --- | ---: |"])
+        for row in unexpected:
+            lines.append(f"| {row.get('label')} | {row.get('rows')} |")
     lines.extend(["", "## Split Counts", "", "| split | rows |", "| --- | ---: |"])
     for row in summary.get("split_count_rows", []):
         lines.append(f"| {row.get('split')} | {row.get('rows')} |")
@@ -357,6 +380,7 @@ def run_audit(
         builder_summary = json.loads(builder_summary_json.read_text(encoding="utf-8"))
 
     write_csv(output_dir / "e126_ssl_h5_label_counts.csv", summary["label_count_rows"])
+    write_csv(output_dir / "e126_ssl_h5_unexpected_label_counts.csv", summary["unexpected_label_rows"])
     write_csv(output_dir / "e126_ssl_h5_split_counts.csv", summary["split_count_rows"])
     write_csv(output_dir / "e126_ssl_h5_source_kind_counts.csv", summary["source_kind_count_rows"])
     write_csv(output_dir / "e126_ssl_h5_month_counts.csv", summary["month_count_rows"])
@@ -390,6 +414,7 @@ def run_audit(
             "report": str(report_path),
             "summary": str(output_dir / "e126_ssl_h5_audit_summary.json"),
             "label_counts": str(output_dir / "e126_ssl_h5_label_counts.csv"),
+            "unexpected_label_counts": str(output_dir / "e126_ssl_h5_unexpected_label_counts.csv"),
             "split_counts": str(output_dir / "e126_ssl_h5_split_counts.csv"),
             "source_kind_counts": str(output_dir / "e126_ssl_h5_source_kind_counts.csv"),
             "month_counts": str(output_dir / "e126_ssl_h5_month_counts.csv"),

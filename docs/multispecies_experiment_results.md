@@ -132,6 +132,9 @@ The audit writes `multispecies_readiness_audit.md`,
 or explicitly explained in the ledger entry before the result is considered
 reviewed. For binary gate summaries, the audit requires overall metrics, example
 rows, background false-positive rate, and per-species gate recall.
+For H5 summaries, it also requires label strings to be only `normal` plus the
+configured target labels, which guards against malformed H5s with labels such as
+`target` or `background`.
 
 ## Dataset And Evaluation References
 
@@ -430,7 +433,7 @@ Interpretation: Setup is ready for SSL binary-gate training once Nibi compute le
 Add rows here when the next jobs complete:
 
 - E126 H5 bridge completion: record final normal/call counts, split counts,
-  month coverage, and H5 path.
+  month coverage, unexpected-label check, and H5 path.
 - E126 supervised/SSL binary gate: record whale-vs-background precision, recall,
   F1, accuracy, confusion matrix, and background FP rate.
 - E128 binary gate comparison: follow `docs/e128_binary_gate_comparison.md`;
