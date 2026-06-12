@@ -469,7 +469,7 @@ over raw argmax rows when both are present.
 
 ### E131: Richer GAVDNet-Proxy Synthetic Multiclass SSL Setup
 
-Status: submitter repaired locally; Nibi repair/submission pending reconnect.
+Status: repaired and queued; no metrics yet.
 
 Purpose: add a second `Bm`+`Mn` synthetic augmentation branch that uses more of
 the GAVDNet/customAudioAugmenter-inspired spectrogram proxies than E130's
@@ -484,14 +484,41 @@ by multiclass fine-tuning on an E126 broad H5 augmented with 1,000 synthetic
 
 Validation/test set: same E128 ONC common-row eval H5 used by E130.
 
-Important current state: the first Nibi launch attempt from commit `3e889fa`
-partially submitted E131 jobs and visibly reached `15974611 / E131leader`, then
-stopped before H5 audit/readiness submission because the submitter passed a
-literal `\` argument to `submit_multispecies_e126_ssl_h5_audit.sh`. The local
-submitter has been fixed after that attempt; once `forcodex` is logged back into
-Nibi, inspect/capture the partially queued E131 job IDs, fast-forward to the fix,
-and submit the missing E131 H5 audit/readiness jobs before treating E131 as
-properly queued.
+Queue state: the first Nibi launch attempt from commit `3e889fa` partially
+submitted E131, then stopped before H5 audit/readiness submission because the
+submitter passed a literal `\` argument to
+`submit_multispecies_e126_ssl_h5_audit.sh`. The Nibi repo was fast-forwarded to
+repair commit `b007825` and the missing tail was submitted manually.
+
+Queued jobs:
+
+| Job | Purpose | Dependency |
+| --- | --- | --- |
+| 15974608 / E131augBmMn | build richer `Bm`+`Mn` synthetic H5 | `afterok:15974542` |
+| 15974609 / E131ftBmMn | multiclass fine-tune from shared pretrain | `afterok:15974555:15974608` |
+| 15974610 / E131postBmMn | E129 common-row report for richer synthetic variant | `afterok:15974609:15974543` |
+| 15974611 / E131leader | compare E130 baseline, E130 conservative, and E131 richer synthetic | `afterok:15974563:15974564:15974610` |
+| 15976434 / E126h5audit | audit richer E131 synthetic H5 before using it for conclusions | `afterok:15974608` |
+| 15976435 / E131ready | final readiness audit over leaderboard plus broad/eval/E131 H5 audits | `afterok:15974611:15976434` |
+
+Current scheduler state at repair time: all E131 jobs were pending on
+dependencies. The root blocker for the broader chain remained
+`15973986 / E126sslH5` with
+`ReqNodeNotAvail, Reserved for maintenance`; downstream jobs should remain
+pending until that broad H5 build and dependent audits/pretraining complete.
+
+Artifacts:
+
+- E131 output root:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e131_gavdnet_proxy_synthetic_multiclass_20260612T121245Z`
+- E131 synthetic H5 path:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e131_gavdnet_proxy_synthetic_multiclass_20260612T121245Z/datasets/e131_bm_mn_gavdnet_proxy.h5`
+- E131 H5 audit output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e131_gavdnet_proxy_synthetic_multiclass_20260612T121245Z/h5_audit_bm_mn_gavdnet_proxy`
+- E131 leaderboard output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e131_gavdnet_proxy_synthetic_multiclass_20260612T121245Z/e124_candidate_leaderboard`
+- E131 readiness output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e131_gavdnet_proxy_synthetic_multiclass_20260612T121245Z/readiness_audit`
 
 No E131 metrics exist yet.
 

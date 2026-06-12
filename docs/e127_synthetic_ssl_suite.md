@@ -199,6 +199,17 @@ bash drac/scripts/submit_multispecies_e131_gavdnet_proxy_shared_pretrain.sh
 
 The first Nibi launch attempt partially submitted jobs, including visible
 `15974611 / E131leader`, but stopped before H5 audit/readiness submission because
-of a fixed submitter bug. Reconnect to Nibi, fast-forward the repo, inspect the
-partial E131 queue, and submit the missing audit/readiness tail before reviewing
-E131 results.
+of a fixed submitter bug. The Nibi repo was then fast-forwarded to repair commit
+`b007825`, and the missing E131 tail was queued:
+
+| Job | Purpose | Dependency |
+| --- | --- | --- |
+| 15974608 / E131augBmMn | richer `Bm`+`Mn` synthetic H5 | `afterok:15974542` |
+| 15974609 / E131ftBmMn | multiclass fine-tune from shared pretrain | `afterok:15974555:15974608` |
+| 15974610 / E131postBmMn | E129 common-row report | `afterok:15974609:15974543` |
+| 15974611 / E131leader | E130/E131 leaderboard | `afterok:15974563:15974564:15974610` |
+| 15976434 / E126h5audit | richer synthetic H5 audit | `afterok:15974608` |
+| 15976435 / E131ready | final readiness audit | `afterok:15974611:15976434` |
+
+No E131 metrics exist yet; the broader queue is still dependency-gated behind
+the E126 broad H5 build/audit and shared E128 SSL pretraining.
