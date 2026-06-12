@@ -356,18 +356,25 @@ throughout the year" requirement much better than the ONC blocked manifest. The
 blocked ONC manifest should remain a production evaluation source, not the SSL
 normal-pretraining source.
 
-Nibi job:
+Nibi jobs:
 
 | Job | State at last check | Reason |
 | --- | --- | --- |
 | 15973986 / E126sslH5 | PENDING | `ReqNodeNotAvail, Reserved for maintenance` |
+| 15974542 / E126h5audit | PENDING | `afterok:15973986`; pending while parent build is pending |
 
 Expected output:
 
 `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e126_ssl_e16_low_bgall_target3000_20260612T031656Z.h5`
 
+Expected audit output:
+
+`/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e126_ssl_h5_audit_20260612T031656Z/`
+
 Interpretation: no SSL whale-vs-background metrics are available yet because the
-bridge job has not produced the H5 dataset.
+bridge job has not produced the H5 dataset. The dependent audit will check that
+the H5 has at least 10,000 normal training rows, 12 normal training months, and
+only expected label strings before any SSL training starts.
 
 ### E127: Synthetic Spectrogram Augmentation Tool
 
@@ -418,15 +425,18 @@ Evaluation: production-style whale-call vs background gate; per-species gate rec
 
 Metrics:
 - metrics not available yet: H5 bridge job 15973986 remains pending
-- Nibi whale-call repo updated to 99b6719; clean SSL repo restored at 9215af6
+- Nibi whale-call repo updated to 75249c6; clean SSL repo restored at 9215af6
 
 Artifacts:
 - Runbook: `docs/e128_binary_gate_comparison.md`
 - Runner: `scripts/analysis/e128_run_ssamba_h5.py`
 - Exporter: `scripts/analysis/e128_export_ssamba_binary_gate_predictions.py`
 - ONC eval-H5 job: `15974536 / E128evalH5`
+- ONC eval-H5 audit job: `15974543 / E126h5audit` with `afterok:15974536`
 - ONC eval-H5 expected output:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e128_onc_eval_h5_20260612T095926Z/e128_onc_common_eval_low_20260612T095926Z.h5`
+- ONC eval-H5 audit output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_onc_eval_h5_audit_20260612T095926Z/`
 
 Interpretation: Setup is ready for SSL binary-gate training once Nibi compute leaves maintenance and the H5 bridge completes; no model-selection claim should be made yet.
 <!-- END experiment-ledger-entry:e128-ssl-binary-gate-setup -->

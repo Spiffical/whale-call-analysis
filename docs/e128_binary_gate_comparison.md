@@ -140,11 +140,19 @@ present, rather than only checking that a summary file exists.
 ## Current Nibi State
 
 As of the last check, Nibi login was reachable, the whale-call repo was at
-`eb51ff1`, and the clean SSL repo clone was present at commit `9215af6`. Compute
+`75249c6`, and the clean SSL repo clone was present at commit `9215af6`. Compute
 nodes were still largely maintenance/down:
 CPU H5 build job `15973986` remained pending with
 `ReqNodeNotAvail,_Reserved_for_maintenance`. Do not launch GPU training jobs
 until compute nodes are available and the H5 bridge has completed.
+
+The broad SSL H5 audit is queued behind that bridge job:
+
+```text
+15974542 / E126h5audit
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e126_ssl_h5_audit_20260612T031656Z/
+dependency: afterok:15973986
+```
 
 The separate ONC common-row evaluation H5 build has also been submitted:
 
@@ -155,3 +163,11 @@ The separate ONC common-row evaluation H5 build has also been submitted:
 
 At submission time it was also pending with `ReqNodeNotAvail, Reserved for
 maintenance`.
+
+The ONC eval-H5 audit is queued behind that evaluation H5 build:
+
+```text
+15974543 / E126h5audit
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_onc_eval_h5_audit_20260612T095926Z/
+dependency: afterok:15974536
+```
