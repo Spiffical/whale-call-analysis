@@ -10,7 +10,7 @@ DATASET_H5=""
 MANIFEST_CSV=""
 DATASET_ROOT="/project/def-kmoran/merileo/whale-call-analysis/multispecies_weekend_20260502/mat_archives/multiband40s_20260514T002301Z/extracted"
 RUN_ROOT=""
-RUNNER_PY="src/run_amba_spectrogram.py"
+RUNNER_PY=""
 VENV_PATH=""
 VENV_PATH_SET="false"
 PYTHON_BIN="python"
@@ -21,6 +21,7 @@ WANDB_ENTITY="spencer-bialek"
 TRAIN_RATIO="0.8"
 PRETRAIN_TASK="pretrain_joint"
 FINETUNE_TASK="ft_avgtok"
+FINETUNE_TASK_SET="false"
 NUM_PRETRAIN_JOBS="2"
 NUM_FINETUNE_JOBS="1"
 FINETUNE_MULTICLASS="true"
@@ -68,7 +69,8 @@ Options:
   --repo-root PATH           Whale-call repo root for H5 builder
   --ssl-repo-root PATH       Default: $weekend_root/selfsupervision_anomalies_onc
   --dataset-root PATH        Multiband MAT extraction root for --manifest-csv
-  --runner-py PATH           Relative or absolute SSAMBA runner. Default: src/run_amba_spectrogram.py
+  --runner-py PATH           Relative or absolute SSAMBA runner.
+                             Default: $repo_root/scripts/analysis/e128_run_ssamba_h5.py
   --allow-missing-dataset    Allow --dataset-h5 to be created by an upstream dependency job
   --venv-path PATH           Default: $ssl_repo_root/myenv
   --run-root PATH            Default: $weekend_root/runs/E123_ssl_ssamba_multispecies_$stamp
@@ -125,11 +127,17 @@ while [[ $# -gt 0 ]]; do
     --wandb-entity) WANDB_ENTITY="$2"; shift 2 ;;
     --train-ratio) TRAIN_RATIO="$2"; shift 2 ;;
     --pretrain-task) PRETRAIN_TASK="$2"; shift 2 ;;
-    --finetune-task) FINETUNE_TASK="$2"; shift 2 ;;
+    --finetune-task) FINETUNE_TASK="$2"; FINETUNE_TASK_SET="true"; shift 2 ;;
     --num-pretrain-jobs) NUM_PRETRAIN_JOBS="$2"; shift 2 ;;
     --num-finetune-jobs) NUM_FINETUNE_JOBS="$2"; shift 2 ;;
     --num-classes) NUM_CLASSES="$2"; shift 2 ;;
-    --binary-finetune) FINETUNE_MULTICLASS="false"; shift ;;
+    --binary-finetune)
+      FINETUNE_MULTICLASS="false"
+      if [[ "$FINETUNE_TASK_SET" != "true" ]]; then
+        FINETUNE_TASK="ft_cls"
+      fi
+      shift
+      ;;
     --exclude-label) EXCLUDE_LABELS+=("$2"); shift 2 ;;
     --dependency) DEPENDENCY="$2"; shift 2 ;;
     --time) SBATCH_TIME="$2"; shift 2 ;;
@@ -163,6 +171,9 @@ if [[ -z "$DATASET_H5" ]]; then
 fi
 if [[ -z "$RUN_ROOT" ]]; then
   RUN_ROOT="$WEEKEND_ROOT/runs/E123_ssl_ssamba_multispecies_${STAMP}"
+fi
+if [[ -z "$RUNNER_PY" ]]; then
+  RUNNER_PY="$REPO_ON_NIBI/scripts/analysis/e128_run_ssamba_h5.py"
 fi
 if [[ "$VENV_PATH_SET" != "true" ]]; then
   VENV_PATH="$SSL_REPO_ROOT/myenv"
@@ -308,6 +319,27 @@ fi
 echo "Running E123 $phase job $job_index"
 echo "bash scripts/run_amba_spectrogram.sh \${RUN_ARGS[*]}"
 bash scripts/run_amba_spectrogram.sh "\${RUN_ARGS[@]}"
+wrapper_status=\$?
+if [[ "\$wrapper_status" -ne 0 ]]; then
+  echo "SSAMBA shell runner failed with status \$wrapper_status" >&2
+  exit "\$wrapper_status"
+fi
+if [[ "$phase" == "pretrain" ]]; then
+  checkpoint_prefix="\${PRETRAIN_TASK//_/-}"
+  produced_ckpt=\$(find "\$RUN_ROOT/pretrain" -path "*/models/\${checkpoint_prefix}_best_checkpoint.pth" -print 2>/dev/null | sort | tail -n 1 || true)
+  if [[ -z "\$produced_ckpt" ]]; then
+    echo "No pretrain best checkpoint found under \$RUN_ROOT/pretrain after runner completed" >&2
+    exit 4
+  fi
+else
+  checkpoint_prefix="\${TASK//_/-}"
+  produced_ckpt=\$(find "\$RUN_ROOT/finetune" -path "*/models/\${checkpoint_prefix}_best_checkpoint.pth" -print 2>/dev/null | sort | tail -n 1 || true)
+  if [[ -z "\$produced_ckpt" ]]; then
+    echo "No finetune best checkpoint found under \$RUN_ROOT/finetune after runner completed" >&2
+    exit 5
+  fi
+fi
+echo "Verified checkpoint: \$produced_ckpt"
 EOF
 }
 

@@ -70,6 +70,7 @@ bash drac/scripts/submit_multispecies_e123_ssl_ssamba.sh \
   --dataset-h5 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e126_ssl_e16_low_bgall_target3000_20260612T031656Z.h5 \
   --ssl-repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/selfsupervision_anomalies_onc \
   --binary-finetune \
+  --finetune-task ft_cls \
   --num-pretrain-jobs 2 \
   --num-finetune-jobs 1 \
   --time 03:00:00 \
@@ -88,7 +89,7 @@ python scripts/analysis/e128_export_ssamba_binary_gate_predictions.py \
   --model-dir SSAMBA_FINETUNE_MODEL_DIR \
   --dataset-h5 ONC_COMMON_EVAL_H5_WITH_VAL_TEST_SPLITS.h5 \
   --output-dir OUTPUT_DIR/e128_ssl_binary_gate_predictions \
-  --task ft_avgtok \
+  --task ft_cls \
   --score-label task:whale_call
 ```
 
@@ -111,16 +112,15 @@ python scripts/analysis/e126_binary_gate_report.py \
   --evaluation-note "binary whale-call vs background; per-species gate recall recovered from H5 label_strings"
 ```
 
-Important blocker: the expected SSL repo path was not present on Nibi at the
-last check. The exporter solves row-level scoring once a trained checkpoint and
-ONC evaluation H5 exist, but it does not remove the need to restore/clone the
-SSL repo before launching SSL jobs.
+Important blocker: the SSL repo path has been restored on Nibi, but the H5
+bridge job must finish before SSL training can launch. The exporter solves
+row-level scoring once a trained checkpoint and ONC evaluation H5 exist.
 
 ## Current Nibi State
 
-As of the last check, Nibi login was reachable, but compute nodes were largely
-maintenance/down:
+As of the last check, Nibi login was reachable, the whale-call repo was at
+`3d97437`, and the clean SSL repo clone was present at commit `9215af6`. Compute
+nodes were still largely maintenance/down:
 CPU H5 build job `15973986` remained pending with
-`ReqNodeNotAvail,_Reserved_for_maintenance`, and the expected SSL repo path was
-not present on scratch. Do not launch more jobs until compute nodes and the SSL
-repo path are available.
+`ReqNodeNotAvail,_Reserved_for_maintenance`. Do not launch more jobs until
+compute nodes are available and the H5 bridge has completed.
