@@ -435,6 +435,8 @@ Add rows here when the next jobs complete:
   F1, accuracy, confusion matrix, and background FP rate.
 - E128 binary gate comparison: follow `docs/e128_binary_gate_comparison.md`;
   record supervised and SSL gate metrics only after the E126-style reports exist
-  with per-species recall and examples.
+  with per-species recall and examples. Build the separate E128 ONC eval H5 with
+  `drac/scripts/submit_multispecies_e128_eval_h5.sh` so SSL gate scoring uses
+  common validation/test rows rather than the broad SSL pretraining H5 split.
 - E127 synthetic augmentation variants: record full common-row per-species
   metrics and cross-species false positives for each synthetic-data variant.

@@ -259,7 +259,7 @@ def select_rows(
     seed: int,
 ) -> Tuple[List[Dict[str, Any]], List[str], Counter[str]]:
     rng = np.random.default_rng(seed)
-    buckets: Dict[str, List[Tuple[Dict[str, Any], str]]] = {}
+    buckets: Dict[str, List[Tuple[Dict[str, Any], str, str]]] = {}
     skip_reasons: Counter[str] = Counter()
     for row in rows:
         split = clean_text(row.get("split"))
@@ -279,9 +279,9 @@ def select_rows(
         if label_str is None:
             skip_reasons[reason] += 1
             continue
-        buckets.setdefault(label_str, []).append((dict(row), reason))
+        buckets.setdefault(label_str, []).append((dict(row), label_str, reason))
 
-    selected_pairs: List[Tuple[Dict[str, Any], str]] = []
+    selected_pairs: List[Tuple[Dict[str, Any], str, str]] = []
     for label_str, pairs in sorted(buckets.items()):
         limit = max_normal if label_str == "normal" else max_per_target
         ordered = list(pairs)
@@ -295,11 +295,12 @@ def select_rows(
         key=lambda pair: (
             clean_text(pair[0].get("split")),
             pair[1],
+            pair[2],
             clean_text(pair[0].get("source_kind")),
             clean_text(pair[0].get("item_id")) or clean_text(pair[0].get("mat_path")),
         )
     )
-    return [row for row, _ in selected_pairs], [label for _, label in selected_pairs], skip_reasons
+    return [row for row, _, _ in selected_pairs], [label for _, label, _ in selected_pairs], skip_reasons
 
 
 def build_e123_h5(

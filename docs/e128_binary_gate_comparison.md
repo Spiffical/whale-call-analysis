@@ -78,16 +78,31 @@ bash drac/scripts/submit_multispecies_e123_ssl_ssamba.sh \
 ```
 
 For production-style metrics, export row-level scores from the fine-tuned SSAMBA
-checkpoint to E126-compatible CSV. Prefer an ONC held-out evaluation H5 whose
-`splits` dataset contains `val` and `test` rows from the common production
+checkpoint to E126-compatible CSV. Build a separate ONC held-out evaluation H5
+whose `splits` dataset contains `val` and `test` rows from the common production
 manifest; the exporter reads H5 split metadata directly rather than relying on
-the SSL repo's internal random split:
+the SSL repo's internal random split. This H5 is for evaluation only, not SSL
+pretraining:
+
+```bash
+bash drac/scripts/submit_multispecies_e128_eval_h5.sh \
+  --repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/repo_e24_expert_hparam_68be99f \
+  --manifest-csv /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/manifests/e100_onc_only_blocked_nov_validation_20260611T020900Z/E101_stage2_ONConly_blocked_nov20_25_30_val/standardized_manifest.csv \
+  --output-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e128_onc_eval_h5_YYYYMMDDTHHMMSSZ \
+  --splits val,test \
+  --non-target-mode normal \
+  --max-normal 0 \
+  --max-per-target 0 \
+  --time 03:00:00
+```
+
+After the eval H5 exists:
 
 ```bash
 python scripts/analysis/e128_export_ssamba_binary_gate_predictions.py \
   --ssl-repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/selfsupervision_anomalies_onc \
   --model-dir SSAMBA_FINETUNE_MODEL_DIR \
-  --dataset-h5 ONC_COMMON_EVAL_H5_WITH_VAL_TEST_SPLITS.h5 \
+  --dataset-h5 E128_ONC_COMMON_EVAL_H5_WITH_VAL_TEST_SPLITS.h5 \
   --output-dir OUTPUT_DIR/e128_ssl_binary_gate_predictions \
   --task ft_cls \
   --score-label task:whale_call
