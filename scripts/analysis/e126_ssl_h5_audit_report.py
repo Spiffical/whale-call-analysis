@@ -110,6 +110,7 @@ def summarize_rows(
     split_label_counts: Counter = Counter()
     month_counts: Counter = Counter()
     normal_month_counts: Counter = Counter()
+    normal_train_month_counts: Counter = Counter()
     split_normal_counts: Counter = Counter()
     target_counts: Counter = Counter()
     unknown_month_rows = 0
@@ -133,12 +134,15 @@ def summarize_rows(
         if "normal" in labels:
             normal_month_counts[month] += 1
             split_normal_counts[split_key] += 1
+            if split_key == "train":
+                normal_train_month_counts[month] += 1
 
     label_count_rows = counter_rows(label_counts, key_name="label")
     split_count_rows = counter_rows(split_counts, key_name="split")
     source_kind_count_rows = counter_rows(source_kind_counts, key_name="source_kind")
     month_count_rows = counter_rows(month_counts, key_name="month")
     normal_month_count_rows = counter_rows(normal_month_counts, key_name="month")
+    normal_train_month_count_rows = counter_rows(normal_train_month_counts, key_name="month")
     split_label_rows = [
         {"split": split, "label": label, "rows": rows}
         for (split, label), rows in sorted(split_label_counts.items())
@@ -149,6 +153,7 @@ def summarize_rows(
     ]
     normal_rows = int(label_counts.get("normal", 0))
     normal_months = sorted(month for month, rows in normal_month_counts.items() if month != "unknown" and rows > 0)
+    normal_train_months = sorted(month for month, rows in normal_train_month_counts.items() if month != "unknown" and rows > 0)
     months = sorted(month for month, rows in month_counts.items() if month != "unknown" and rows > 0)
     return {
         "rows": row_count,
@@ -157,6 +162,8 @@ def summarize_rows(
         "normal_train_rows": int(split_normal_counts.get("train", 0)),
         "normal_months": len(normal_months),
         "normal_month_range": [normal_months[0], normal_months[-1]] if normal_months else [],
+        "normal_train_months": len(normal_train_months),
+        "normal_train_month_range": [normal_train_months[0], normal_train_months[-1]] if normal_train_months else [],
         "months": len(months),
         "month_range": [months[0], months[-1]] if months else [],
         "unknown_month_rows": unknown_month_rows,
@@ -169,6 +176,7 @@ def summarize_rows(
         "source_kind_count_rows": source_kind_count_rows,
         "month_count_rows": month_count_rows,
         "normal_month_count_rows": normal_month_count_rows,
+        "normal_train_month_count_rows": normal_train_month_count_rows,
         "split_label_rows": split_label_rows,
         "target_label_rows": target_label_rows,
     }
@@ -178,7 +186,9 @@ def quality_checks(
     summary: Mapping[str, Any],
     *,
     min_normal_rows: int,
+    min_normal_train_rows: int,
     min_normal_months: int,
+    min_normal_train_months: int,
     target_labels: Sequence[str],
 ) -> List[Dict[str, Any]]:
     target_counts = summary.get("target_label_counts") or {}
@@ -190,10 +200,22 @@ def quality_checks(
             "passed": int(summary.get("normal_rows", 0)) >= int(min_normal_rows),
         },
         {
+            "check": "normal_train_rows",
+            "value": int(summary.get("normal_train_rows", 0)),
+            "threshold": int(min_normal_train_rows),
+            "passed": int(summary.get("normal_train_rows", 0)) >= int(min_normal_train_rows),
+        },
+        {
             "check": "normal_months",
             "value": int(summary.get("normal_months", 0)),
             "threshold": int(min_normal_months),
             "passed": int(summary.get("normal_months", 0)) >= int(min_normal_months),
+        },
+        {
+            "check": "normal_train_months",
+            "value": int(summary.get("normal_train_months", 0)),
+            "threshold": int(min_normal_train_months),
+            "passed": int(summary.get("normal_train_months", 0)) >= int(min_normal_train_months),
         },
     ]
     for label in target_labels:
@@ -246,6 +268,7 @@ def markdown_report(
         f"| normal rows | {summary.get('normal_rows', 0)} |",
         f"| normal train rows | {summary.get('normal_train_rows', 0)} |",
         f"| normal months | {summary.get('normal_months', 0)} |",
+        f"| normal train months | {summary.get('normal_train_months', 0)} |",
         f"| all months | {summary.get('months', 0)} |",
         f"| unknown-month rows | {summary.get('unknown_month_rows', 0)} |",
     ]
@@ -274,6 +297,12 @@ def markdown_report(
         lines.append(f"| {row.get('month')} | {row.get('rows')} |")
     if len(normal_month_rows) > 80:
         lines.append(f"| ... | {len(normal_month_rows) - 80} more months omitted |")
+    lines.extend(["", "## Normal Train Month Counts", "", "| month | normal train rows |", "| --- | ---: |"])
+    normal_train_month_rows = list(summary.get("normal_train_month_count_rows", []))
+    for row in normal_train_month_rows[:80]:
+        lines.append(f"| {row.get('month')} | {row.get('rows')} |")
+    if len(normal_train_month_rows) > 80:
+        lines.append(f"| ... | {len(normal_train_month_rows) - 80} more months omitted |")
     if builder_summary:
         lines.extend(
             [
@@ -294,6 +323,7 @@ def markdown_report(
             f"Label counts CSV: `{output_dir / 'e126_ssl_h5_label_counts.csv'}`",
             f"Split-label counts CSV: `{output_dir / 'e126_ssl_h5_split_label_counts.csv'}`",
             f"Normal month counts CSV: `{output_dir / 'e126_ssl_h5_normal_month_counts.csv'}`",
+            f"Normal train month counts CSV: `{output_dir / 'e126_ssl_h5_normal_train_month_counts.csv'}`",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -306,7 +336,9 @@ def run_audit(
     builder_summary_json: Optional[Path],
     target_labels: Sequence[str],
     min_normal_rows: int,
+    min_normal_train_rows: int,
     min_normal_months: int,
+    min_normal_train_months: int,
     ledger_path: Optional[Path] = None,
     ledger_entry_id: str = "",
 ) -> Dict[str, Any]:
@@ -315,7 +347,9 @@ def run_audit(
     checks = quality_checks(
         summary,
         min_normal_rows=min_normal_rows,
+        min_normal_train_rows=min_normal_train_rows,
         min_normal_months=min_normal_months,
+        min_normal_train_months=min_normal_train_months,
         target_labels=target_labels,
     )
     builder_summary = None
@@ -327,6 +361,7 @@ def run_audit(
     write_csv(output_dir / "e126_ssl_h5_source_kind_counts.csv", summary["source_kind_count_rows"])
     write_csv(output_dir / "e126_ssl_h5_month_counts.csv", summary["month_count_rows"])
     write_csv(output_dir / "e126_ssl_h5_normal_month_counts.csv", summary["normal_month_count_rows"])
+    write_csv(output_dir / "e126_ssl_h5_normal_train_month_counts.csv", summary["normal_train_month_count_rows"])
     write_csv(output_dir / "e126_ssl_h5_split_label_counts.csv", summary["split_label_rows"])
     write_csv(output_dir / "e126_ssl_h5_quality_checks.csv", checks)
 
@@ -346,7 +381,9 @@ def run_audit(
         "builder_summary_json": str(builder_summary_json) if builder_summary_json else "",
         "target_labels": list(target_labels),
         "min_normal_rows": int(min_normal_rows),
+        "min_normal_train_rows": int(min_normal_train_rows),
         "min_normal_months": int(min_normal_months),
+        "min_normal_train_months": int(min_normal_train_months),
         "summary": summary,
         "quality_checks": list(checks),
         "outputs": {
@@ -357,6 +394,7 @@ def run_audit(
             "source_kind_counts": str(output_dir / "e126_ssl_h5_source_kind_counts.csv"),
             "month_counts": str(output_dir / "e126_ssl_h5_month_counts.csv"),
             "normal_month_counts": str(output_dir / "e126_ssl_h5_normal_month_counts.csv"),
+            "normal_train_month_counts": str(output_dir / "e126_ssl_h5_normal_train_month_counts.csv"),
             "split_label_counts": str(output_dir / "e126_ssl_h5_split_label_counts.csv"),
             "quality_checks": str(output_dir / "e126_ssl_h5_quality_checks.csv"),
         },
@@ -386,7 +424,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--builder-summary-json", default=None, type=Path)
     parser.add_argument("--target-labels", default=",".join(DEFAULT_TARGET_LABELS))
     parser.add_argument("--min-normal-rows", type=int, default=10000)
+    parser.add_argument("--min-normal-train-rows", type=int, default=10000)
     parser.add_argument("--min-normal-months", type=int, default=12)
+    parser.add_argument("--min-normal-train-months", type=int, default=12)
     parser.add_argument("--ledger-path", default=None, type=Path)
     parser.add_argument("--ledger-entry-id", default="")
     return parser
@@ -400,7 +440,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         builder_summary_json=args.builder_summary_json,
         target_labels=parse_labels(args.target_labels),
         min_normal_rows=args.min_normal_rows,
+        min_normal_train_rows=args.min_normal_train_rows,
         min_normal_months=args.min_normal_months,
+        min_normal_train_months=args.min_normal_train_months,
         ledger_path=args.ledger_path,
         ledger_entry_id=args.ledger_entry_id,
     )

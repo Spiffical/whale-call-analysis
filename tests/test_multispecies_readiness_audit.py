@@ -81,7 +81,7 @@ class TestMultispeciesReadinessAudit(unittest.TestCase):
                 json.dumps(
                     {
                         "input_h5": "/tmp/unit.h5",
-                        "summary": {"normal_train_rows": 12000, "normal_months": 18},
+                        "summary": {"normal_train_rows": 12000, "normal_train_months": 18, "normal_months": 18},
                         "quality_checks": [{"check": "normal_train_rows", "passed": True}],
                         "outputs": {"report": str(root / "h5" / "report.md")},
                     }
@@ -152,7 +152,7 @@ class TestMultispeciesReadinessAudit(unittest.TestCase):
             h5.write_text(
                 json.dumps(
                     {
-                        "summary": {"normal_train_rows": 8, "normal_months": 2},
+                        "summary": {"normal_train_rows": 8, "normal_train_months": 2, "normal_months": 4},
                         "quality_checks": [{"check": "normal_train_rows", "passed": False}],
                         "outputs": {},
                     }
@@ -175,7 +175,7 @@ class TestMultispeciesReadinessAudit(unittest.TestCase):
 
             self.assertIn(("leaderboard", "top_candidate_examples_are_row_level"), failed)
             self.assertIn(("h5_audit", "normal_train_rows"), failed)
-            self.assertIn(("h5_audit", "normal_months"), failed)
+            self.assertIn(("h5_audit", "normal_train_months"), failed)
             self.assertIn(("h5_audit", "quality_checks_passed"), failed)
 
 

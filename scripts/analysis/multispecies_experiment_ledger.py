@@ -325,6 +325,7 @@ def h5_audit_entry_markdown(
         f"| normal rows | {clean(summary.get('normal_rows'))} |",
         f"| normal train rows | {clean(summary.get('normal_train_rows'))} |",
         f"| normal months | {clean(summary.get('normal_months'))} |",
+        f"| normal train months | {clean(summary.get('normal_train_months'))} |",
         f"| all months | {clean(summary.get('months'))} |",
         f"| unknown-month rows | {clean(summary.get('unknown_month_rows'))} |",
     ]
@@ -353,6 +354,7 @@ def h5_audit_entry_markdown(
         ("Label counts CSV", "label_counts"),
         ("Split-label counts CSV", "split_label_counts"),
         ("Normal month counts CSV", "normal_month_counts"),
+        ("Normal train month counts CSV", "normal_train_month_counts"),
     ):
         value = clean(outputs.get(key))
         if value:

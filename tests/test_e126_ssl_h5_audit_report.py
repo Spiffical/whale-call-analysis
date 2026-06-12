@@ -44,17 +44,22 @@ class TestE126SslH5AuditReport(unittest.TestCase):
         self.assertEqual(summary["normal_rows"], 2)
         self.assertEqual(summary["normal_train_rows"], 1)
         self.assertEqual(summary["normal_months"], 2)
+        self.assertEqual(summary["normal_train_months"], 1)
         self.assertEqual(summary["months"], 6)
         self.assertEqual(summary["target_label_counts"], {"Bm": 2, "Bp": 1, "Mn": 2})
         checks = audit.quality_checks(
             summary,
             min_normal_rows=2,
+            min_normal_train_rows=2,
             min_normal_months=3,
+            min_normal_train_months=2,
             target_labels=["Bm", "Bp", "Mn"],
         )
         by_name = {row["check"]: row for row in checks}
         self.assertTrue(by_name["normal_rows"]["passed"])
+        self.assertFalse(by_name["normal_train_rows"]["passed"])
         self.assertFalse(by_name["normal_months"]["passed"])
+        self.assertFalse(by_name["normal_train_months"]["passed"])
         self.assertTrue(by_name["target_rows:Bm"]["passed"])
 
     @unittest.skipIf(h5py is None or np is None, "h5py/numpy are required for H5 audit round-trip")
@@ -82,12 +87,17 @@ class TestE126SslH5AuditReport(unittest.TestCase):
                 builder_summary_json=None,
                 target_labels=["Bm", "Bp", "Mn"],
                 min_normal_rows=1,
+                min_normal_train_rows=1,
                 min_normal_months=1,
+                min_normal_train_months=1,
                 ledger_path=ledger,
             )
             self.assertTrue((out / "e126_ssl_h5_audit_report.md").is_file())
             self.assertTrue((out / "e126_ssl_h5_quality_checks.csv").is_file())
+            self.assertTrue((out / "e126_ssl_h5_normal_train_month_counts.csv").is_file())
             self.assertEqual(payload["outputs"]["ledger"], str(ledger))
+            self.assertEqual(payload["summary"]["normal_train_rows"], 1)
+            self.assertEqual(payload["summary"]["normal_train_months"], 1)
             self.assertIn("E126 SSL H5 Coverage Audit", ledger.read_text(encoding="utf-8"))
 
 

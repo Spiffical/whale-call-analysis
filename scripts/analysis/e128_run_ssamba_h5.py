@@ -12,9 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import re
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 
 def parse_bool(value: Any) -> bool:
@@ -140,40 +141,207 @@ def write_run_config(args: argparse.Namespace, unknown_args: Sequence[str]) -> N
     (exp_dir / "e128_runner_config.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def clean(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return str(value).strip()
+
+
+def label_tokens(value: Any) -> List[str]:
+    labels = [clean(part) for part in re.split(r"[;,|]", clean(value)) if clean(part)]
+    return labels or ["normal"]
+
+
+def is_normal_label(labels: Sequence[str]) -> bool:
+    return all((not clean(label)) or clean(label).lower() == "normal" for label in labels)
+
+
+def normalize_spectrogram(data: Any, *, dataset_mean: Optional[float], dataset_std: Optional[float], amount: float):
+    import numpy as np  # type: ignore
+
+    arr = np.asarray(data, dtype=np.float32)
+    if dataset_mean is not None and dataset_std is not None:
+        arr = (arr - float(dataset_mean)) / (float(dataset_std) * 2.0)
+    else:
+        lo, hi = np.percentile(arr, [float(amount), 100.0 - float(amount)])
+        arr = np.clip(arr, lo, hi)
+        arr = np.log(np.maximum(arr, 1e-12))
+        denom = max(float(np.max(arr) - np.min(arr)), 1e-12)
+        arr = (arr - float(np.min(arr))) / denom
+    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
+class H5SplitSpectrogramDataset:
+    """H5 dataset that honors stored split labels instead of re-randomizing rows."""
+
+    def __init__(
+        self,
+        *,
+        h5_path: Path,
+        split: str,
+        supervised: bool,
+        multiclass: bool,
+        num_classes: int,
+        dataset_mean: Optional[float],
+        dataset_std: Optional[float],
+        amount: float,
+        mixup: float,
+        balance: bool,
+        seed: int,
+    ) -> None:
+        import h5py  # type: ignore
+        import numpy as np  # type: ignore
+
+        self.h5_path = Path(h5_path)
+        self.split = split
+        self.supervised = bool(supervised)
+        self.multiclass = bool(multiclass)
+        self.num_classes = int(num_classes)
+        self.dataset_mean = dataset_mean
+        self.dataset_std = dataset_std
+        self.amount = float(amount)
+        self.mixup = float(mixup)
+        self.balance = bool(balance)
+        self.seed = int(seed)
+        with h5py.File(self.h5_path, "r") as h5:
+            n_rows = int(h5["spectrograms"].shape[0])
+            splits = [clean(value) for value in h5["splits"][:]] if "splits" in h5 else ["unknown"] * n_rows
+            labels = [label_tokens(value) for value in h5["label_strings"][:]]
+            sources = [clean(value) for value in h5["sources"][:]] if "sources" in h5 else [str(idx) for idx in range(n_rows)]
+            h5_label_names = [clean(value) for value in h5["anomaly_label_names"][:]] if "anomaly_label_names" in h5 else []
+
+        selected = [
+            {
+                "index": idx,
+                "labels": labels[idx],
+                "source": sources[idx],
+                "is_anomalous": not is_normal_label(labels[idx]),
+            }
+            for idx in range(n_rows)
+            if splits[idx] == split and (self.supervised or is_normal_label(labels[idx]))
+        ]
+        if self.supervised and self.balance:
+            normal = [sample for sample in selected if not sample["is_anomalous"]]
+            anomalous = [sample for sample in selected if sample["is_anomalous"]]
+            limit = min(len(normal), len(anomalous))
+            if limit > 0:
+                rng = np.random.default_rng(self.seed + (0 if split == "train" else 1009))
+                normal_idx = np.sort(rng.choice(len(normal), size=limit, replace=False))
+                anomalous_idx = np.sort(rng.choice(len(anomalous), size=limit, replace=False))
+                selected = [normal[int(i)] for i in normal_idx] + [anomalous[int(i)] for i in anomalous_idx]
+                selected.sort(key=lambda sample: int(sample["index"]))
+        if not selected:
+            mode = "supervised" if self.supervised else "normal-only SSL"
+            raise ValueError(f"No {mode} rows found for H5 split {split!r} in {self.h5_path}")
+        self.sample_info = selected
+        label_names = ["normal"] + [label for label in h5_label_names if label and label != "normal"]
+        if not h5_label_names:
+            seen = sorted({label for sample in selected for label in sample["labels"] if label and label != "normal"})
+            label_names = ["normal"] + seen
+        self.label_to_index = {label: idx for idx, label in enumerate(label_names[: self.num_classes])}
+        self.index_to_label = {idx: label for label, idx in self.label_to_index.items()}
+
+    def __len__(self) -> int:
+        return len(self.sample_info)
+
+    def _label_for_sample(self, sample: dict[str, Any]):
+        import torch  # type: ignore
+
+        if self.multiclass:
+            for label in sample["labels"]:
+                if label in self.label_to_index:
+                    return torch.tensor(self.label_to_index[label], dtype=torch.long)
+            return torch.tensor(0, dtype=torch.long)
+        return torch.tensor(float(sample["is_anomalous"]), dtype=torch.float32)
+
+    def _load_tensor_and_label(self, sample_idx: int):
+        import h5py  # type: ignore
+        import torch  # type: ignore
+
+        sample = self.sample_info[sample_idx]
+        with h5py.File(self.h5_path, "r") as h5:
+            data = h5["spectrograms"][int(sample["index"])]
+        data = normalize_spectrogram(data, dataset_mean=self.dataset_mean, dataset_std=self.dataset_std, amount=self.amount)
+        tensor = torch.from_numpy(data).permute(2, 0, 1)
+        return tensor, self._label_for_sample(sample), clean(sample["source"])
+
+    def __getitem__(self, idx: int):
+        import numpy as np  # type: ignore
+
+        tensor, label, source = self._load_tensor_and_label(idx)
+        if self.supervised and self.split == "train" and self.mixup > 0 and np.random.random() < self.mixup:
+            mix_idx = int(np.random.randint(0, len(self.sample_info)))
+            mix_tensor, mix_label, _ = self._load_tensor_and_label(mix_idx)
+            lam = float(np.random.beta(0.4, 0.4))
+            tensor = lam * tensor + (1.0 - lam) * mix_tensor
+            if not self.multiclass:
+                label = lam * label + (1.0 - lam) * mix_label
+        return tensor, label, source
+
+
 def dataset_lengths(datasets: Iterable[Any]) -> dict[str, int]:
-    names = ["ssl_train", "ssl_val", "test", "train", "val", "excluded_test"]
+    names = ["ssl_train", "ssl_val", "train", "val"]
     return {name: len(dataset) for name, dataset in zip(names, datasets) if dataset is not None}
 
 
 def run_training(args: argparse.Namespace) -> None:
     import torch  # type: ignore
-    from onc_ssamba.dataset import get_onc_spectrogram_data  # type: ignore
-
-    datasets = get_onc_spectrogram_data(
-        data_path=args.data_train,
-        seed=args.split_seed,
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        target_length=args.target_length,
-        num_mel_bins=args.num_mel_bins,
-        freqm=args.freqm,
-        timem=args.timem,
-        dataset_mean=args.dataset_mean,
-        dataset_std=args.dataset_std,
-        mixup=args.mixup,
-        ood=args.ood,
-        amount=args.amount,
-        subsample_test=args.subsample_test,
-        exclude_labels=args.exclude_labels,
-        multiclass=args.multiclass,
-        num_classes=args.num_classes,
-    )
-    if len(datasets) == 6:
-        ssl_train, ssl_val, _test, train, val, _excluded = datasets
-    else:
-        ssl_train, ssl_val, _test, train, val = datasets
 
     is_pretrain = "pretrain" in args.task
+    ssl_train = H5SplitSpectrogramDataset(
+        h5_path=Path(args.data_train),
+        split="train",
+        supervised=False,
+        multiclass=False,
+        num_classes=2,
+        dataset_mean=args.dataset_mean,
+        dataset_std=args.dataset_std,
+        amount=args.amount,
+        mixup=0.0,
+        balance=False,
+        seed=args.split_seed,
+    )
+    ssl_val = H5SplitSpectrogramDataset(
+        h5_path=Path(args.data_train),
+        split="val",
+        supervised=False,
+        multiclass=False,
+        num_classes=2,
+        dataset_mean=args.dataset_mean,
+        dataset_std=args.dataset_std,
+        amount=args.amount,
+        mixup=0.0,
+        balance=False,
+        seed=args.split_seed,
+    )
+    train = H5SplitSpectrogramDataset(
+        h5_path=Path(args.data_train),
+        split="train",
+        supervised=True,
+        multiclass=args.multiclass,
+        num_classes=args.num_classes if args.multiclass else 2,
+        dataset_mean=args.dataset_mean,
+        dataset_std=args.dataset_std,
+        amount=args.amount,
+        mixup=args.mixup,
+        balance=True,
+        seed=args.split_seed,
+    )
+    val = H5SplitSpectrogramDataset(
+        h5_path=Path(args.data_train),
+        split="val",
+        supervised=True,
+        multiclass=args.multiclass,
+        num_classes=args.num_classes if args.multiclass else 2,
+        dataset_mean=args.dataset_mean,
+        dataset_std=args.dataset_std,
+        amount=args.amount,
+        mixup=0.0,
+        balance=True,
+        seed=args.split_seed,
+    )
     if is_pretrain:
         train_dataset = ssl_train
         val_dataset = ssl_val
@@ -197,7 +365,7 @@ def run_training(args: argparse.Namespace) -> None:
         num_workers=args.num_workers,
         pin_memory=pin_memory,
     )
-    print(json.dumps({"dataset_lengths": dataset_lengths(datasets)}, sort_keys=True))
+    print(json.dumps({"dataset_lengths": dataset_lengths([ssl_train, ssl_val, train, val])}, sort_keys=True))
     if is_pretrain:
         from onc_ssamba.traintest_mask import trainmask  # type: ignore
 

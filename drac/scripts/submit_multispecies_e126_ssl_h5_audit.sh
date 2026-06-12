@@ -17,7 +17,9 @@ DEPENDENCY=""
 LEDGER_PATH=""
 LEDGER_ENTRY_ID=""
 MIN_NORMAL_ROWS="10000"
+MIN_NORMAL_TRAIN_ROWS="10000"
 MIN_NORMAL_MONTHS="12"
+MIN_NORMAL_TRAIN_MONTHS="12"
 ALLOW_MISSING_H5="false"
 DRY_RUN="false"
 
@@ -42,7 +44,9 @@ Options:
   --dependency SPEC           Passed to sbatch, e.g. afterok:123
   --allow-missing-h5          Allow queueing before dependency-created H5 exists
   --min-normal-rows N         Default: 10000
+  --min-normal-train-rows N   Default: 10000
   --min-normal-months N       Default: 12
+  --min-normal-train-months N Default: 12
   --ledger-path PATH          Optional living results ledger to append/update
   --ledger-entry-id ID        Optional stable ledger block id
   --dry-run                   Write script but do not submit
@@ -63,7 +67,9 @@ while [[ $# -gt 0 ]]; do
     --dependency) DEPENDENCY="$2"; shift 2 ;;
     --allow-missing-h5) ALLOW_MISSING_H5="true"; shift ;;
     --min-normal-rows) MIN_NORMAL_ROWS="$2"; shift 2 ;;
+    --min-normal-train-rows) MIN_NORMAL_TRAIN_ROWS="$2"; shift 2 ;;
     --min-normal-months) MIN_NORMAL_MONTHS="$2"; shift 2 ;;
+    --min-normal-train-months) MIN_NORMAL_TRAIN_MONTHS="$2"; shift 2 ;;
     --ledger-path) LEDGER_PATH="$2"; shift 2 ;;
     --ledger-entry-id) LEDGER_ENTRY_ID="$2"; shift 2 ;;
     --dry-run) DRY_RUN="true"; shift ;;
@@ -92,7 +98,14 @@ fi
 mkdir -p "$OUTPUT_DIR/logs"
 JOB_SCRIPT="$OUTPUT_DIR/logs/E126sslH5audit.sbatch"
 
-args=(--input-h5 "$INPUT_H5" --output-dir "$OUTPUT_DIR" --min-normal-rows "$MIN_NORMAL_ROWS" --min-normal-months "$MIN_NORMAL_MONTHS")
+args=(
+  --input-h5 "$INPUT_H5"
+  --output-dir "$OUTPUT_DIR"
+  --min-normal-rows "$MIN_NORMAL_ROWS"
+  --min-normal-train-rows "$MIN_NORMAL_TRAIN_ROWS"
+  --min-normal-months "$MIN_NORMAL_MONTHS"
+  --min-normal-train-months "$MIN_NORMAL_TRAIN_MONTHS"
+)
 if [[ -n "$BUILDER_SUMMARY_JSON" ]]; then
   args+=(--builder-summary-json "$BUILDER_SUMMARY_JSON")
 fi

@@ -281,7 +281,7 @@ def audit_h5(
     summary = audit.get("summary", {}) or {}
     quality_checks = list(audit.get("quality_checks", []) or [])
     normal_train = int(summary.get("normal_train_rows") or 0)
-    normal_months = int(summary.get("normal_months") or 0)
+    normal_months = int(summary.get("normal_train_months") or summary.get("normal_months") or 0)
     add_check(
         checks,
         artifact_type="h5_audit",
@@ -295,7 +295,7 @@ def audit_h5(
         checks,
         artifact_type="h5_audit",
         artifact=artifact,
-        check="normal_months",
+        check="normal_train_months",
         status="PASS" if normal_months >= int(min_normal_months) else "FAIL",
         value=normal_months,
         threshold=min_normal_months,

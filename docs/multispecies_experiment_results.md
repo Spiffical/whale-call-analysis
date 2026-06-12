@@ -107,6 +107,8 @@ bash drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh \
   --builder-summary-json DATASET.summary.json \
   --output-dir AUDIT_OUTPUT_DIR \
   --ledger-path docs/multispecies_experiment_results.md \
+  --min-normal-train-rows 10000 \
+  --min-normal-train-months 12 \
   --dependency afterok:H5_JOB_ID \
   --allow-missing-h5
 ```

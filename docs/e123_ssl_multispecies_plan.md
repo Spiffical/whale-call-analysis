@@ -68,7 +68,9 @@ bash drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh \
   --output-dir /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e126_ssl_h5_audit_20260612T031656Z \
   --ledger-path docs/multispecies_experiment_results.md \
   --min-normal-rows 10000 \
-  --min-normal-months 12
+  --min-normal-train-rows 10000 \
+  --min-normal-months 12 \
+  --min-normal-train-months 12
 ```
 
 If the audit is queued before the H5 job has finished, add

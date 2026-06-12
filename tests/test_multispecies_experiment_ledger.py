@@ -192,6 +192,7 @@ class TestMultispeciesExperimentLedger(unittest.TestCase):
                             "normal_rows": 10,
                             "normal_train_rows": 8,
                             "normal_months": 4,
+                            "normal_train_months": 3,
                             "months": 6,
                             "unknown_month_rows": 0,
                             "target_label_counts": {"Bm": 1, "Bp": 1, "Mn": 1},
@@ -199,7 +200,9 @@ class TestMultispeciesExperimentLedger(unittest.TestCase):
                         },
                         "quality_checks": [
                             {"check": "normal_rows", "value": 10, "threshold": 10, "passed": True},
+                            {"check": "normal_train_rows", "value": 8, "threshold": 10, "passed": False},
                             {"check": "normal_months", "value": 4, "threshold": 12, "passed": False},
+                            {"check": "normal_train_months", "value": 3, "threshold": 12, "passed": False},
                         ],
                         "outputs": {"report": "/tmp/report.md", "summary": "/tmp/audit.json"},
                     }
@@ -221,7 +224,10 @@ class TestMultispeciesExperimentLedger(unittest.TestCase):
             text = ledger_path.read_text(encoding="utf-8")
             self.assertIn("E126 SSL H5 Coverage Audit (2026-06-12)", text)
             self.assertIn("| normal rows | 10 |", text)
+            self.assertIn("| normal train months | 3 |", text)
+            self.assertIn("| normal_train_rows | 8 | 10 | no |", text)
             self.assertIn("| normal_months | 4 | 12 | no |", text)
+            self.assertIn("| normal_train_months | 3 | 12 | no |", text)
 
     def test_cli_note_appends_manual_experiment_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
