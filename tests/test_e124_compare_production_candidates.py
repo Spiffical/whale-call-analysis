@@ -88,14 +88,18 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
             out = root / "out"
             result = e124.build_leaderboard([("", e121_summary), ("", e122_summary)], out, "Unit Leaderboard")
             rows = self.read_csv(out / "e124_candidate_leaderboard.csv")
+            examples = self.read_csv(out / "e124_candidate_examples.csv")
 
             self.assertEqual(rows[0]["candidate"], "two_stage")
             self.assertEqual(rows[0]["experiment"], "E122")
             self.assertEqual(rows[0]["selected_prediction"], "two_stage")
             self.assertEqual(rows[0]["cross_species_fp"], "1")
             self.assertEqual(rows[0]["delta_macro_f1"], "0.20000000000000007")
+            self.assertEqual(examples[0]["candidate"], "two_stage")
+            self.assertEqual(examples[0]["example_status"], "missing_examples_path")
             self.assertTrue(Path(result["report"]).is_file())
             self.assertIn("same common ONC test rows", Path(result["report"]).read_text(encoding="utf-8"))
+            self.assertIn("candidate_examples_csv", result)
 
     def test_supports_e26_diagnostic_summary_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,6 +147,14 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ensemble_dir = root / "e27" / "ensembles" / "ensemble_0002"
+            ensemble_dir.mkdir(parents=True)
+            self.write_csv(
+                ensemble_dir / "selected_examples.csv",
+                [
+                    {"example_group": "cross_species_false_positive", "item_id": "x1"},
+                    {"example_group": "false_negative", "item_id": "x2"},
+                ],
+            )
             rankings = root / "e27" / "e27_ensemble_rankings.csv"
             self.write_csv(
                 rankings,
@@ -193,9 +205,67 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
             self.assertEqual(rows[0]["report"], str(root / "e27" / "e27_one_vs_rest_report.md"))
             self.assertEqual(rows[0]["per_species_csv"], str(root / "e27" / "e27_individual_metrics.csv"))
             self.assertEqual(rows[0]["examples_csv"], str(ensemble_dir))
+            examples = self.read_csv(out / "e124_candidate_examples.csv")
+            self.assertEqual(examples[0]["example_status"], "examples_dir")
+            self.assertEqual(examples[0]["candidate"], "ovr")
+            self.assertEqual(examples[0]["source_examples_csv"], str(ensemble_dir / "selected_examples.csv"))
 
             args = e124.build_parser().parse_args(["--summary-csv", str(rankings), "--output-dir", str(out / "cli")])
             self.assertEqual(e124.collect_summary_paths(args), [("", rankings.resolve())])
+
+    def test_aggregates_candidate_examples_from_csv_with_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            examples_csv = root / "e122" / "examples.csv"
+            self.write_csv(
+                examples_csv,
+                [
+                    {"bucket": "cross_species_error", "item_id": "cross_1"},
+                    {"bucket": "cross_species_error", "item_id": "cross_2"},
+                    {"bucket": "residual_background_fp", "item_id": "bg_1"},
+                    {"bucket": "correct_species", "item_id": "tp_1"},
+                ],
+            )
+            summary = root / "e122" / "e122_summary.json"
+            self.write_summary(
+                summary,
+                {
+                    "name": "two_stage",
+                    "gate_threshold": 0.4,
+                    "metric_labels": ["species:Bp", "species:Bm", "species:Mn"],
+                    "model_metrics": [
+                        {
+                            "model": "base",
+                            "split": "test",
+                            "prediction": "two_stage",
+                            "rows": 10,
+                            "macro_f1": 0.5,
+                            "micro_f1": 0.8,
+                            "micro_precision": 0.75,
+                            "micro_recall": 0.85,
+                            "cross_species_fp": 2,
+                            "background_fp": 1,
+                            "species_as_background_fn": 1,
+                        },
+                    ],
+                    "outputs": {"examples": str(examples_csv)},
+                },
+            )
+
+            out = root / "out"
+            result = e124.build_leaderboard(
+                [("", summary)],
+                out,
+                "Unit Leaderboard",
+                max_examples_per_candidate=3,
+            )
+            examples = self.read_csv(out / "e124_candidate_examples.csv")
+
+            self.assertEqual(result["candidate_examples_csv"], str(out / "e124_candidate_examples.csv"))
+            self.assertEqual(len(examples), 3)
+            self.assertEqual({row["example_status"] for row in examples}, {"examples_csv"})
+            self.assertEqual({row["candidate"] for row in examples}, {"two_stage"})
+            self.assertIn("source_example_row", examples[0])
 
     def test_can_append_living_ledger_entry(self):
         with tempfile.TemporaryDirectory() as tmp:

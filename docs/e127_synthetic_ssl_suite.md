@@ -95,4 +95,7 @@ ONC test set used for E99/E115/E116, with:
 
 After scoring, build an E124 leaderboard with `--ledger-path
 docs/multispecies_experiment_results.md` so the living ledger receives the final
-metrics.
+metrics. Review both `e124_candidate_leaderboard.csv` and
+`e124_candidate_examples.csv`; if the examples file reports missing or
+directory-only examples for the winning candidate, export row-level examples
+before treating the variant as reviewed.

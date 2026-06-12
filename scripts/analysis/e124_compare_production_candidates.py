@@ -67,9 +67,109 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
+def prefix_rows(prefix: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    return [{**prefix, **dict(row)} for row in rows]
+
+
 def read_csv(path: Path) -> List[Dict[str, str]]:
     with path.open(newline="", encoding="utf-8-sig") as handle:
         return list(csv.DictReader(handle))
+
+
+def example_group(row: Mapping[str, Any]) -> str:
+    for key in ("example_group", "bucket", "case_type", "kind"):
+        value = clean(row.get(key))
+        if value:
+            return value
+    return "all"
+
+
+def sample_examples(rows: Sequence[Mapping[str, Any]], *, max_rows: int) -> List[Mapping[str, Any]]:
+    if max_rows <= 0:
+        return []
+    grouped: Dict[str, List[Mapping[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(example_group(row), []).append(row)
+    selected: List[Mapping[str, Any]] = []
+    group_names = sorted(grouped)
+    quota = max(1, int(max_rows) // max(1, len(group_names)))
+    for group_name in group_names:
+        selected.extend(grouped[group_name][:quota])
+    if len(selected) < int(max_rows):
+        seen_ids = {id(row) for row in selected}
+        for row in rows:
+            if id(row) in seen_ids:
+                continue
+            selected.append(row)
+            seen_ids.add(id(row))
+            if len(selected) >= int(max_rows):
+                break
+    return selected[: int(max_rows)]
+
+
+def candidate_example_sources(path_text: str) -> Tuple[List[Path], str]:
+    if not clean(path_text):
+        return [], "no_examples_path"
+    path = Path(path_text)
+    if path.is_file():
+        return [path], "examples_csv"
+    if path.is_dir():
+        matches = sorted(
+            {
+                candidate
+                for pattern in ("*example*.csv", "*examples*.csv", "selected_examples*.csv")
+                for candidate in path.rglob(pattern)
+                if candidate.is_file()
+            }
+        )
+        if matches:
+            return matches, "examples_dir"
+        return [], "directory_without_example_csv"
+    return [], "missing_examples_path"
+
+
+def collect_candidate_examples(
+    leaderboard_rows: Sequence[Mapping[str, Any]],
+    *,
+    max_examples_per_candidate: int,
+) -> List[Dict[str, Any]]:
+    examples: List[Dict[str, Any]] = []
+    for row in leaderboard_rows:
+        source_text = clean(row.get("examples_csv"))
+        sources, status = candidate_example_sources(source_text)
+        prefix = {
+            "candidate_rank": row.get("rank", ""),
+            "candidate": row.get("candidate", ""),
+            "experiment": row.get("experiment", ""),
+            "selected_prediction": row.get("selected_prediction", ""),
+            "candidate_examples_path": source_text,
+            "example_status": status,
+        }
+        if not sources:
+            examples.append(prefix)
+            continue
+        source_rows: List[Dict[str, str]] = []
+        for source_path in sources:
+            try:
+                for source_index, example in enumerate(read_csv(source_path), start=1):
+                    source_rows.append(
+                        {
+                            "source_examples_csv": str(source_path),
+                            "source_example_row": source_index,
+                            **example,
+                        }
+                    )
+            except Exception as exc:  # noqa: BLE001 - keep the leaderboard usable and record the bad source.
+                source_rows.append(
+                    {
+                        "source_examples_csv": str(source_path),
+                        "source_example_row": "",
+                        "example_read_error": str(exc),
+                    }
+                )
+        sampled = sample_examples(source_rows, max_rows=int(max_examples_per_candidate))
+        examples.extend(prefix_rows(prefix, sampled))
+    return examples
 
 
 def detect_experiment(summary_path: Path, payload: Mapping[str, Any]) -> str:
@@ -400,6 +500,7 @@ def markdown_report(rows: Sequence[Mapping[str, Any]], output_dir: Path, title: 
             "",
             f"CSV: `{output_dir / 'e124_candidate_leaderboard.csv'}`",
             f"JSON: `{output_dir / 'e124_candidate_leaderboard.json'}`",
+            f"Candidate examples CSV: `{output_dir / 'e124_candidate_examples.csv'}`",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -445,6 +546,7 @@ def build_leaderboard(
     output_dir: Path,
     title: str,
     *,
+    max_examples_per_candidate: int = 50,
     ledger_path: Optional[Path] = None,
     ledger_entry_id: str = "",
     training_set: str = "",
@@ -455,12 +557,15 @@ def build_leaderboard(
     rows = load_candidates(summary_paths)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(output_dir / "e124_candidate_leaderboard.csv", rows)
+    examples = collect_candidate_examples(rows, max_examples_per_candidate=max_examples_per_candidate)
+    write_csv(output_dir / "e124_candidate_examples.csv", examples)
     payload = {
         "title": title,
         "candidates": rows,
         "report": str(output_dir / "e124_candidate_leaderboard.md"),
         "leaderboard_csv": str(output_dir / "e124_candidate_leaderboard.csv"),
         "leaderboard_json": str(output_dir / "e124_candidate_leaderboard.json"),
+        "candidate_examples_csv": str(output_dir / "e124_candidate_examples.csv"),
     }
     if ledger_path is not None:
         ledger_written = experiment_ledger.append_leaderboard_summary(
@@ -489,6 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate", action="append", default=[], help="Named candidate in NAME=PATH form")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--title", default="E124 Production Candidate Leaderboard")
+    parser.add_argument("--max-examples-per-candidate", type=int, default=50)
     parser.add_argument("--ledger-path", default=None, type=Path)
     parser.add_argument("--ledger-entry-id", default="")
     parser.add_argument("--training-set", default="")
@@ -507,6 +613,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             summary_paths,
             args.output_dir,
             args.title,
+            max_examples_per_candidate=args.max_examples_per_candidate,
             ledger_path=args.ledger_path,
             ledger_entry_id=args.ledger_entry_id,
             training_set=args.training_set,

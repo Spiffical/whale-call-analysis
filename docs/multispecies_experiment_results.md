@@ -57,7 +57,10 @@ python scripts/analysis/multispecies_experiment_ledger.py binary-gate \
 ```
 
 For production-style model comparisons, build the E124 leaderboard with ledger
-arguments:
+arguments. Review both the leaderboard and `e124_candidate_examples.csv`; the
+examples file aggregates selected positive/error rows from source reports and
+flags candidates that only have prediction directories or missing example
+artifacts.
 
 ```bash
 python scripts/analysis/e124_compare_production_candidates.py \

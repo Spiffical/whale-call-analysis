@@ -258,6 +258,7 @@ def leaderboard_entry_markdown(
         ("Report", "report"),
         ("Leaderboard CSV", "leaderboard_csv"),
         ("Leaderboard JSON", "leaderboard_json"),
+        ("Candidate examples CSV", "candidate_examples_csv"),
     ):
         value = clean(leaderboard.get(key))
         if value:

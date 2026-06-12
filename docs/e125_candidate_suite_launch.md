@@ -59,4 +59,7 @@ bash drac/scripts/monitor_multispecies_e125_candidate_suite.sh \
 ```
 
 The monitor reports Slurm state, recent logs, report artifact presence, and the
-first rows of the E124 leaderboard once complete.
+first rows of the E124 leaderboard once complete. The finished suite should also
+include `e124_candidate_examples.csv`; inspect that file before accepting a
+winner so production false positives and cross-species errors are visible as
+actual rows, not only counts.
