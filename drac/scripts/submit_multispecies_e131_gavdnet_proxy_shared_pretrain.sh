@@ -313,18 +313,18 @@ if [[ "$DRY_RUN" == "true" ]]; then
   H5_AUDIT_JOB="DRYRUN_E131_H5_AUDIT"
   echo "DRY RUN: would submit E131 H5 audit afterok:$AUG_JOB"
 else
-  bash "$REPO/drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh" \\
-    --repo-root "$REPO" \\
-    --input-h5 "$AUG_H5" \\
-    --builder-summary-json "$AUG_SUMMARY" \\
-    --output-dir "$H5_AUDIT_DIR" \\
-    --dependency "afterok:$AUG_JOB" \\
-    --allow-missing-h5 \\
-    --min-normal-rows 10000 \\
-    --min-normal-train-rows 10000 \\
-    --min-normal-months 12 \\
-    --min-normal-train-months 12 \\
-    --ledger-path docs/multispecies_experiment_results.md \\
+  bash "$REPO/drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh" \
+    --repo-root "$REPO" \
+    --input-h5 "$AUG_H5" \
+    --builder-summary-json "$AUG_SUMMARY" \
+    --output-dir "$H5_AUDIT_DIR" \
+    --dependency "afterok:$AUG_JOB" \
+    --allow-missing-h5 \
+    --min-normal-rows 10000 \
+    --min-normal-train-rows 10000 \
+    --min-normal-months 12 \
+    --min-normal-train-months 12 \
+    --ledger-path docs/multispecies_experiment_results.md \
     --ledger-entry-id e131-gavdnet-proxy-h5-audit | tee "$OUTPUT_ROOT/logs/e131_h5_audit_submit.log"
   H5_AUDIT_JOB="$(awk '/Submitted E126 H5 audit job:/ {print $NF}' "$OUTPUT_ROOT/logs/e131_h5_audit_submit.log" | tail -n 1)"
   if [[ -z "$H5_AUDIT_JOB" ]]; then

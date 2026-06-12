@@ -181,3 +181,24 @@ readiness audit writes to:
 ```text
 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/readiness_audit
 ```
+
+## E131 Richer GAVDNet-Proxy Branch
+
+E131 extends the E130 shared-pretrain design with one additional `Bm`+`Mn`
+variant that enables the higher-perturbation proxy controls listed above:
+time-bin translation, wider frequency shift, wider time stretch, nonlinear
+distortion, smooth spectral filtering, reverb-like smear, and light end trimming.
+It should be compared against both the E130 baseline and E130 conservative
+synthetic branch with the same E129/E124/E131 readiness flow.
+
+The reusable submitter is:
+
+```bash
+bash drac/scripts/submit_multispecies_e131_gavdnet_proxy_shared_pretrain.sh
+```
+
+The first Nibi launch attempt partially submitted jobs, including visible
+`15974611 / E131leader`, but stopped before H5 audit/readiness submission because
+of a fixed submitter bug. Reconnect to Nibi, fast-forward the repo, inspect the
+partial E131 queue, and submit the missing audit/readiness tail before reviewing
+E131 results.

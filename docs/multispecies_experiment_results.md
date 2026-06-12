@@ -467,6 +467,34 @@ production-style common-row ONC scoring used for the other candidates. E124 now
 recognizes E129 SSAMBA summaries and prefers validation-calibrated E129 metrics
 over raw argmax rows when both are present.
 
+### E131: Richer GAVDNet-Proxy Synthetic Multiclass SSL Setup
+
+Status: submitter repaired locally; Nibi repair/submission pending reconnect.
+
+Purpose: add a second `Bm`+`Mn` synthetic augmentation branch that uses more of
+the GAVDNet/customAudioAugmenter-inspired spectrogram proxies than E130's
+conservative branch. It enables time translation, wider frequency shift,
+slightly wider time stretch, nonlinear distortion, smooth spectral filtering,
+reverb-like smear, and small random end trimming while still evaluating on the
+same real ONC common-row validation/test H5.
+
+Training set: shared E128 SSL pretrain checkpoint from job `15974555`, followed
+by multiclass fine-tuning on an E126 broad H5 augmented with 1,000 synthetic
+`Bm` rows and 1,000 synthetic `Mn` rows.
+
+Validation/test set: same E128 ONC common-row eval H5 used by E130.
+
+Important current state: the first Nibi launch attempt from commit `3e889fa`
+partially submitted E131 jobs and visibly reached `15974611 / E131leader`, then
+stopped before H5 audit/readiness submission because the submitter passed a
+literal `\` argument to `submit_multispecies_e126_ssl_h5_audit.sh`. The local
+submitter has been fixed after that attempt; once `forcodex` is logged back into
+Nibi, inspect/capture the partially queued E131 job IDs, fast-forward to the fix,
+and submit the missing E131 H5 audit/readiness jobs before treating E131 as
+properly queued.
+
+No E131 metrics exist yet.
+
 <!-- BEGIN experiment-ledger-entry:e128-ssl-binary-gate-setup -->
 ### E128 SSL Binary Gate Setup (2026-06-12)
 
