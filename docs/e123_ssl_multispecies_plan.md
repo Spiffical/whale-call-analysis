@@ -32,6 +32,12 @@ The H5 bridge is `scripts/data/multilabel/build_e123_ssl_h5_dataset.py`. It expo
 - maps unlabeled rows to `normal`
 - skips labeled non-target rows, so the self-supervised normal pretrain is not accidentally polluted with killer whale or other biological calls
 - caps normal rows at 10,000 unless overridden
+- can export multiple deterministic crops per normal/background row with `--normal-crops-per-row`; this is useful when the broad existing cache has fewer than 10,000 unique normal 40 s contexts but enough temporally broad context to produce 10 s SSL crops
+
+Important audit note: the blocked-validation ONC-only manifest used for E99/E101
+has only a small number of normal/background rows and should not be used as the
+SSL-normal source by itself. Prefer a broad manifest such as E13/E16, then audit
+the resulting H5 month distribution before training.
 
 ## Launch Sketch
 

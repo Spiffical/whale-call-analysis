@@ -2,6 +2,7 @@ import csv
 import json
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -86,6 +87,7 @@ class TestE123SslH5Dataset(unittest.TestCase):
                 ambiguous_mode="skip",
                 max_normal=100,
                 max_per_target=0,
+                normal_crops_per_row=1,
                 context_seconds=40,
                 crop_time_seconds=10,
                 seed=1,
@@ -99,7 +101,7 @@ class TestE123SslH5Dataset(unittest.TestCase):
                 self.assertEqual(tuple(h5["spectrograms"].shape), (3, 16, 16, 1))
                 self.assertEqual(tuple(h5["labels"].shape), (3, 3))
                 labels = [value.decode("utf-8") if isinstance(value, bytes) else str(value) for value in h5["label_strings"][:]]
-                self.assertEqual(labels, ["Bm", "Bp", "normal"])
+                self.assertEqual(Counter(labels), {"Bm": 1, "Bp": 1, "normal": 1})
                 names = [value.decode("utf-8") if isinstance(value, bytes) else str(value) for value in h5["anomaly_label_names"][:]]
                 self.assertEqual(names, ["Bm", "Bp", "Mn"])
             saved_summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
@@ -133,12 +135,56 @@ class TestE123SslH5Dataset(unittest.TestCase):
                 ambiguous_mode="skip",
                 max_normal=100,
                 max_per_target=0,
+                normal_crops_per_row=1,
                 context_seconds=40,
                 crop_time_seconds=10,
                 seed=1,
                 compression="lzf",
             )
             self.assertEqual(summary["label_counts"], {"normal": 1})
+
+    @unittest.skipIf(e123_h5 is None or h5py is None, "numpy/scipy/h5py are required for E123 H5 export tests")
+    def test_can_export_multiple_normal_crops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_mat(root / "mats" / "bg.mat", -80)
+            write_mat(root / "mats" / "bp.mat", -20)
+            manifest = root / "manifest.csv"
+            write_csv(
+                manifest,
+                [
+                    {"item_id": "bg", "split": "train", "source_kind": "ONC", "label_ids": "", "low_mat_path": "mats/bg.mat"},
+                    {"item_id": "bp", "split": "train", "source_kind": "ONC", "label_ids": "species:Bp", "low_mat_path": "mats/bp.mat"},
+                ],
+            )
+            output = root / "e123.h5"
+            summary = e123_h5.build_e123_h5(
+                manifest_csv=manifest,
+                output_h5=output,
+                output_summary=root / "summary.json",
+                dataset_root=root,
+                band="low",
+                band_crop_shape=(12, 10),
+                output_shape=(16, 16),
+                target_label_map={"species:Bm": "Bm", "species:Bp": "Bp", "species:Mn": "Mn"},
+                splits={"train"},
+                source_kinds=None,
+                non_target_mode="skip",
+                ambiguous_mode="skip",
+                max_normal=100,
+                max_per_target=0,
+                normal_crops_per_row=3,
+                context_seconds=40,
+                crop_time_seconds=10,
+                seed=1,
+                compression="lzf",
+            )
+            self.assertEqual(summary["rows_written"], 4)
+            self.assertEqual(summary["label_counts"], {"Bp": 1, "normal": 3})
+            self.assertEqual(summary["normal_crops_per_row"], 3)
+            with h5py.File(output, "r") as h5:
+                item_ids = [value.decode("utf-8") if isinstance(value, bytes) else str(value) for value in h5["item_ids"][:]]
+                self.assertEqual(Counter(item_ids), {"bg::crop0": 1, "bg::crop1": 1, "bg::crop2": 1, "bp": 1})
 
 
 if __name__ == "__main__":

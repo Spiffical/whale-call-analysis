@@ -37,6 +37,7 @@ H5_SPLITS="train,val"
 H5_NON_TARGET_MODE="skip"
 H5_MAX_NORMAL="10000"
 H5_MAX_PER_TARGET="0"
+H5_NORMAL_CROPS_PER_ROW="1"
 H5_TIME="03:00:00"
 H5_CPUS="4"
 H5_MEM="48G"
@@ -94,6 +95,8 @@ Options:
   --h5-non-target-mode MODE  skip or normal. Default: skip
   --h5-max-normal N          Default: 10000
   --h5-max-per-target N      Default: 0 (all)
+  --h5-normal-crops-per-row N
+                              Deterministic crops per normal row. Default: 1
   --h5-time HH:MM:SS         Default: 03:00:00
   --h5-cpus-per-task N       Default: 4
   --h5-mem MEM               Default: 48G
@@ -137,6 +140,7 @@ while [[ $# -gt 0 ]]; do
     --h5-non-target-mode) H5_NON_TARGET_MODE="$2"; shift 2 ;;
     --h5-max-normal) H5_MAX_NORMAL="$2"; shift 2 ;;
     --h5-max-per-target) H5_MAX_PER_TARGET="$2"; shift 2 ;;
+    --h5-normal-crops-per-row) H5_NORMAL_CROPS_PER_ROW="$2"; shift 2 ;;
     --h5-time) H5_TIME="$2"; shift 2 ;;
     --h5-cpus-per-task) H5_CPUS="$2"; shift 2 ;;
     --h5-mem) H5_MEM="$2"; shift 2 ;;
@@ -360,7 +364,8 @@ python3 -u scripts/data/multilabel/build_e123_ssl_h5_dataset.py \\
   --splits "$H5_SPLITS" \\
   --non-target-mode "$H5_NON_TARGET_MODE" \\
   --max-normal "$H5_MAX_NORMAL" \\
-  --max-per-target "$H5_MAX_PER_TARGET"
+  --max-per-target "$H5_MAX_PER_TARGET" \\
+  --normal-crops-per-row "$H5_NORMAL_CROPS_PER_ROW"
 EOF
   if [[ "$DRY_RUN" == "true" ]]; then
     submit_job "$h5_script" "$DEPENDENCY"

@@ -120,6 +120,25 @@ def crop_start_seconds(*, context_seconds: float, crop_time_seconds: float) -> f
     return max(0.0, (float(context_seconds) - float(crop_time_seconds)) / 2.0)
 
 
+def crop_start_offsets(
+    *,
+    context_seconds: float,
+    crop_time_seconds: float,
+    crops_per_row: int,
+    centered_if_single: bool = True,
+) -> List[float]:
+    crops = max(1, int(crops_per_row))
+    usable = max(0.0, float(context_seconds) - float(crop_time_seconds))
+    if crops == 1:
+        if centered_if_single:
+            return [crop_start_seconds(context_seconds=context_seconds, crop_time_seconds=crop_time_seconds)]
+        return [0.0]
+    if crops == 2:
+        return [0.0, usable]
+    step = usable / float(crops - 1) if crops > 1 else 0.0
+    return [round(i * step, 6) for i in range(crops)]
+
+
 def resize_spec(spec: np.ndarray, output_shape: Tuple[int, int]) -> np.ndarray:
     target_f, target_t = output_shape
     if spec.shape == output_shape:
@@ -148,6 +167,7 @@ def extract_band_spectrogram(
     output_shape: Tuple[int, int],
     context_seconds: float,
     crop_time_seconds: float,
+    crop_start_s: Optional[float] = None,
 ) -> np.ndarray:
     path = resolve_band_path(row, band=band, dataset_root=dataset_root)
     data = _load_mat_data(path)
@@ -160,7 +180,11 @@ def extract_band_spectrogram(
     spec, _ = _crop_time(
         spec,
         times=times,
-        crop_start_s=crop_start_seconds(context_seconds=context_seconds, crop_time_seconds=crop_time_seconds),
+        crop_start_s=(
+            crop_start_seconds(context_seconds=context_seconds, crop_time_seconds=crop_time_seconds)
+            if crop_start_s is None
+            else float(crop_start_s)
+        ),
         target_t=int(target_t),
     )
     spec = np.nan_to_num(spec, nan=-100.0, neginf=-100.0, posinf=0.0).astype(np.float32)
@@ -294,6 +318,7 @@ def build_e123_h5(
     ambiguous_mode: str,
     max_normal: int,
     max_per_target: int,
+    normal_crops_per_row: int,
     context_seconds: float,
     crop_time_seconds: float,
     seed: int,
@@ -319,30 +344,47 @@ def build_e123_h5(
     kept_labels: List[str] = []
     missing_or_bad: List[Dict[str, str]] = []
     for row, label_str in zip(selected_rows, selected_label_strings):
-        try:
-            arr = extract_band_spectrogram(
-                row,
-                band=band,
-                dataset_root=dataset_root,
-                band_crop_shape=band_crop_shape,
-                output_shape=output_shape,
-                context_seconds=context_seconds,
-                crop_time_seconds=crop_time_seconds,
-            )
-        except Exception as exc:
-            missing_or_bad.append(
-                {
-                    "item_id": clean_text(row.get("item_id")),
-                    "split": clean_text(row.get("split")),
-                    "source_kind": clean_text(row.get("source_kind")),
-                    "reason": type(exc).__name__,
-                    "message": str(exc),
-                }
-            )
-            continue
-        data_arrays.append(arr)
-        kept_rows.append(dict(row))
-        kept_labels.append(label_str)
+        crop_starts = [None]
+        if label_str == "normal" and int(normal_crops_per_row) > 1:
+            crop_starts = [
+                float(start)
+                for start in crop_start_offsets(
+                    context_seconds=context_seconds,
+                    crop_time_seconds=crop_time_seconds,
+                    crops_per_row=int(normal_crops_per_row),
+                    centered_if_single=True,
+                )
+            ]
+        for crop_index, crop_start_s in enumerate(crop_starts):
+            try:
+                arr = extract_band_spectrogram(
+                    row,
+                    band=band,
+                    dataset_root=dataset_root,
+                    band_crop_shape=band_crop_shape,
+                    output_shape=output_shape,
+                    context_seconds=context_seconds,
+                    crop_time_seconds=crop_time_seconds,
+                    crop_start_s=crop_start_s,
+                )
+            except Exception as exc:
+                missing_or_bad.append(
+                    {
+                        "item_id": clean_text(row.get("item_id")),
+                        "split": clean_text(row.get("split")),
+                        "source_kind": clean_text(row.get("source_kind")),
+                        "reason": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+                continue
+            kept_row = dict(row)
+            if crop_start_s is not None:
+                kept_row["ssl_crop_index"] = str(crop_index)
+                kept_row["ssl_crop_start_s"] = f"{float(crop_start_s):.6f}"
+            data_arrays.append(arr)
+            kept_rows.append(kept_row)
+            kept_labels.append(label_str)
 
     if not kept_rows:
         raise ValueError("All selected rows failed during MAT loading")
@@ -351,10 +393,11 @@ def build_e123_h5(
         clean_text(row.get("source_audio") or row.get("filename") or row.get("mat_path") or row.get(f"{band}_mat_path"))
         for row in kept_rows
     ]
-    item_ids = [
-        clean_text(row.get("item_id")) or Path(clean_text(row.get(f"{band}_mat_path") or row.get("mat_path"))).stem
-        for row in kept_rows
-    ]
+    item_ids = []
+    for row in kept_rows:
+        item_id = clean_text(row.get("item_id")) or Path(clean_text(row.get(f"{band}_mat_path") or row.get("mat_path"))).stem
+        crop_index = clean_text(row.get("ssl_crop_index"))
+        item_ids.append(f"{item_id}::crop{crop_index}" if crop_index else item_id)
     row_splits = [clean_text(row.get("split")) for row in kept_rows]
     row_source_kinds = [clean_text(row.get("source_kind")) for row in kept_rows]
     target_label_names = list(dict.fromkeys(target_label_map.values()))
@@ -393,6 +436,7 @@ def build_e123_h5(
         "ambiguous_mode": ambiguous_mode,
         "max_normal": max_normal,
         "max_per_target": max_per_target,
+        "normal_crops_per_row": int(normal_crops_per_row),
     }
     output_summary.parent.mkdir(parents=True, exist_ok=True)
     output_summary.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -427,6 +471,12 @@ def main() -> int:
     parser.add_argument("--ambiguous-mode", choices=["skip", "first", "semicolon"], default="skip")
     parser.add_argument("--max-normal", type=int, default=10000, help="Cap normal/background rows; <=0 keeps all")
     parser.add_argument("--max-per-target", type=int, default=0, help="Cap each target class; <=0 keeps all")
+    parser.add_argument(
+        "--normal-crops-per-row",
+        type=int,
+        default=1,
+        help="Export this many deterministic 10s crops for each normal/background row; positives stay single-crop.",
+    )
     parser.add_argument("--context-seconds", type=float, default=40.0)
     parser.add_argument("--crop-time-seconds", type=float, default=10.0)
     parser.add_argument("--seed", type=int, default=2026)
@@ -452,6 +502,7 @@ def main() -> int:
         ambiguous_mode=str(args.ambiguous_mode),
         max_normal=int(args.max_normal),
         max_per_target=int(args.max_per_target),
+        normal_crops_per_row=int(args.normal_crops_per_row),
         context_seconds=float(args.context_seconds),
         crop_time_seconds=float(args.crop_time_seconds),
         seed=int(args.seed),
