@@ -171,3 +171,31 @@ The ONC eval-H5 audit is queued behind that evaluation H5 build:
 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_onc_eval_h5_audit_20260612T095926Z/
 dependency: afterok:15974536
 ```
+
+The SSL binary-gate training and scoring chain is queued behind the H5 audits:
+
+```text
+15974554 / E123pretrain1
+dependency: afterok:15974542
+
+15974555 / E123pretrain2
+dependency: afterany:15974554
+
+15974556 / E123finetune1
+dependency: afterany:15974555
+
+15974557 / E128sslPost
+dependency: afterok:15974556:15974543
+```
+
+Run root:
+
+```text
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/runs/E128_ssl_binary_gate_20260612T102809Z
+```
+
+Report root:
+
+```text
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_ssl_binary_gate_report_20260612T102809Z
+```

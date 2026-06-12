@@ -426,11 +426,22 @@ Evaluation: production-style whale-call vs background gate; per-species gate rec
 Metrics:
 - metrics not available yet: H5 bridge job 15973986 remains pending
 - Nibi whale-call repo updated to 75249c6; clean SSL repo restored at 9215af6
+- SSL binary-gate training queued behind the broad H5 audit; no checkpoint or
+  production-style SSL metrics are available yet
 
 Artifacts:
 - Runbook: `docs/e128_binary_gate_comparison.md`
 - Runner: `scripts/analysis/e128_run_ssamba_h5.py`
 - Exporter: `scripts/analysis/e128_export_ssamba_binary_gate_predictions.py`
+- SSL binary-gate run root:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/runs/E128_ssl_binary_gate_20260612T102809Z`
+- SSL binary-gate report root:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_ssl_binary_gate_report_20260612T102809Z`
+- SSL binary-gate jobs:
+  `15974554 / E123pretrain1` after `15974542`,
+  `15974555 / E123pretrain2` after `15974554`,
+  `15974556 / E123finetune1` after `15974555`,
+  `15974557 / E128sslPost` after `15974556` and `15974543`
 - ONC eval-H5 job: `15974536 / E128evalH5`
 - ONC eval-H5 audit job: `15974543 / E126h5audit` with `afterok:15974536`
 - ONC eval-H5 expected output:
@@ -438,7 +449,9 @@ Artifacts:
 - ONC eval-H5 audit output:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_onc_eval_h5_audit_20260612T095926Z/`
 
-Interpretation: Setup is ready for SSL binary-gate training once Nibi compute leaves maintenance and the H5 bridge completes; no model-selection claim should be made yet.
+Interpretation: Setup and queued execution are ready for SSL binary-gate
+training once Nibi compute leaves maintenance and the H5 bridge plus H5 audits
+complete; no model-selection claim should be made yet.
 <!-- END experiment-ledger-entry:e128-ssl-binary-gate-setup -->
 
 ## Immediate Next Entries To Add
