@@ -404,6 +404,9 @@ def generic_note_entry_markdown(
     artifacts: Sequence[Tuple[str, str]],
     interpretation: str,
 ) -> str:
+    interpretation_text = interpretation or "pending review"
+    if interpretation_text and interpretation_text[-1] not in ".!?":
+        interpretation_text += "."
     lines = [
         f"### {name} ({entry_date})",
         "",
@@ -430,7 +433,7 @@ def generic_note_entry_markdown(
                 lines.append(f"- {label}: `{path}`")
     else:
         lines.extend(["", "Artifacts: not specified."])
-    lines.extend(["", f"Interpretation: {interpretation or 'pending review'}."])
+    lines.extend(["", f"Interpretation: {interpretation_text}"])
     return "\n".join(lines) + "\n"
 
 

@@ -393,6 +393,31 @@ paper/GAVDNet-style synthetic augmentation idea. It still needs training and
 production-style common-row evaluation before we can say whether it helps blue
 whale or humpback detection.
 
+<!-- BEGIN experiment-ledger-entry:e128-ssl-binary-gate-setup -->
+### E128 SSL Binary Gate Setup (2026-06-12)
+
+Status: setup blocked on scheduler.
+
+Training set: Pending E126/E128 H5 bridge; SSL pretrain on normal/background rows, then binary whale-call fine-tune with ft_cls.
+
+Validation set: Pending ONC common validation rows exported from E123/E126 H5.
+
+Test set: Pending ONC common held-out test rows exported from E123/E126 H5.
+
+Evaluation: production-style whale-call vs background gate; per-species gate recall and examples will be computed with e126_binary_gate_report.py after H5 and checkpoint exist.
+
+Metrics:
+- metrics not available yet: H5 bridge job 15973986 remains pending
+- Nibi whale-call repo updated to 6600410; clean SSL repo restored at 9215af6
+
+Artifacts:
+- Runbook: `docs/e128_binary_gate_comparison.md`
+- Runner: `scripts/analysis/e128_run_ssamba_h5.py`
+- Exporter: `scripts/analysis/e128_export_ssamba_binary_gate_predictions.py`
+
+Interpretation: Setup is ready for SSL binary-gate training once Nibi compute leaves maintenance and the H5 bridge completes; no model-selection claim should be made yet.
+<!-- END experiment-ledger-entry:e128-ssl-binary-gate-setup -->
+
 ## Immediate Next Entries To Add
 
 Add rows here when the next jobs complete:

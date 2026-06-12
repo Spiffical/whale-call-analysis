@@ -266,6 +266,35 @@ class TestMultispeciesExperimentLedger(unittest.TestCase):
             self.assertIn("- Cross-species FP: 12", text)
             self.assertIn("- Report: `/tmp/report.md`", text)
             self.assertIn("- Artifact: `/tmp/examples.csv`", text)
+            self.assertIn("Interpretation: manual entries can capture partial diagnostics.", text)
+
+            rc = ledger.main(
+                [
+                    "note",
+                    "--name",
+                    "E999 Manual Smoke",
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--training-set",
+                    "unit training split",
+                    "--validation-set",
+                    "unit validation split",
+                    "--test-set",
+                    "unit common-row test split",
+                    "--evaluation-note",
+                    "production-style common-row evaluation",
+                    "--interpretation",
+                    "already punctuated.",
+                    "--entry-id",
+                    "e999-manual-smoke",
+                    "--entry-date",
+                    "2026-06-13",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            text = ledger_path.read_text(encoding="utf-8")
+            self.assertIn("Interpretation: already punctuated.", text)
+            self.assertNotIn("already punctuated..", text)
 
 
 if __name__ == "__main__":
