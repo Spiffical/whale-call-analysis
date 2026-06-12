@@ -177,6 +177,52 @@ class TestMultispeciesExperimentLedger(unittest.TestCase):
             self.assertIn("Training set: unit train variants.", text)
             self.assertIn("| 1 | candidate_a | E124 | common | 0.5000 | 0.9000 | 0.8800 | 0.9100 | 12 | 3 | 1 |", text)
 
+    def test_cli_h5_audit_appends_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audit_path = root / "audit.json"
+            ledger_path = root / "ledger.md"
+            audit_path.write_text(
+                json.dumps(
+                    {
+                        "input_h5": "/tmp/e126.h5",
+                        "builder_summary_json": "/tmp/e126.summary.json",
+                        "summary": {
+                            "rows": 12,
+                            "normal_rows": 10,
+                            "normal_train_rows": 8,
+                            "normal_months": 4,
+                            "months": 6,
+                            "unknown_month_rows": 0,
+                            "target_label_counts": {"Bm": 1, "Bp": 1, "Mn": 1},
+                            "label_counts": {"normal": 10, "Bm": 1, "Bp": 1, "Mn": 1},
+                        },
+                        "quality_checks": [
+                            {"check": "normal_rows", "value": 10, "threshold": 10, "passed": True},
+                            {"check": "normal_months", "value": 4, "threshold": 12, "passed": False},
+                        ],
+                        "outputs": {"report": "/tmp/report.md", "summary": "/tmp/audit.json"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rc = ledger.main(
+                [
+                    "h5-audit",
+                    "--audit-json",
+                    str(audit_path),
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--entry-date",
+                    "2026-06-12",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            text = ledger_path.read_text(encoding="utf-8")
+            self.assertIn("E126 SSL H5 Coverage Audit (2026-06-12)", text)
+            self.assertIn("| normal rows | 10 |", text)
+            self.assertIn("| normal_months | 4 | 12 | no |", text)
+
 
 if __name__ == "__main__":
     unittest.main()

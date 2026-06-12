@@ -298,6 +298,90 @@ def append_leaderboard_summary(
     return append_or_replace_block(ledger_path=ledger_path, entry_id=marker, body=body)
 
 
+def h5_audit_entry_markdown(
+    *,
+    audit: Mapping[str, Any],
+    status: str,
+    entry_date: str,
+) -> str:
+    summary = audit.get("summary", {}) or {}
+    outputs = audit.get("outputs", {}) or {}
+    checks = list(audit.get("quality_checks", []) or [])
+    target_counts = summary.get("target_label_counts", {}) or {}
+    label_counts = summary.get("label_counts", {}) or {}
+    lines = [
+        f"### E126 SSL H5 Coverage Audit ({entry_date})",
+        "",
+        f"Status: {status}.",
+        "",
+        f"H5 dataset: `{clean(audit.get('input_h5'))}`",
+        "",
+        f"Builder summary: `{clean(audit.get('builder_summary_json'))}`" if clean(audit.get("builder_summary_json")) else "Builder summary: not provided.",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+        f"| rows | {clean(summary.get('rows'))} |",
+        f"| normal rows | {clean(summary.get('normal_rows'))} |",
+        f"| normal train rows | {clean(summary.get('normal_train_rows'))} |",
+        f"| normal months | {clean(summary.get('normal_months'))} |",
+        f"| all months | {clean(summary.get('months'))} |",
+        f"| unknown-month rows | {clean(summary.get('unknown_month_rows'))} |",
+    ]
+    if checks:
+        lines.extend(["", "Quality checks:", "", "| Check | Value | Threshold | Passed |", "| --- | ---: | ---: | --- |"])
+        for row in checks:
+            lines.append(
+                "| {check} | {value} | {threshold} | {passed} |".format(
+                    check=clean(row.get("check")),
+                    value=clean(row.get("value")),
+                    threshold=clean(row.get("threshold")),
+                    passed="yes" if row.get("passed") else "no",
+                )
+            )
+    if target_counts:
+        lines.extend(["", "Target rows:", "", "| Label | Rows |", "| --- | ---: |"])
+        for label, value in sorted(target_counts.items()):
+            lines.append(f"| {label} | {value} |")
+    if label_counts:
+        lines.extend(["", f"Label counts: `{json.dumps(label_counts, sort_keys=True)}`"])
+    lines.extend(["", "Artifacts:"])
+    for label, key in (
+        ("Report", "report"),
+        ("Summary JSON", "summary"),
+        ("Quality checks CSV", "quality_checks"),
+        ("Label counts CSV", "label_counts"),
+        ("Split-label counts CSV", "split_label_counts"),
+        ("Normal month counts CSV", "normal_month_counts"),
+    ):
+        value = clean(outputs.get(key))
+        if value:
+            lines.append(f"- {label}: `{value}`")
+    lines.extend(
+        [
+            "",
+            "Interpretation: use this audit to verify the SSL normal/background phase has enough real temporal coverage before training or comparing SSL variants.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def append_h5_audit_summary(
+    *,
+    audit: Mapping[str, Any],
+    ledger_path: Path = DEFAULT_LEDGER_PATH,
+    status: str = "completed",
+    entry_id: str = "",
+    entry_date: str = "",
+) -> Path:
+    marker = entry_id or f"h5-audit:{clean(audit.get('input_h5'))}:{clean(audit.get('outputs', {}).get('summary'))}"
+    body = h5_audit_entry_markdown(
+        audit=audit,
+        status=status,
+        entry_date=entry_date or current_date_utc(),
+    )
+    return append_or_replace_block(ledger_path=ledger_path, entry_id=marker, body=body)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -324,6 +408,13 @@ def build_parser() -> argparse.ArgumentParser:
     leaderboard.add_argument("--entry-id", default="")
     leaderboard.add_argument("--entry-date", default="")
     leaderboard.add_argument("--max-rows", type=int, default=5)
+
+    h5_audit = subparsers.add_parser("h5-audit", help="append an E126 SSL H5 audit summary")
+    h5_audit.add_argument("--audit-json", required=True, type=Path)
+    h5_audit.add_argument("--ledger-path", default=DEFAULT_LEDGER_PATH, type=Path)
+    h5_audit.add_argument("--status", default="completed")
+    h5_audit.add_argument("--entry-id", default="")
+    h5_audit.add_argument("--entry-date", default="")
     return parser
 
 
@@ -359,6 +450,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             entry_id=args.entry_id,
             entry_date=args.entry_date,
             max_rows=args.max_rows,
+        )
+        print(json.dumps({"ledger": str(ledger_path)}, indent=2))
+        return 0
+    if args.command == "h5-audit":
+        audit = json.loads(args.audit_json.read_text(encoding="utf-8"))
+        ledger_path = append_h5_audit_summary(
+            audit=audit,
+            ledger_path=args.ledger_path,
+            status=args.status,
+            entry_id=args.entry_id,
+            entry_date=args.entry_date,
         )
         print(json.dumps({"ledger": str(ledger_path)}, indent=2))
         return 0

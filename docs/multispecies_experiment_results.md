@@ -70,6 +70,18 @@ Synthetic augmentation suite details live in
 until its variants have real common-row ONC test metrics and an E124 leaderboard
 entry in this ledger.
 
+After the E126 H5 bridge completes, audit the actual H5 contents before training:
+
+```bash
+bash drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh \
+  --input-h5 DATASET.h5 \
+  --builder-summary-json DATASET.summary.json \
+  --output-dir AUDIT_OUTPUT_DIR \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --dependency afterok:H5_JOB_ID \
+  --allow-missing-h5
+```
+
 ## Dataset And Evaluation References
 
 | Reference | Description | Notes |

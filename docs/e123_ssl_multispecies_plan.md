@@ -56,6 +56,24 @@ bash drac/scripts/submit_multispecies_e123_ssl_ssamba.sh \
 
 If the H5 already exists, pass `--dataset-h5` instead of `--manifest-csv`.
 
+## H5 Coverage Audit
+
+Before treating an H5 as ready for SSL pretraining, audit the actual H5 contents
+and append the result to the living experiment ledger:
+
+```bash
+bash drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh \
+  --input-h5 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e126_ssl_e16_low_bgall_target3000_20260612T031656Z.h5 \
+  --builder-summary-json /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e126_ssl_e16_low_bgall_target3000_20260612T031656Z.summary.json \
+  --output-dir /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e126_ssl_h5_audit_20260612T031656Z \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --min-normal-rows 10000 \
+  --min-normal-months 12
+```
+
+If the audit is queued before the H5 job has finished, add
+`--dependency afterok:H5_JOB_ID --allow-missing-h5`.
+
 ## Evaluation
 
 After fine-tuning, score the model on the same ONC holdout used by E26 where possible. The report should include:
