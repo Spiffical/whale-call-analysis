@@ -21,6 +21,22 @@ BAD_EXAMPLE_STATUSES = {
     "no_examples_path",
 }
 
+DEFAULT_SPECIES_LABELS = ("species:Bp", "species:Bm", "species:Mn")
+SPECIES_LABEL_ALIASES = {
+    "bp": "species:Bp",
+    "fin": "species:Bp",
+    "fin whale": "species:Bp",
+    "species:bp": "species:Bp",
+    "bm": "species:Bm",
+    "blue": "species:Bm",
+    "blue whale": "species:Bm",
+    "species:bm": "species:Bm",
+    "mn": "species:Mn",
+    "humpback": "species:Mn",
+    "humpback whale": "species:Mn",
+    "species:mn": "species:Mn",
+}
+
 
 def clean(value: Any) -> str:
     return "" if value is None else str(value).strip()
@@ -107,6 +123,34 @@ def ledger_contains(ledger_text: str, tokens: Sequence[Any]) -> bool:
     return any(clean(token) and clean(token) in ledger_text for token in tokens)
 
 
+def label_tokens(value: Any) -> List[str]:
+    return [part.strip() for part in clean(value).replace(",", "|").split("|") if part.strip()]
+
+
+def normalize_species_label(value: Any) -> str:
+    text = clean(value)
+    if not text:
+        return ""
+    if text in DEFAULT_SPECIES_LABELS:
+        return text
+    return SPECIES_LABEL_ALIASES.get(text.lower(), text)
+
+
+def observed_per_species_labels(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    observed: List[str] = []
+    for row in rows:
+        for field in ("class_id", "species", "label", "name"):
+            label = normalize_species_label(row.get(field))
+            if label and label not in observed:
+                observed.append(label)
+    return observed
+
+
+def rows_with_complete_species_metrics(rows: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    required = ("precision", "recall", "f1", "support")
+    return [row for row in rows if all(as_float(row.get(field)) is not None for field in required)]
+
+
 def audit_leaderboard(
     path: Path,
     *,
@@ -184,6 +228,63 @@ def audit_leaderboard(
         value=len(top_bad),
         threshold="0 bad statuses",
         detail=";".join(sorted({clean(row.get("example_status")) for row in top_bad if clean(row.get("example_status"))})),
+    )
+    expected_labels = [normalize_species_label(label) for label in label_tokens(top.get("metric_labels"))]
+    expected_labels = [label for label in expected_labels if label]
+    metric_label_status = "PASS" if expected_labels else "WARN"
+    if not expected_labels:
+        expected_labels = list(DEFAULT_SPECIES_LABELS)
+    add_check(
+        checks,
+        artifact_type="leaderboard",
+        artifact=artifact,
+        check="top_candidate_expected_species_labels",
+        status=metric_label_status,
+        value=",".join(expected_labels),
+        detail="from metric_labels" if metric_label_status == "PASS" else "defaulted to current target species",
+    )
+    per_species_path = top.get("per_species_csv")
+    per_species_exists = artifact_exists(per_species_path, base_dir=path.parent)
+    per_species = load_csv_rows(per_species_path, base_dir=path.parent)
+    add_check(
+        checks,
+        artifact_type="leaderboard",
+        artifact=artifact,
+        check="top_candidate_per_species_csv_exists",
+        status="PASS" if per_species_exists else "FAIL",
+        value=clean(per_species_path),
+    )
+    add_check(
+        checks,
+        artifact_type="leaderboard",
+        artifact=artifact,
+        check="top_candidate_per_species_rows",
+        status="PASS" if per_species else "FAIL",
+        value=len(per_species),
+        threshold=">0",
+    )
+    observed_labels = observed_per_species_labels(per_species)
+    missing_labels = [label for label in expected_labels if label not in observed_labels]
+    add_check(
+        checks,
+        artifact_type="leaderboard",
+        artifact=artifact,
+        check="top_candidate_per_species_labels_cover_expected",
+        status="PASS" if per_species and not missing_labels else "FAIL",
+        value=",".join(observed_labels),
+        threshold=",".join(expected_labels),
+        detail="missing: " + ",".join(missing_labels) if missing_labels else "",
+    )
+    complete_metric_rows = rows_with_complete_species_metrics(per_species)
+    add_check(
+        checks,
+        artifact_type="leaderboard",
+        artifact=artifact,
+        check="top_candidate_per_species_metric_columns",
+        status="PASS" if per_species and len(complete_metric_rows) == len(per_species) else "FAIL",
+        value=len(complete_metric_rows),
+        threshold=len(per_species),
+        detail="requires precision, recall, f1, support",
     )
     if require_ledger:
         in_ledger = ledger_contains(

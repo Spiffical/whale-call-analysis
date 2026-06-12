@@ -146,7 +146,10 @@ docs/multispecies_experiment_results.md` so the living ledger receives the final
 metrics. Review both `e124_candidate_leaderboard.csv` and
 `e124_candidate_examples.csv`; if the examples file reports missing or
 directory-only examples for the winning candidate, export row-level examples
-before treating the variant as reviewed.
+before treating the variant as reviewed. The readiness audit also requires the
+winning candidate's per-species CSV to contain precision, recall, F1, and support
+for all current target species (`species:Bp`, `species:Bm`, `species:Mn`), so a
+single overall F1 row is not enough to mark a synthetic run production-ready.
 
 ## Current Queued Synthetic Test
 

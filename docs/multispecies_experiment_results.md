@@ -132,6 +132,9 @@ The audit writes `multispecies_readiness_audit.md`,
 or explicitly explained in the ledger entry before the result is considered
 reviewed. For binary gate summaries, the audit requires overall metrics, example
 rows, background false-positive rate, and per-species gate recall.
+For leaderboards, it requires the selected top candidate to include row-level
+examples plus per-species precision, recall, F1, and support rows covering the
+current target species (`species:Bp`, `species:Bm`, `species:Mn`).
 For H5 summaries, it also requires label strings to be only `normal` plus the
 configured target labels, which guards against malformed H5s with labels such as
 `target` or `background`.
