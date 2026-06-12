@@ -65,6 +65,11 @@ python scripts/analysis/e124_compare_production_candidates.py \
   --evaluation-note "production-style common-row comparison with cross-species false positives counted"
 ```
 
+Synthetic augmentation suite details live in
+`docs/e127_synthetic_ssl_suite.md`. The E127 suite is not considered complete
+until its variants have real common-row ONC test metrics and an E124 leaderboard
+entry in this ledger.
+
 ## Dataset And Evaluation References
 
 | Reference | Description | Notes |

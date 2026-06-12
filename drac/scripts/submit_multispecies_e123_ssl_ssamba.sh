@@ -30,6 +30,7 @@ SBATCH_CPUS="4"
 SBATCH_MEM="48G"
 SBATCH_GRES="gpu:nvidia_h100_80gb_hbm3_1g.10gb:1"
 BUILD_H5="false"
+ALLOW_MISSING_DATASET="false"
 H5_BAND="low"
 H5_BAND_CROP_SHAPE="391x50"
 H5_OUTPUT_SHAPE="512x512"
@@ -68,6 +69,7 @@ Options:
   --ssl-repo-root PATH       Default: $weekend_root/selfsupervision_anomalies_onc
   --dataset-root PATH        Multiband MAT extraction root for --manifest-csv
   --runner-py PATH           Relative or absolute SSAMBA runner. Default: src/run_amba_spectrogram.py
+  --allow-missing-dataset    Allow --dataset-h5 to be created by an upstream dependency job
   --venv-path PATH           Default: $ssl_repo_root/myenv
   --run-root PATH            Default: $weekend_root/runs/E123_ssl_ssamba_multispecies_$stamp
   --stamp STAMP              Default: current UTC stamp
@@ -113,6 +115,7 @@ while [[ $# -gt 0 ]]; do
     --ssl-repo-root) SSL_REPO_ROOT="$2"; shift 2 ;;
     --dataset-root) DATASET_ROOT="$2"; shift 2 ;;
     --runner-py) RUNNER_PY="$2"; shift 2 ;;
+    --allow-missing-dataset) ALLOW_MISSING_DATASET="true"; shift ;;
     --venv-path) VENV_PATH="$2"; VENV_PATH_SET="true"; shift 2 ;;
     --run-root) RUN_ROOT="$2"; shift 2 ;;
     --stamp) STAMP="$2"; shift 2 ;;
@@ -175,7 +178,7 @@ if [[ ! -d "$SSL_REPO_ROOT" ]]; then
   echo "Missing SSL repo: $SSL_REPO_ROOT" >&2
   exit 1
 fi
-if [[ "$BUILD_H5" == "false" && ! -f "$DATASET_H5" ]]; then
+if [[ "$BUILD_H5" == "false" && "$ALLOW_MISSING_DATASET" != "true" && ! -f "$DATASET_H5" ]]; then
   echo "Missing H5 dataset: $DATASET_H5" >&2
   exit 1
 fi
@@ -420,6 +423,7 @@ Run root: $RUN_ROOT
 Logs: $RUN_ROOT/logs
 Dataset: $DATASET_H5
 Build H5: $BUILD_H5
+Allow missing dataset: $ALLOW_MISSING_DATASET
 SSL repo: $SSL_REPO_ROOT
 Runner: $RUNNER_PY_ABS
 EOF
