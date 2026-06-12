@@ -188,6 +188,15 @@ dependency: afterany:15974555
 dependency: afterok:15974556:15974543
 ```
 
+The combined readiness audit is queued behind the SSL postprocess and both H5
+audits:
+
+```text
+15974584 / E128ready
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_ssl_binary_gate_report_20260612T102809Z/readiness_audit_combined
+dependency: afterok:15974557:15974542:15974543
+```
+
 Run root:
 
 ```text

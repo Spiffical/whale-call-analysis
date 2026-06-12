@@ -161,6 +161,8 @@ E128 broad-H5 SSL pretrain chain and queues only two multiclass fine-tunes:
 | 15974563 / E130postbaseline | E129 common-row report | `afterok:15974561:15974543` |
 | 15974564 / E130postbm_mn_conservative | E129 common-row report | `afterok:15974562:15974543` |
 | 15974571 / E124leader | E124 baseline-vs-synthetic leaderboard | `afterok:15974563:15974564` |
+| 15974583 / E126h5audit | synthetic H5 readiness/coverage audit | `afterok:15974560` |
+| 15974585 / E130ready | final readiness audit over leaderboard and H5 audits | `afterok:15974571:15974583` |
 
 Output root:
 
@@ -170,4 +172,9 @@ Output root:
 
 No E130 metrics exist yet; all jobs are dependency-gated behind the H5 build,
 H5 audits, and shared SSL pretraining. The E124 leaderboard will compare the two
-E129 summaries and use the calibrated E129 row when available.
+E129 summaries and use the calibrated E129 row when available. The final E130
+readiness audit writes to:
+
+```text
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/readiness_audit
+```

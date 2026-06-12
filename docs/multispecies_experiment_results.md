@@ -439,6 +439,8 @@ Queued jobs:
 | 15974563 / E130postbaseline | E129 common-row report for baseline | `afterok:15974561:15974543` |
 | 15974564 / E130postbm_mn_conservative | E129 common-row report for synthetic variant | `afterok:15974562:15974543` |
 | 15974571 / E124leader | compare baseline vs synthetic E129 reports | `afterok:15974563:15974564` |
+| 15974583 / E126h5audit | audit synthetic `Bm`+`Mn` H5 before using it for conclusions | `afterok:15974560` |
+| 15974585 / E130ready | final readiness audit over leaderboard plus broad/eval/synthetic H5 audits | `afterok:15974571:15974583` |
 
 Artifacts:
 
@@ -450,6 +452,10 @@ Artifacts:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/datasets/e130_bm_mn_conservative.h5`
 - E124 leaderboard output:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/e124_candidate_leaderboard`
+- Synthetic H5 audit output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/h5_audit_bm_mn_conservative`
+- E130 readiness audit output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/readiness_audit`
 
 Interpretation: this is the first low-resource synthetic augmentation test. It
 will not answer all augmentation questions, but it should tell us whether a
@@ -492,14 +498,19 @@ Artifacts:
   `15974557 / E128sslPost` after `15974556` and `15974543`
 - ONC eval-H5 job: `15974536 / E128evalH5`
 - ONC eval-H5 audit job: `15974543 / E126h5audit` with `afterok:15974536`
+- Combined readiness audit job: `15974584 / E128ready` with
+  `afterok:15974557:15974542:15974543`
 - ONC eval-H5 expected output:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e128_onc_eval_h5_20260612T095926Z/e128_onc_common_eval_low_20260612T095926Z.h5`
 - ONC eval-H5 audit output:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_onc_eval_h5_audit_20260612T095926Z/`
+- Combined readiness audit output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e128_ssl_binary_gate_report_20260612T102809Z/readiness_audit_combined`
 
 Interpretation: Setup and queued execution are ready for SSL binary-gate
 training once Nibi compute leaves maintenance and the H5 bridge plus H5 audits
-complete; no model-selection claim should be made yet.
+complete; no model-selection claim should be made until the combined readiness
+audit passes.
 <!-- END experiment-ledger-entry:e128-ssl-binary-gate-setup -->
 
 ## Immediate Next Entries To Add
