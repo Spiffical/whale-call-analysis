@@ -12,6 +12,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 PYTHON_BIN="python3"
 DEPENDENCY=""
 DRY_RUN="false"
+ALLOW_MISSING_BASE_H5="false"
 
 AUGMENT_TIME="03:00:00"
 AUGMENT_CPUS="4"
@@ -83,6 +84,9 @@ Options:
   --stamp STAMP              Default: current UTC stamp
   --python-bin NAME           Default: python3
   --dependency SPEC           Dependency for first jobs, e.g. afterany:123
+  --allow-missing-base-h5     Allow --base-h5 to be created/validated by an
+                              upstream dependency job. Requires --dependency
+                              unless the file already exists.
   --augment-time HH:MM:SS     Default: 03:00:00
   --augment-cpus-per-task N   Default: 4
   --augment-mem MEM           Default: 48G
@@ -151,6 +155,7 @@ while [[ $# -gt 0 ]]; do
     --stamp) STAMP="$2"; shift 2 ;;
     --python-bin) PYTHON_BIN="$2"; shift 2 ;;
     --dependency) DEPENDENCY="$2"; shift 2 ;;
+    --allow-missing-base-h5) ALLOW_MISSING_BASE_H5="true"; shift ;;
     --augment-time) AUGMENT_TIME="$2"; shift 2 ;;
     --augment-cpus-per-task) AUGMENT_CPUS="$2"; shift 2 ;;
     --augment-mem) AUGMENT_MEM="$2"; shift 2 ;;
@@ -204,8 +209,12 @@ if [[ ! -d "$REPO_ON_NIBI" ]]; then
   echo "Missing repo root: $REPO_ON_NIBI" >&2
   exit 1
 fi
-if [[ "$DRY_RUN" != "true" && ! -f "$BASE_H5" ]]; then
+if [[ "$DRY_RUN" != "true" && ! -f "$BASE_H5" && "$ALLOW_MISSING_BASE_H5" != "true" ]]; then
   echo "Missing base H5: $BASE_H5" >&2
+  exit 1
+fi
+if [[ "$DRY_RUN" != "true" && ! -f "$BASE_H5" && "$ALLOW_MISSING_BASE_H5" == "true" && -z "$DEPENDENCY" ]]; then
+  echo "Missing base H5 is only allowed with --dependency so downstream jobs wait for the upstream producer/audit" >&2
   exit 1
 fi
 
@@ -301,7 +310,7 @@ for spec in "${VARIANTS[@]}"; do
   summary_json=""
   augment_job=""
   e123_dependency="$DEPENDENCY"
-  allow_missing="false"
+  allow_missing="$ALLOW_MISSING_BASE_H5"
   note="baseline H5 without synthetic rows"
 
   if ! labels_are_none "$labels"; then

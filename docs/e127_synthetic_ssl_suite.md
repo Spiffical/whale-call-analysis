@@ -89,6 +89,23 @@ bash drac/scripts/submit_multispecies_e127_synthetic_ssl_suite.sh \
   --gres gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 ```
 
+If the H5 build/audit is already queued but the H5 file does not exist yet,
+queue E127 behind the successful audit instead of waiting interactively:
+
+```bash
+bash drac/scripts/submit_multispecies_e127_synthetic_ssl_suite.sh \
+  --base-h5 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e126_ssl_e16_low_bgall_target3000_20260612T031656Z.h5 \
+  --repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/repo_e24_expert_hparam_68be99f \
+  --ssl-repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/selfsupervision_anomalies_onc \
+  --dependency afterok:15974542 \
+  --allow-missing-base-h5 \
+  --synthetic-per-target 1000 \
+  --num-pretrain-jobs 2 \
+  --num-finetune-jobs 1 \
+  --time 03:00:00 \
+  --gres gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
+```
+
 The submitter writes:
 
 - `e127_synthetic_ssl_suite_plan.tsv`
