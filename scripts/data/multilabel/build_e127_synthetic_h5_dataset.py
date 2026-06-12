@@ -33,14 +33,22 @@ class AugmentConfig:
     snr_db_max: float = 10.0
     freq_shift_min_bins: int = -12
     freq_shift_max_bins: int = 12
+    time_shift_min_bins: int = 0
+    time_shift_max_bins: int = 0
     time_stretch_min: float = 0.97
     time_stretch_max: float = 1.03
+    nonlinear_distortion_strength_min: float = 0.0
+    nonlinear_distortion_strength_max: float = 0.0
+    spectral_filter_strength_min: float = 0.0
+    spectral_filter_strength_max: float = 0.0
     transmission_loss_strength_min: float = 0.10
     transmission_loss_strength_max: float = 0.75
     reverb_smear_strength_min: float = 0.0
     reverb_smear_strength_max: float = 0.0
     reverb_smear_decay_min_bins: int = 2
     reverb_smear_decay_max_bins: int = 12
+    end_trim_fraction_min: float = 0.0
+    end_trim_fraction_max: float = 0.0
     gaussian_noise_std: float = 0.01
     seed: int = 1337
 
@@ -97,6 +105,23 @@ def frequency_shift(spec: np.ndarray, bins: int, *, fill_value: Optional[float] 
     return out
 
 
+def time_shift(spec: np.ndarray, bins: int, *, fill_value: Optional[float] = None) -> np.ndarray:
+    """Translate a spectrogram in time bins without circular wrapping."""
+    arr = squeeze_spec(spec)
+    shift = int(bins)
+    if shift == 0:
+        return arr.copy()
+    fill = robust_fill_value(arr) if fill_value is None else float(fill_value)
+    out = np.full_like(arr, fill, dtype=np.float32)
+    if abs(shift) >= arr.shape[1]:
+        return out
+    if shift > 0:
+        out[:, shift:] = arr[:, :-shift]
+    else:
+        out[:, :shift] = arr[:, -shift:]
+    return out
+
+
 def time_stretch_to_length(spec: np.ndarray, factor: float) -> np.ndarray:
     """Stretch/compress the time axis, then center crop/pad back to input length."""
     arr = squeeze_spec(spec)
@@ -116,6 +141,59 @@ def time_stretch_to_length(spec: np.ndarray, factor: float) -> np.ndarray:
     pad_left = (time - new_time) // 2
     pad_right = time - new_time - pad_left
     return np.pad(stretched, ((0, 0), (pad_left, pad_right)), mode="edge").astype(np.float32)
+
+
+def apply_nonlinear_distortion(spec: np.ndarray, *, strength: float) -> np.ndarray:
+    """Blend in a bounded nonlinear contrast curve as a spectrogram-domain proxy."""
+    arr = squeeze_spec(spec)
+    strength = float(np.clip(strength, 0.0, 1.0))
+    if strength <= 0.0:
+        return arr.copy()
+    center = float(np.nanmedian(arr))
+    scale = float(np.nanpercentile(arr, 95) - np.nanpercentile(arr, 5))
+    if not np.isfinite(scale) or scale <= 1e-6:
+        return arr.copy()
+    z = np.clip((arr - center) / scale, -3.0, 3.0)
+    curved = np.tanh(z * (1.0 + 2.0 * strength)) / max(np.tanh(1.0 + 2.0 * strength), 1e-6)
+    distorted = center + curved * scale
+    return ((1.0 - strength) * arr + strength * distorted).astype(np.float32)
+
+
+def _smooth_step(x: np.ndarray, edge: float, width: float) -> np.ndarray:
+    width = max(float(width), 1e-3)
+    return 1.0 / (1.0 + np.exp(-(x - float(edge)) / width))
+
+
+def apply_spectral_filter_envelope(
+    spec: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    strength: float,
+) -> Tuple[np.ndarray, str]:
+    """Apply a smooth frequency envelope approximating coarse audio filtering."""
+    arr = squeeze_spec(spec)
+    strength = float(np.clip(strength, 0.0, 0.95))
+    if strength <= 0.0:
+        return arr.copy(), "off"
+    freq_bins = arr.shape[0]
+    x = np.linspace(0.0, 1.0, freq_bins, dtype=np.float32)
+    mode = str(rng.choice(["lowpass", "highpass", "bandpass"]))
+    floor = 1.0 - strength
+    width = float(rng.uniform(0.025, 0.08))
+    if mode == "lowpass":
+        cutoff = float(rng.uniform(0.45, 0.90))
+        envelope = floor + (1.0 - floor) * (1.0 - _smooth_step(x, cutoff, width))
+    elif mode == "highpass":
+        cutoff = float(rng.uniform(0.10, 0.55))
+        envelope = floor + (1.0 - floor) * _smooth_step(x, cutoff, width)
+    else:
+        low = float(rng.uniform(0.10, 0.40))
+        high = float(rng.uniform(0.60, 0.90))
+        passband = _smooth_step(x, low, width) * (1.0 - _smooth_step(x, high, width))
+        envelope = floor + (1.0 - floor) * passband
+    fill = robust_fill_value(arr)
+    filtered = fill + (arr - fill) * envelope[:, np.newaxis].astype(np.float32)
+    return filtered.astype(np.float32), mode
 
 
 def smooth_random_envelope(length: int, rng: np.random.Generator, *, strength: float) -> np.ndarray:
@@ -165,6 +243,33 @@ def apply_reverb_smear(
     return smeared
 
 
+def apply_random_end_trim(
+    spec: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    min_fraction: float,
+    max_fraction: float,
+    fill_value: Optional[float] = None,
+) -> Tuple[np.ndarray, int]:
+    """Mask a random number of trailing time bins as a proxy for end trimming."""
+    arr = squeeze_spec(spec)
+    lo = float(np.clip(min_fraction, 0.0, 0.95))
+    hi = float(np.clip(max_fraction, 0.0, 0.95))
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi <= 0.0:
+        return arr.copy(), 0
+    trim_fraction = float(rng.uniform(lo, hi))
+    trim_bins = int(round(arr.shape[1] * trim_fraction))
+    if trim_bins <= 0:
+        return arr.copy(), 0
+    trim_bins = min(trim_bins, arr.shape[1])
+    fill = robust_fill_value(arr) if fill_value is None else float(fill_value)
+    out = arr.copy()
+    out[:, -trim_bins:] = fill
+    return out.astype(np.float32), trim_bins
+
+
 def rms(value: np.ndarray) -> float:
     arr = np.asarray(value, dtype=np.float32)
     return float(np.sqrt(np.mean(np.square(arr)))) if arr.size else 0.0
@@ -197,7 +302,14 @@ def synthesize_spectrogram(
     config: AugmentConfig,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     freq_shift_bins = int(rng.integers(config.freq_shift_min_bins, config.freq_shift_max_bins + 1))
+    time_shift_bins = int(rng.integers(config.time_shift_min_bins, config.time_shift_max_bins + 1))
     time_stretch = float(rng.uniform(config.time_stretch_min, config.time_stretch_max))
+    nonlinear_distortion_strength = float(
+        rng.uniform(config.nonlinear_distortion_strength_min, config.nonlinear_distortion_strength_max)
+    )
+    spectral_filter_strength = float(
+        rng.uniform(config.spectral_filter_strength_min, config.spectral_filter_strength_max)
+    )
     tl_strength = float(
         rng.uniform(config.transmission_loss_strength_min, config.transmission_loss_strength_max)
     )
@@ -209,12 +321,25 @@ def synthesize_spectrogram(
     )
     snr_db = float(rng.uniform(config.snr_db_min, config.snr_db_max))
     spec = frequency_shift(signal, freq_shift_bins)
+    spec = time_shift(spec, time_shift_bins)
     spec = time_stretch_to_length(spec, time_stretch)
+    spec = apply_nonlinear_distortion(spec, strength=nonlinear_distortion_strength)
+    spec, spectral_filter_mode = apply_spectral_filter_envelope(
+        spec,
+        rng,
+        strength=spectral_filter_strength,
+    )
     spec = apply_transmission_loss(spec, rng, strength=tl_strength)
     spec = apply_reverb_smear(
         spec,
         strength=reverb_smear_strength,
         decay_bins=reverb_smear_decay_bins,
+    )
+    spec, end_trim_bins = apply_random_end_trim(
+        spec,
+        rng,
+        min_fraction=config.end_trim_fraction_min,
+        max_fraction=config.end_trim_fraction_max,
     )
     mixed = mix_at_snr(spec, squeeze_spec(background), snr_db)
     if config.gaussian_noise_std > 0:
@@ -222,10 +347,15 @@ def synthesize_spectrogram(
     mixed = np.nan_to_num(mixed, nan=0.0).astype(np.float32)
     params = {
         "freq_shift_bins": freq_shift_bins,
+        "time_shift_bins": time_shift_bins,
         "time_stretch": time_stretch,
+        "nonlinear_distortion_strength": nonlinear_distortion_strength,
+        "spectral_filter_strength": spectral_filter_strength,
+        "spectral_filter_mode": spectral_filter_mode,
         "transmission_loss_strength": tl_strength,
         "reverb_smear_strength": reverb_smear_strength,
         "reverb_smear_decay_bins": reverb_smear_decay_bins,
+        "end_trim_bins": end_trim_bins,
         "snr_db": snr_db,
     }
     return mixed, params
@@ -410,14 +540,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--snr-db-max", type=float, default=10.0)
     parser.add_argument("--freq-shift-min-bins", type=int, default=-12)
     parser.add_argument("--freq-shift-max-bins", type=int, default=12)
+    parser.add_argument("--time-shift-min-bins", type=int, default=0)
+    parser.add_argument("--time-shift-max-bins", type=int, default=0)
     parser.add_argument("--time-stretch-min", type=float, default=0.97)
     parser.add_argument("--time-stretch-max", type=float, default=1.03)
+    parser.add_argument("--nonlinear-distortion-strength-min", type=float, default=0.0)
+    parser.add_argument("--nonlinear-distortion-strength-max", type=float, default=0.0)
+    parser.add_argument("--spectral-filter-strength-min", type=float, default=0.0)
+    parser.add_argument("--spectral-filter-strength-max", type=float, default=0.0)
     parser.add_argument("--transmission-loss-strength-min", type=float, default=0.10)
     parser.add_argument("--transmission-loss-strength-max", type=float, default=0.75)
     parser.add_argument("--reverb-smear-strength-min", type=float, default=0.0)
     parser.add_argument("--reverb-smear-strength-max", type=float, default=0.0)
     parser.add_argument("--reverb-smear-decay-min-bins", type=int, default=2)
     parser.add_argument("--reverb-smear-decay-max-bins", type=int, default=12)
+    parser.add_argument("--end-trim-fraction-min", type=float, default=0.0)
+    parser.add_argument("--end-trim-fraction-max", type=float, default=0.0)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument("--compression", default="gzip")
     return parser
@@ -431,14 +569,22 @@ def main() -> int:
         snr_db_max=args.snr_db_max,
         freq_shift_min_bins=args.freq_shift_min_bins,
         freq_shift_max_bins=args.freq_shift_max_bins,
+        time_shift_min_bins=args.time_shift_min_bins,
+        time_shift_max_bins=args.time_shift_max_bins,
         time_stretch_min=args.time_stretch_min,
         time_stretch_max=args.time_stretch_max,
+        nonlinear_distortion_strength_min=args.nonlinear_distortion_strength_min,
+        nonlinear_distortion_strength_max=args.nonlinear_distortion_strength_max,
+        spectral_filter_strength_min=args.spectral_filter_strength_min,
+        spectral_filter_strength_max=args.spectral_filter_strength_max,
         transmission_loss_strength_min=args.transmission_loss_strength_min,
         transmission_loss_strength_max=args.transmission_loss_strength_max,
         reverb_smear_strength_min=args.reverb_smear_strength_min,
         reverb_smear_strength_max=args.reverb_smear_strength_max,
         reverb_smear_decay_min_bins=args.reverb_smear_decay_min_bins,
         reverb_smear_decay_max_bins=args.reverb_smear_decay_max_bins,
+        end_trim_fraction_min=args.end_trim_fraction_min,
+        end_trim_fraction_max=args.end_trim_fraction_max,
         gaussian_noise_std=args.gaussian_noise_std,
         seed=args.seed,
     )

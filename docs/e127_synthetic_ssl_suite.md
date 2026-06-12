@@ -27,10 +27,14 @@ Implementation notes from the public code inspection:
 | --- | --- |
 | Mix exemplar target calls with target-absent background at `snrRange = [-10, 10]`. | Mix target and normal/background spectrograms with default `--snr-db-min -10 --snr-db-max 10`. |
 | Mild speed perturbation with `speedup_factor_range = [0.97, 1.03]`. | Time-axis stretch/compression with default `--time-stretch-min 0.97 --time-stretch-max 1.03`. |
-| Transmission-loss simulation with strength range `[0.1, 0.75]`. | Smooth time-axis envelope with default `--transmission-loss-min 0.10 --transmission-loss-max 0.75`. |
+| Random source delay / sequence placement. | Optional time-bin translation with `--time-shift-min-bins` and `--time-shift-max-bins`; default is off for comparability with the first suite. |
+| Nonlinear distortion with `distortionRange = [0.1, 0.5]`. | Optional bounded nonlinear spectrogram contrast curve with `--nonlinear-distortion-strength-*`; default is off for the first controlled suite. |
+| Audio-domain high/low/band-pass filtering. | Optional smooth frequency-bin envelope with `--spectral-filter-strength-*`; this is a coarse spectrogram proxy, not a physical filter port. |
+| Transmission-loss simulation with strength range `[0.1, 0.75]`. | Smooth time-axis envelope with default builder flags `--transmission-loss-strength-min 0.10 --transmission-loss-strength-max 0.75`; the suite submitter exposes these as `--transmission-loss-min/max`. |
 | Reverberation via `simpleVerb` and `decayTimeRange`. | Optional causal spectrogram reverb smear using `--reverb-smear-strength-*` and `--reverb-smear-decay-*`; default is off for the first controlled suite. |
 | Doppler/source-velocity simulation. | Coarse frequency-bin translation; this is not a physical Doppler port. |
-| Audio-domain high/low-pass filtering, nonlinear distortion, compression, chorus, and long synthetic sequences. | Not yet ported. These should be follow-up variants only if the first synthetic suite helps. |
+| Random end trimming. | Optional trailing-bin masking with `--end-trim-fraction-*`; default is off because fixed 10 s H5 windows may not localize the call at the end. |
+| Audio-domain compression, chorus injection, and long 30 minute synthetic sequences. | Not yet ported. These should be follow-up variants only if the first synthetic suite helps. |
 
 ## What E127 Varies
 
@@ -51,11 +55,23 @@ Synthetic perturbations:
 - target spectrogram exemplar sampled from the training split
 - normal/background spectrogram sampled from the training split
 - frequency translation without circular wrapping
+- optional time translation without circular wrapping
 - time-axis stretch/compression
+- optional nonlinear spectrogram contrast distortion
+- optional smooth spectral filter envelope
 - smooth transmission-loss-like envelope
 - optional causal reverb-like time smear
+- optional trailing-bin trim
 - controlled signal-to-noise mixing
 - small Gaussian noise
+
+Recommended first-pass variants:
+
+| Variant family | Extra flags | Reason |
+| --- | --- | --- |
+| conservative | defaults | Tests SNR, time stretch, frequency shift, and transmission-loss proxy first. |
+| physics_proxy | `--time-shift-min-bins -8 --time-shift-max-bins 8 --nonlinear-distortion-strength-min 0.1 --nonlinear-distortion-strength-max 0.5 --spectral-filter-strength-min 0.1 --spectral-filter-strength-max 0.5` | Exercises more of the public GAVDNet/customAudioAugmenter idea while staying in H5 spectrogram space. |
+| trim_reverb | `--reverb-smear-strength-min 0.1 --reverb-smear-strength-max 0.4 --end-trim-fraction-min 0.0 --end-trim-fraction-max 0.10` | Tests the riskier temporal smearing/truncation effects separately. |
 
 ## Launch
 

@@ -28,6 +28,13 @@ class TestE127SyntheticH5Dataset(unittest.TestCase):
         self.assertTrue(np.allclose(shifted[3, :], 1.0))
         self.assertTrue(np.allclose(shifted[:2, :], -1.0))
 
+    def test_time_shift_does_not_wrap(self):
+        spec = np.zeros((3, 5), dtype=np.float32)
+        spec[:, 1] = 2.0
+        shifted = e127.time_shift(spec, 2, fill_value=-1.0)
+        self.assertTrue(np.allclose(shifted[:, 3], 2.0))
+        self.assertTrue(np.allclose(shifted[:, :2], -1.0))
+
     def test_time_stretch_preserves_shape_and_finiteness(self):
         spec = np.arange(24, dtype=np.float32).reshape(4, 6)
         stretched = e127.time_stretch_to_length(spec, 1.4)
@@ -36,6 +43,25 @@ class TestE127SyntheticH5Dataset(unittest.TestCase):
         self.assertEqual(compressed.shape, spec.shape)
         self.assertTrue(np.isfinite(stretched).all())
         self.assertTrue(np.isfinite(compressed).all())
+
+    def test_paper_inspired_optional_transforms_preserve_shape(self):
+        rng = np.random.default_rng(13)
+        spec = np.linspace(0.0, 1.0, 48, dtype=np.float32).reshape(6, 8)
+        distorted = e127.apply_nonlinear_distortion(spec, strength=0.4)
+        filtered, mode = e127.apply_spectral_filter_envelope(spec, rng, strength=0.5)
+        trimmed, trim_bins = e127.apply_random_end_trim(
+            spec,
+            rng,
+            min_fraction=0.25,
+            max_fraction=0.25,
+            fill_value=-1.0,
+        )
+        for transformed in (distorted, filtered, trimmed):
+            self.assertEqual(transformed.shape, spec.shape)
+            self.assertTrue(np.isfinite(transformed).all())
+        self.assertIn(mode, {"lowpass", "highpass", "bandpass"})
+        self.assertEqual(trim_bins, 2)
+        self.assertTrue(np.allclose(trimmed[:, -2:], -1.0))
 
     def test_reverb_smear_preserves_shape_and_finiteness(self):
         spec = np.zeros((4, 8), dtype=np.float32)
@@ -58,7 +84,11 @@ class TestE127SyntheticH5Dataset(unittest.TestCase):
         self.assertTrue(np.isfinite(synthetic).all())
         self.assertIn("snr_db", params)
         self.assertIn("freq_shift_bins", params)
+        self.assertIn("time_shift_bins", params)
+        self.assertIn("nonlinear_distortion_strength", params)
+        self.assertIn("spectral_filter_mode", params)
         self.assertIn("reverb_smear_strength", params)
+        self.assertIn("end_trim_bins", params)
 
     @unittest.skipIf(h5py is None, "h5py is required for H5 round-trip test")
     def test_build_synthetic_h5_appends_training_rows_only(self):
@@ -108,6 +138,9 @@ class TestE127SyntheticH5Dataset(unittest.TestCase):
             self.assertEqual(result["synthetic_rows"], 2)
             payload = json.loads(summary.read_text(encoding="utf-8"))
             self.assertEqual(payload["target_pool_rows"]["Bm"], 1)
+            self.assertIn("time_shift_min_bins", payload["augment_config"])
+            self.assertIn("nonlinear_distortion_strength_min", payload["augment_config"])
+            self.assertIn("end_trim_fraction_max", payload["augment_config"])
             with h5py.File(out, "r") as h5:
                 self.assertEqual(h5["spectrograms"].shape[0], 6)
                 labels_out = [x.decode("utf-8") for x in h5["label_strings"][:]]

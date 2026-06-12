@@ -393,7 +393,11 @@ Planned variants:
 Interpretation: this is a spectrogram-space approximation inspired by the Nature
 paper/GAVDNet-style synthetic augmentation idea. It still needs training and
 production-style common-row evaluation before we can say whether it helps blue
-whale or humpback detection.
+whale or humpback detection. The current tool covers train-only synthetic rows,
+SNR mixing, frequency/time shifts, time stretch, transmission-loss envelope, and
+optional nonlinear distortion, coarse spectral filtering, reverb smear, and end
+trim. It is still not an exact audio-domain MATLAB port and should not be
+reported as one.
 
 <!-- BEGIN experiment-ledger-entry:e128-ssl-binary-gate-setup -->
 ### E128 SSL Binary Gate Setup (2026-06-12)
