@@ -424,6 +424,9 @@ Artifacts:
 - Runbook: `docs/e128_binary_gate_comparison.md`
 - Runner: `scripts/analysis/e128_run_ssamba_h5.py`
 - Exporter: `scripts/analysis/e128_export_ssamba_binary_gate_predictions.py`
+- ONC eval-H5 job: `15974536 / E128evalH5`
+- ONC eval-H5 expected output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e128_onc_eval_h5_20260612T095926Z/e128_onc_common_eval_low_20260612T095926Z.h5`
 
 Interpretation: Setup is ready for SSL binary-gate training once Nibi compute leaves maintenance and the H5 bridge completes; no model-selection claim should be made yet.
 <!-- END experiment-ledger-entry:e128-ssl-binary-gate-setup -->
