@@ -82,6 +82,9 @@ class TestE126BinaryGateReport(unittest.TestCase):
             self.assertTrue((out / "e126_binary_gate_examples.csv").is_file())
             payload = json.loads((out / "e126_binary_gate_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["threshold"], 0.7)
+            self.assertEqual(payload["test_background_false_positive_rate"], 0.0)
+            self.assertAlmostEqual(payload["test_per_species_gate_recall"]["species:Bp"], 1.0)
+            self.assertAlmostEqual(payload["test_per_species_gate_recall"]["species:Bm"], 0.0)
 
     def test_reads_explicit_score_field_and_missing_scores(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,6 +169,10 @@ class TestE126BinaryGateReport(unittest.TestCase):
             self.assertEqual(breakdown["species:Bp"]["detected"], 1)
             self.assertEqual(breakdown["species:Bm"]["missed"], 1)
             self.assertEqual(breakdown["background"]["missed"], 1)
+            self.assertEqual(breakdown["background"]["fp"], 0)
+            self.assertEqual(breakdown["background"]["tn"], 1)
+            self.assertEqual(breakdown["species:Bp"]["tp"], 1)
+            self.assertEqual(breakdown["species:Bm"]["fn"], 1)
 
     def test_can_append_living_ledger_entry(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -203,16 +203,52 @@ def species_breakdown(
                 detected += 1
             else:
                 missed += 1
+        is_background = bucket == "background"
+        rate = detected / len(subset) if subset else 0.0
         out.append(
             {
                 "true_bucket": bucket,
+                "bucket_type": "background" if is_background else "whale_species",
                 "support": len(subset),
                 "detected": detected,
                 "missed": missed,
-                "detection_rate": detected / len(subset) if subset else 0.0,
+                "tp": "" if is_background else detected,
+                "fp": detected if is_background else "",
+                "tn": missed if is_background else "",
+                "fn": "" if is_background else missed,
+                "detection_rate": rate,
+                "background_false_positive_rate": rate if is_background else "",
+                "gate_recall": "" if is_background else rate,
             }
         )
     return out
+
+
+def background_false_positive_rate(breakdown: Sequence[Mapping[str, Any]]) -> Optional[float]:
+    for row in breakdown:
+        if e119.clean(row.get("true_bucket")) == "background":
+            value = e119.as_float(row.get("background_false_positive_rate"))
+            if value is not None:
+                return float(value)
+            value = e119.as_float(row.get("detection_rate"))
+            return float(value) if value is not None else None
+    return None
+
+
+def per_species_gate_recall(
+    breakdown: Sequence[Mapping[str, Any]],
+    positive_labels: Sequence[str],
+) -> Dict[str, Optional[float]]:
+    by_species: Dict[str, Optional[float]] = {label: None for label in positive_labels}
+    for row in breakdown:
+        bucket = e119.clean(row.get("true_bucket"))
+        if bucket not in by_species:
+            continue
+        value = e119.as_float(row.get("gate_recall"))
+        if value is None:
+            value = e119.as_float(row.get("detection_rate"))
+        by_species[bucket] = float(value) if value is not None else None
+    return by_species
 
 
 def example_rows(rows: Sequence[Mapping[str, Any]], *, threshold: float, limit_per_bucket: int = 50) -> List[Dict[str, Any]]:
@@ -293,13 +329,24 @@ def markdown_report(
             "",
             "## Test Breakdown By True Class",
             "",
-            "| true bucket | support | detected | missed | detection rate |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| true bucket | support | detected | missed/TN | gate recall | background FP rate |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for row in breakdown:
         lines.append(
-            "| {true_bucket} | {support} | {detected} | {missed} | {detection_rate:.4f} |".format(**row)
+            "| {bucket} | {support} | {detected} | {missed} | {recall} | {fp_rate} |".format(
+                bucket=e119.clean(row.get("true_bucket")),
+                support=row.get("support", 0),
+                detected=row.get("detected", 0),
+                missed=row.get("missed", 0),
+                recall="" if e119.clean(row.get("gate_recall")) == "" else f"{float(row.get('gate_recall')):.4f}",
+                fp_rate=(
+                    ""
+                    if e119.clean(row.get("background_false_positive_rate")) == ""
+                    else f"{float(row.get('background_false_positive_rate')):.4f}"
+                ),
+            )
         )
     bucket_counts: Dict[str, int] = {}
     for row in examples:
@@ -360,6 +407,8 @@ def run_report(
     ]
     breakdown = species_breakdown(test_rows, threshold=threshold, positive_labels=positive_labels)
     examples = example_rows(test_rows, threshold=threshold)
+    test_bg_fp_rate = background_false_positive_rate(breakdown)
+    test_species_recall = per_species_gate_recall(breakdown, positive_labels)
 
     e119.write_csv(output_dir / "e126_binary_gate_metrics.csv", metrics)
     e119.write_csv(output_dir / "e126_binary_gate_threshold_sweep.csv", sweep)
@@ -387,6 +436,16 @@ def run_report(
         "score_field": score_field or "",
         "inputs": {"val_predictions": str(val_predictions), "test_predictions": str(test_predictions)},
         "metrics": metrics,
+        "test_background_false_positive_rate": test_bg_fp_rate,
+        "test_per_species_gate_recall": test_species_recall,
+        "test_background_support": next(
+            (int(row.get("support", 0)) for row in breakdown if e119.clean(row.get("true_bucket")) == "background"),
+            0,
+        ),
+        "test_background_false_positives": next(
+            (int(row.get("detected", 0)) for row in breakdown if e119.clean(row.get("true_bucket")) == "background"),
+            0,
+        ),
         "outputs": {
             "report": str(report_path),
             "metrics": str(output_dir / "e126_binary_gate_metrics.csv"),

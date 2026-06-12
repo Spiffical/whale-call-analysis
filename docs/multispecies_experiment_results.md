@@ -130,7 +130,8 @@ The audit writes `multispecies_readiness_audit.md`,
 `multispecies_readiness_audit_checks.csv`, and
 `multispecies_readiness_audit_summary.json`. Any failed checks must be resolved
 or explicitly explained in the ledger entry before the result is considered
-reviewed.
+reviewed. For binary gate summaries, the audit requires overall metrics, example
+rows, background false-positive rate, and per-species gate recall.
 
 ## Dataset And Evaluation References
 
@@ -414,7 +415,7 @@ Evaluation: production-style whale-call vs background gate; per-species gate rec
 
 Metrics:
 - metrics not available yet: H5 bridge job 15973986 remains pending
-- Nibi whale-call repo updated to 6600410; clean SSL repo restored at 9215af6
+- Nibi whale-call repo updated to 99b6719; clean SSL repo restored at 9215af6
 
 Artifacts:
 - Runbook: `docs/e128_binary_gate_comparison.md`

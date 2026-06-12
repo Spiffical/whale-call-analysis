@@ -207,6 +207,36 @@ def metric_by_split(summary: Mapping[str, Any], split: str) -> Mapping[str, Any]
     return {}
 
 
+def binary_gate_rates(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return background FP rate and per-species gate recall from new or legacy summaries."""
+    positive_labels = [clean(label) for label in summary.get("positive_labels", []) or [] if clean(label)]
+    per_species = {
+        clean(label): as_float(value)
+        for label, value in (summary.get("test_per_species_gate_recall", {}) or {}).items()
+        if clean(label)
+    }
+    background_fp_rate = as_float(summary.get("test_background_false_positive_rate"))
+    for row in summary.get("test_breakdown", []) or summary.get("breakdown", []) or []:
+        bucket = clean(row.get("true_bucket"))
+        if not bucket:
+            continue
+        if bucket == "background":
+            if background_fp_rate is None:
+                background_fp_rate = as_float(row.get("background_false_positive_rate"))
+            if background_fp_rate is None:
+                background_fp_rate = as_float(row.get("detection_rate"))
+        else:
+            value = as_float(row.get("gate_recall"))
+            if value is None:
+                value = as_float(row.get("detection_rate"))
+            per_species.setdefault(bucket, value)
+    return {
+        "positive_labels": positive_labels,
+        "background_false_positive_rate": background_fp_rate,
+        "per_species_gate_recall": per_species,
+    }
+
+
 def audit_binary_gate(
     path: Path,
     *,
@@ -255,6 +285,27 @@ def audit_binary_gate(
         status="PASS" if examples else "FAIL",
         value=len(examples),
         threshold=">0",
+    )
+    rates = binary_gate_rates(summary)
+    bg_fp_rate = rates["background_false_positive_rate"]
+    add_check(
+        checks,
+        artifact_type="binary_gate",
+        artifact=artifact,
+        check="test_background_false_positive_rate",
+        status="PASS" if bg_fp_rate is not None else "FAIL",
+        value="" if bg_fp_rate is None else bg_fp_rate,
+    )
+    positive_labels = rates["positive_labels"]
+    recalls = rates["per_species_gate_recall"]
+    add_check(
+        checks,
+        artifact_type="binary_gate",
+        artifact=artifact,
+        check="test_per_species_gate_recall_present",
+        status="PASS" if positive_labels and all(recalls.get(label) is not None for label in positive_labels) else "FAIL",
+        value=",".join(label for label in positive_labels if recalls.get(label) is not None),
+        threshold=",".join(positive_labels) if positive_labels else "positive labels",
     )
     if require_ledger:
         in_ledger = ledger_contains(ledger_text, [path, summary.get("name"), outputs.get("report")])

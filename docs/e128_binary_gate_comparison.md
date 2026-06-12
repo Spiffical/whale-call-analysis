@@ -116,10 +116,16 @@ Important blocker: the SSL repo path has been restored on Nibi, but the H5
 bridge job must finish before SSL training can launch. The exporter solves
 row-level scoring once a trained checkpoint and ONC evaluation H5 exist.
 
+Before treating either gate report as reviewed, run
+`scripts/analysis/multispecies_readiness_audit.py` on the
+`e126_binary_gate_summary.json`. The audit now checks that overall metrics,
+example rows, background false-positive rate, and per-species gate recall are
+present, rather than only checking that a summary file exists.
+
 ## Current Nibi State
 
 As of the last check, Nibi login was reachable, the whale-call repo was at
-`d4afc55`, and the clean SSL repo clone was present at commit `9215af6`. Compute
+`99b6719`, and the clean SSL repo clone was present at commit `9215af6`. Compute
 nodes were still largely maintenance/down:
 CPU H5 build job `15973986` remained pending with
 `ReqNodeNotAvail,_Reserved_for_maintenance`. Do not launch more jobs until

@@ -70,6 +70,13 @@ class TestMultispeciesReadinessAudit(unittest.TestCase):
                             {"split": "val", "precision": 1.0, "recall": 1.0, "f1": 1.0, "accuracy": 1.0},
                             {"split": "test", "precision": 0.9, "recall": 0.8, "f1": 0.85, "accuracy": 0.7},
                         ],
+                        "positive_labels": ["species:Bp", "species:Bm", "species:Mn"],
+                        "test_background_false_positive_rate": 0.1,
+                        "test_per_species_gate_recall": {
+                            "species:Bp": 1.0,
+                            "species:Bm": 0.8,
+                            "species:Mn": 0.7,
+                        },
                         "outputs": {"examples": str(gate_examples), "report": str(root / "gate" / "report.md")},
                     }
                 ),
@@ -177,6 +184,44 @@ class TestMultispeciesReadinessAudit(unittest.TestCase):
             self.assertIn(("h5_audit", "normal_train_rows"), failed)
             self.assertIn(("h5_audit", "normal_train_months"), failed)
             self.assertIn(("h5_audit", "quality_checks_passed"), failed)
+
+    def test_flags_binary_gate_missing_gate_specific_rates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gate_examples = root / "gate" / "examples.csv"
+            write_csv(gate_examples, [{"bucket": "true_positive", "item_id": "gate1"}])
+            gate = root / "gate" / "summary.json"
+            gate.parent.mkdir(parents=True, exist_ok=True)
+            gate.write_text(
+                json.dumps(
+                    {
+                        "name": "weak_gate_summary",
+                        "metrics": [
+                            {"split": "val", "precision": 1.0, "recall": 1.0, "f1": 1.0, "accuracy": 1.0},
+                            {"split": "test", "precision": 0.9, "recall": 0.8, "f1": 0.85, "accuracy": 0.7},
+                        ],
+                        "positive_labels": ["species:Bp", "species:Bm"],
+                        "outputs": {"examples": str(gate_examples)},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = audit.run_audit(
+                output_dir=root / "out",
+                ledger_path=None,
+                require_ledger=False,
+                leaderboard_jsons=[],
+                binary_gate_summary_jsons=[gate],
+                h5_audit_jsons=[],
+                min_normal_train=10000,
+                min_normal_months=12,
+                title="Unit Audit",
+            )
+            failed = {(row["artifact_type"], row["check"]) for row in result["checks"] if row["status"] == "FAIL"}
+
+            self.assertIn(("binary_gate", "test_background_false_positive_rate"), failed)
+            self.assertIn(("binary_gate", "test_per_species_gate_recall_present"), failed)
 
 
 if __name__ == "__main__":
