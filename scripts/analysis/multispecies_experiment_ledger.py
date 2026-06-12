@@ -8,7 +8,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -383,6 +383,88 @@ def append_h5_audit_summary(
     return append_or_replace_block(ledger_path=ledger_path, entry_id=marker, body=body)
 
 
+def parse_artifact(value: str) -> Tuple[str, str]:
+    text = clean(value)
+    if "=" in text:
+        label, path = text.split("=", 1)
+        return clean(label) or "Artifact", clean(path)
+    return "Artifact", text
+
+
+def generic_note_entry_markdown(
+    *,
+    name: str,
+    status: str,
+    entry_date: str,
+    training_set: str,
+    validation_set: str,
+    test_set: str,
+    evaluation_note: str,
+    metrics: Sequence[str],
+    artifacts: Sequence[Tuple[str, str]],
+    interpretation: str,
+) -> str:
+    lines = [
+        f"### {name} ({entry_date})",
+        "",
+        f"Status: {status}.",
+        "",
+        f"Training set: {training_set or 'not specified'}.",
+        "",
+        f"Validation set: {validation_set or 'not specified'}.",
+        "",
+        f"Test set: {test_set or 'not specified'}.",
+        "",
+        f"Evaluation: {evaluation_note or 'not specified'}.",
+    ]
+    if metrics:
+        lines.extend(["", "Metrics:"])
+        for metric in metrics:
+            lines.append(f"- {metric}")
+    else:
+        lines.extend(["", "Metrics: not available."])
+    if artifacts:
+        lines.extend(["", "Artifacts:"])
+        for label, path in artifacts:
+            if path:
+                lines.append(f"- {label}: `{path}`")
+    else:
+        lines.extend(["", "Artifacts: not specified."])
+    lines.extend(["", f"Interpretation: {interpretation or 'pending review'}."])
+    return "\n".join(lines) + "\n"
+
+
+def append_generic_note(
+    *,
+    name: str,
+    ledger_path: Path = DEFAULT_LEDGER_PATH,
+    training_set: str = "",
+    validation_set: str = "",
+    test_set: str = "",
+    evaluation_note: str = "",
+    metrics: Sequence[str] = (),
+    artifacts: Sequence[Tuple[str, str]] = (),
+    interpretation: str = "",
+    status: str = "completed",
+    entry_id: str = "",
+    entry_date: str = "",
+) -> Path:
+    marker = entry_id or f"note:{name}:{entry_date or current_date_utc()}"
+    body = generic_note_entry_markdown(
+        name=name,
+        status=status,
+        entry_date=entry_date or current_date_utc(),
+        training_set=training_set,
+        validation_set=validation_set,
+        test_set=test_set,
+        evaluation_note=evaluation_note,
+        metrics=metrics,
+        artifacts=artifacts,
+        interpretation=interpretation,
+    )
+    return append_or_replace_block(ledger_path=ledger_path, entry_id=marker, body=body)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -416,6 +498,30 @@ def build_parser() -> argparse.ArgumentParser:
     h5_audit.add_argument("--status", default="completed")
     h5_audit.add_argument("--entry-id", default="")
     h5_audit.add_argument("--entry-date", default="")
+
+    note = subparsers.add_parser("note", help="append a manual experiment note")
+    note.add_argument("--name", required=True)
+    note.add_argument("--ledger-path", default=DEFAULT_LEDGER_PATH, type=Path)
+    note.add_argument("--training-set", required=True)
+    note.add_argument("--validation-set", required=True)
+    note.add_argument("--test-set", required=True)
+    note.add_argument("--evaluation-note", required=True)
+    note.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        help="Metric line to include; repeat for precision/recall/F1/etc.",
+    )
+    note.add_argument(
+        "--artifact",
+        action="append",
+        default=[],
+        help="Artifact path, optionally LABEL=PATH; repeat for reports/csvs/checkpoints.",
+    )
+    note.add_argument("--interpretation", default="")
+    note.add_argument("--status", default="completed")
+    note.add_argument("--entry-id", default="")
+    note.add_argument("--entry-date", default="")
     return parser
 
 
@@ -459,6 +565,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ledger_path = append_h5_audit_summary(
             audit=audit,
             ledger_path=args.ledger_path,
+            status=args.status,
+            entry_id=args.entry_id,
+            entry_date=args.entry_date,
+        )
+        print(json.dumps({"ledger": str(ledger_path)}, indent=2))
+        return 0
+    if args.command == "note":
+        artifacts: List[Tuple[str, str]] = [parse_artifact(value) for value in args.artifact]
+        ledger_path = append_generic_note(
+            name=args.name,
+            ledger_path=args.ledger_path,
+            training_set=args.training_set,
+            validation_set=args.validation_set,
+            test_set=args.test_set,
+            evaluation_note=args.evaluation_note,
+            metrics=args.metric,
+            artifacts=artifacts,
+            interpretation=args.interpretation,
             status=args.status,
             entry_id=args.entry_id,
             entry_date=args.entry_date,

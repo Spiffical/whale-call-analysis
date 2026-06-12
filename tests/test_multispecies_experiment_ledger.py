@@ -223,6 +223,50 @@ class TestMultispeciesExperimentLedger(unittest.TestCase):
             self.assertIn("| normal rows | 10 |", text)
             self.assertIn("| normal_months | 4 | 12 | no |", text)
 
+    def test_cli_note_appends_manual_experiment_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = root / "ledger.md"
+            rc = ledger.main(
+                [
+                    "note",
+                    "--name",
+                    "E999 Manual Smoke",
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--training-set",
+                    "unit training split",
+                    "--validation-set",
+                    "unit validation split",
+                    "--test-set",
+                    "unit common-row test split",
+                    "--evaluation-note",
+                    "production-style common-row evaluation",
+                    "--metric",
+                    "Macro F1: 0.5000",
+                    "--metric",
+                    "Cross-species FP: 12",
+                    "--artifact",
+                    "Report=/tmp/report.md",
+                    "--artifact",
+                    "/tmp/examples.csv",
+                    "--interpretation",
+                    "manual entries can capture partial diagnostics",
+                    "--entry-id",
+                    "e999-manual-smoke",
+                    "--entry-date",
+                    "2026-06-12",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            text = ledger_path.read_text(encoding="utf-8")
+            self.assertIn("E999 Manual Smoke (2026-06-12)", text)
+            self.assertIn("Training set: unit training split.", text)
+            self.assertIn("- Macro F1: 0.5000", text)
+            self.assertIn("- Cross-species FP: 12", text)
+            self.assertIn("- Report: `/tmp/report.md`", text)
+            self.assertIn("- Artifact: `/tmp/examples.csv`", text)
+
 
 if __name__ == "__main__":
     unittest.main()

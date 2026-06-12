@@ -32,6 +32,26 @@ evaluation style, headline metrics, artifact paths, and caveats. If a run fails
 or is abandoned after producing useful diagnostics, add a short status entry
 with the failure reason and any metrics/artifacts that still matter.
 
+If an experiment does not yet have a structured report script, append a manual
+entry with the generic ledger command:
+
+```bash
+python scripts/analysis/multispecies_experiment_ledger.py note \
+  --name "EXPERIMENT_NAME" \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --training-set "training split/source description" \
+  --validation-set "validation split/source description" \
+  --test-set "test split/source description" \
+  --evaluation-note "production-style common-row, binary gate, failed run, etc." \
+  --metric "Macro F1: VALUE" \
+  --metric "Precision: VALUE" \
+  --metric "Recall: VALUE" \
+  --metric "Cross-species FP: VALUE" \
+  --artifact "Report=PATH_TO_REPORT.md" \
+  --artifact "Examples=PATH_TO_EXAMPLES.csv" \
+  --interpretation "short caveat or decision"
+```
+
 ```bash
 python scripts/analysis/e126_binary_gate_report.py \
   --name EXPERIMENT_NAME \
