@@ -143,6 +143,68 @@ class TestE124CompareProductionCandidates(unittest.TestCase):
             payload = json.loads((out / "e124_candidate_leaderboard.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["candidates"][0]["baseline_prediction"], "original_thresholds")
 
+    def test_supports_e129_calibrated_ssamba_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary = root / "e129" / "e129_summary.json"
+            examples = root / "e129" / "e129_examples.csv"
+            self.write_csv(examples, [{"bucket": "cross_species_error", "item_id": "x1"}])
+            base_metric = {
+                "model": "ssamba",
+                "split": "test",
+                "prediction": "pred",
+                "rows": 100,
+                "macro_f1": 0.41,
+                "micro_f1": 0.62,
+                "micro_precision": 0.61,
+                "micro_recall": 0.63,
+                "cross_species_fp": 22,
+                "background_fp": 8,
+                "species_as_background_fn": 12,
+            }
+            self.write_summary(
+                summary,
+                {
+                    "name": "E129_ssl_multiclass",
+                    "model_dir": str(root / "model"),
+                    "checkpoint": str(root / "model" / "models" / "ft-avgtok_best_checkpoint.pth"),
+                    "dataset_h5": str(root / "eval.h5"),
+                    "metric_labels": ["species:Bm", "species:Bp", "species:Mn"],
+                    "model_metrics": [
+                        base_metric,
+                        {
+                            **base_metric,
+                            "prediction": "calibrated",
+                            "macro_f1": 0.56,
+                            "micro_f1": 0.70,
+                            "cross_species_fp": 12,
+                            "background_fp": 4,
+                            "species_as_background_fn": 10,
+                        },
+                    ],
+                    "outputs": {
+                        "report": str(root / "e129" / "e129_ssamba_multiclass_production_report.md"),
+                        "examples": str(examples),
+                    },
+                },
+            )
+
+            out = root / "out"
+            e124.build_leaderboard([("ssamba", summary)], out, "Unit Leaderboard")
+            rows = self.read_csv(out / "e124_candidate_leaderboard.csv")
+
+            self.assertEqual(rows[0]["candidate"], "ssamba")
+            self.assertEqual(rows[0]["experiment"], "E129")
+            self.assertEqual(rows[0]["selected_prediction"], "calibrated")
+            self.assertEqual(rows[0]["baseline_prediction"], "pred")
+            self.assertEqual(rows[0]["cross_species_fp"], "12")
+            self.assertEqual(rows[0]["background_fp"], "4")
+            self.assertEqual(rows[0]["species_as_background_fn"], "10")
+            self.assertAlmostEqual(float(rows[0]["delta_macro_f1"]), 0.15)
+            examples_rows = self.read_csv(out / "e124_candidate_examples.csv")
+            self.assertEqual(examples_rows[0]["example_status"], "examples_csv")
+            self.assertEqual(examples_rows[0]["bucket"], "cross_species_error")
+
     def test_supports_e27_ensemble_ranking_csv(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

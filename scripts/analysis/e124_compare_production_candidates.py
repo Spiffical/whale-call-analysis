@@ -27,7 +27,8 @@ PREFERRED_PREDICTIONS = {
     "E26": ("common_thresholds", "original_thresholds"),
     "E27": ("ensemble_rank1",),
     "E28": ("ensemble_rank1",),
-    "unknown": ("refined", "two_stage", "common_thresholds", "pred", "original_thresholds"),
+    "E129": ("calibrated", "pred"),
+    "unknown": ("refined", "two_stage", "common_thresholds", "calibrated", "pred", "original_thresholds"),
 }
 
 
@@ -182,6 +183,10 @@ def detect_experiment(summary_path: Path, payload: Mapping[str, Any]) -> str:
         return "E122"
     if "pairwise_models" in payload:
         return "E121"
+    if "model_dir" in payload and "checkpoint" in payload and "dataset_h5" in payload:
+        return "E129"
+    if summary_path.name == "e129_summary.json":
+        return "E129"
     if "pairwise_run_dir" in payload or "pairwise_labels" in payload:
         return "E119"
     return "unknown"
@@ -205,6 +210,7 @@ def infer_report_path(summary_path: Path, experiment: str, outputs: Mapping[str,
         "E121": "e121_multi_pairwise_refinement_report.md",
         "E122": "e122_two_stage_gate_report.md",
         "E26": "e26_common_onc_test_diagnostics.md",
+        "E129": "e129_ssamba_multiclass_production_report.md",
     }
     name = names.get(experiment)
     if name:
