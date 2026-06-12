@@ -45,6 +45,47 @@ def parse_thresholds(value: str) -> List[float]:
     return sorted(dict.fromkeys(thresholds))
 
 
+def split_label_tokens(value: Any) -> List[str]:
+    return [part.strip() for part in str(value or "").replace(",", "|").split("|") if part.strip()]
+
+
+def truth_label_candidates(row: Mapping[str, Any]) -> List[str]:
+    labels: List[str] = []
+    for field in (
+        "gate_positive_source_labels",
+        "original_label_ids",
+        "original_target_label_ids",
+        "source_label_ids",
+        "canonical_label_ids",
+        "analysis_label_ids",
+        "target_label_ids",
+        "label_ids",
+        "_true",
+        "true_class",
+    ):
+        for label in split_label_tokens(row.get(field)):
+            if label and label != "background" and label not in labels:
+                labels.append(label)
+    return labels
+
+
+def positive_truth_labels(row: Mapping[str, Any], positive_labels: Sequence[str]) -> List[str]:
+    positives = set(positive_labels)
+    return [label for label in truth_label_candidates(row) if label in positives]
+
+
+def binary_truth_bucket(row: Mapping[str, Any], *, positive_labels: Sequence[str], score_label: str) -> str:
+    matched = positive_truth_labels(row, positive_labels)
+    if matched:
+        return matched[0]
+    true = e119.clean(row.get("_true")) or e119.clean(row.get("true_class"))
+    if true and true != "background":
+        return true
+    if score_label in truth_label_candidates(row):
+        return score_label
+    return "background"
+
+
 def gate_score(row: Mapping[str, Any], *, score_field: Optional[str], score_label: str) -> Optional[float]:
     if score_field:
         value = e119.as_float(row.get(score_field))
@@ -77,7 +118,11 @@ def load_gate_rows(
         score = gate_score(row, score_field=score_field, score_label=score_label)
         out = dict(row)
         out["gate_score"] = "" if score is None else float(score)
-        out["_binary_true"] = "whale" if e119.clean(out.get("_true")) in positives else "background"
+        matched = positive_truth_labels(out, positive_labels)
+        true_label = e119.clean(out.get("_true")) or e119.clean(out.get("true_class"))
+        is_whale = bool(matched) or true_label in positives or true_label == score_label
+        out["_binary_true"] = "whale" if is_whale else "background"
+        out["_true_bucket"] = binary_truth_bucket(out, positive_labels=positive_labels, score_label=score_label)
         rows.append(out)
     return rows
 
@@ -133,6 +178,9 @@ def tune_threshold(rows: Sequence[Mapping[str, Any]], thresholds: Sequence[float
 
 
 def true_bucket(row: Mapping[str, Any]) -> str:
+    bucket = e119.clean(row.get("_true_bucket"))
+    if bucket:
+        return bucket
     true = e119.clean(row.get("_true"))
     return true if true and true != "background" else "background"
 
@@ -196,7 +244,7 @@ def example_rows(rows: Sequence[Mapping[str, Any]], *, threshold: float, limit_p
                 {
                     "bucket": bucket,
                     "item_id": e119.clean(row.get("item_id")) or e119.clean(row.get("_key")),
-                    "true_class": e119.clean(row.get("_true")),
+                    "true_class": true_bucket(row),
                     "binary_true": e119.clean(row.get("_binary_true")),
                     "gate_score": row.get("gate_score", ""),
                     "threshold": threshold,

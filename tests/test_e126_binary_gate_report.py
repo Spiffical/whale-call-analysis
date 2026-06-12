@@ -112,6 +112,61 @@ class TestE126BinaryGateReport(unittest.TestCase):
             self.assertEqual(metric["tp"], 1)
             self.assertEqual(metric["fn"], 1)
 
+    def test_recovers_species_breakdown_from_collapsed_gate_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            val = root / "val.csv"
+            test = root / "test.csv"
+            rows = [
+                {
+                    "item_id": "bp",
+                    "true_class_index": "1",
+                    "target_label_ids": "task:whale_call",
+                    "original_label_ids": "species:Bp",
+                    "gate_positive_source_labels": "species:Bp",
+                    "score__task:whale_call": "0.95",
+                },
+                {
+                    "item_id": "bm",
+                    "true_class_index": "1",
+                    "target_label_ids": "task:whale_call",
+                    "original_label_ids": "species:Bm",
+                    "gate_positive_source_labels": "species:Bm",
+                    "score__task:whale_call": "0.20",
+                },
+                {
+                    "item_id": "bg",
+                    "true_class_index": "0",
+                    "target_label_ids": "",
+                    "original_label_ids": "",
+                    "score__task:whale_call": "0.05",
+                },
+            ]
+            write_csv(val, rows)
+            write_csv(test, rows)
+
+            loaded = e126.load_gate_rows(
+                test,
+                class_ids=["background", "task:whale_call"],
+                positive_labels=["species:Bp", "species:Bm", "species:Mn"],
+                score_field=None,
+                score_label="task:whale_call",
+            )
+            metrics = e126.binary_metrics(loaded, threshold=0.5)
+            self.assertEqual(metrics["tp"], 1)
+            self.assertEqual(metrics["fn"], 1)
+            breakdown = {
+                row["true_bucket"]: row
+                for row in e126.species_breakdown(
+                    loaded,
+                    threshold=0.5,
+                    positive_labels=["species:Bp", "species:Bm", "species:Mn"],
+                )
+            }
+            self.assertEqual(breakdown["species:Bp"]["detected"], 1)
+            self.assertEqual(breakdown["species:Bm"]["missed"], 1)
+            self.assertEqual(breakdown["background"]["missed"], 1)
+
     def test_can_append_living_ledger_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
