@@ -76,16 +76,50 @@ bash drac/scripts/submit_multispecies_e123_ssl_ssamba.sh \
   --gres gpu:nvidia_h100_80gb_hbm3_1g.10gb:1
 ```
 
-Important blocker: the current local SSAMBA runner records aggregate
-`result.csv` metrics but does not yet provide the E126-compatible row-level
-prediction CSV needed for production-style false-positive and false-negative
-examples. Before treating SSL as reviewed, export row-level validation/test
-scores and run `e126_binary_gate_report.py` with `--ledger-path`.
+For production-style metrics, export row-level scores from the fine-tuned SSAMBA
+checkpoint to E126-compatible CSV. Prefer an ONC held-out evaluation H5 whose
+`splits` dataset contains `val` and `test` rows from the common production
+manifest; the exporter reads H5 split metadata directly rather than relying on
+the SSL repo's internal random split:
+
+```bash
+python scripts/analysis/e128_export_ssamba_binary_gate_predictions.py \
+  --ssl-repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/selfsupervision_anomalies_onc \
+  --model-dir SSAMBA_FINETUNE_MODEL_DIR \
+  --dataset-h5 ONC_COMMON_EVAL_H5_WITH_VAL_TEST_SPLITS.h5 \
+  --output-dir OUTPUT_DIR/e128_ssl_binary_gate_predictions \
+  --task ft_avgtok \
+  --score-label task:whale_call
+```
+
+Then score and ledger the SSL gate:
+
+```bash
+python scripts/analysis/e126_binary_gate_report.py \
+  --name E128_SSL_binary_gate \
+  --val-predictions OUTPUT_DIR/e128_ssl_binary_gate_predictions/validation_predictions.csv \
+  --test-predictions OUTPUT_DIR/e128_ssl_binary_gate_predictions/test_predictions.csv \
+  --class-ids background,task:whale_call \
+  --positive-labels species:Bp,species:Bm,species:Mn \
+  --score-label task:whale_call \
+  --output-dir OUTPUT_DIR/e128_ssl_binary_gate_report \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --ledger-entry-id e128-ssl-binary-gate \
+  --training-set "SSAMBA normal/background SSL pretraining plus binary whale-call fine-tuning" \
+  --validation-set "ONC common-row validation split exported from H5" \
+  --test-set "ONC common-row test split exported from H5" \
+  --evaluation-note "binary whale-call vs background; per-species gate recall recovered from H5 label_strings"
+```
+
+Important blocker: the expected SSL repo path was not present on Nibi at the
+last check. The exporter solves row-level scoring once a trained checkpoint and
+ONC evaluation H5 exist, but it does not remove the need to restore/clone the
+SSL repo before launching SSL jobs.
 
 ## Current Nibi State
 
-As of the last check, Nibi login was reachable, the whale-call repo on Nibi was
-updated to commit `6fac4c3`, but compute nodes were largely maintenance/down:
+As of the last check, Nibi login was reachable, but compute nodes were largely
+maintenance/down:
 CPU H5 build job `15973986` remained pending with
 `ReqNodeNotAvail,_Reserved_for_maintenance`, and the expected SSL repo path was
 not present on scratch. Do not launch more jobs until compute nodes and the SSL
