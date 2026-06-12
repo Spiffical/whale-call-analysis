@@ -147,3 +147,25 @@ metrics. Review both `e124_candidate_leaderboard.csv` and
 `e124_candidate_examples.csv`; if the examples file reports missing or
 directory-only examples for the winning candidate, export row-level examples
 before treating the variant as reviewed.
+
+## Current Queued Synthetic Test
+
+To avoid duplicating SSL pretraining for every synthetic variant, E130 reuses the
+E128 broad-H5 SSL pretrain chain and queues only two multiclass fine-tunes:
+
+| Job | Purpose | Dependency |
+| --- | --- | --- |
+| 15974560 / E130augBmMn | build conservative `Bm`+`Mn` synthetic H5 | `afterok:15974542` |
+| 15974561 / E130ftbaseline | baseline multiclass fine-tune | `afterok:15974555` |
+| 15974562 / E130ftbm_mn_conservative | synthetic multiclass fine-tune | `afterok:15974555:15974560` |
+| 15974563 / E130postbaseline | E129 common-row report | `afterok:15974561:15974543` |
+| 15974564 / E130postbm_mn_conservative | E129 common-row report | `afterok:15974562:15974543` |
+
+Output root:
+
+```text
+/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z
+```
+
+No E130 metrics exist yet; all jobs are dependency-gated behind the H5 build,
+H5 audits, and shared SSL pretraining.

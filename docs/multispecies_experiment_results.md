@@ -410,6 +410,49 @@ optional nonlinear distortion, coarse spectral filtering, reverb smear, and end
 trim. It is still not an exact audio-domain MATLAB port and should not be
 reported as one.
 
+### E130: Shared-Pretrain Synthetic Multiclass SSL Setup
+
+Status: queued; no metrics yet.
+
+Purpose: compare a resource-efficient SSL multiclass baseline against one
+`Bm`+`Mn` synthetic augmentation variant without duplicating SSL pretraining.
+
+Training set: both variants reuse the E128 SSL pretrain checkpoint once job
+`15974555` completes. The baseline fine-tunes multiclass on the broad E126 H5.
+The synthetic variant first appends 1,000 `Bm` and 1,000 `Mn` synthetic training
+rows to the same H5 with the conservative E127 augmentation recipe, then
+fine-tunes multiclass from the shared pretrain checkpoint.
+
+Validation set: ONC common-row validation split from the E128 eval H5 for the
+final E129 production report; SSAMBA fine-tune uses the broad H5 validation
+split internally.
+
+Test set: ONC common-row held-out test split from the E128 eval H5.
+
+Queued jobs:
+
+| Job | Purpose | Dependency |
+| --- | --- | --- |
+| 15974560 / E130augBmMn | build `Bm`+`Mn` conservative synthetic H5 | `afterok:15974542` |
+| 15974561 / E130ftbaseline | multiclass baseline fine-tune from shared pretrain | `afterok:15974555` |
+| 15974562 / E130ftbm_mn_conservative | multiclass synthetic fine-tune from shared pretrain | `afterok:15974555:15974560` |
+| 15974563 / E130postbaseline | E129 common-row report for baseline | `afterok:15974561:15974543` |
+| 15974564 / E130postbm_mn_conservative | E129 common-row report for synthetic variant | `afterok:15974562:15974543` |
+
+Artifacts:
+
+- E130 output root:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z`
+- Shared pretrain root:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/runs/E128_ssl_binary_gate_20260612T102809Z`
+- Synthetic H5 path:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/datasets/e130_bm_mn_conservative.h5`
+
+Interpretation: this is the first low-resource synthetic augmentation test. It
+will not answer all augmentation questions, but it should tell us whether a
+conservative `Bm`+`Mn` synthetic boost is directionally useful under the same
+production-style common-row ONC scoring used for the other candidates.
+
 <!-- BEGIN experiment-ledger-entry:e128-ssl-binary-gate-setup -->
 ### E128 SSL Binary Gate Setup (2026-06-12)
 
