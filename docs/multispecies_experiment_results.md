@@ -438,6 +438,7 @@ Queued jobs:
 | 15974562 / E130ftbm_mn_conservative | multiclass synthetic fine-tune from shared pretrain | `afterok:15974555:15974560` |
 | 15974563 / E130postbaseline | E129 common-row report for baseline | `afterok:15974561:15974543` |
 | 15974564 / E130postbm_mn_conservative | E129 common-row report for synthetic variant | `afterok:15974562:15974543` |
+| 15974571 / E124leader | compare baseline vs synthetic E129 reports | `afterok:15974563:15974564` |
 
 Artifacts:
 
@@ -447,11 +448,15 @@ Artifacts:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/runs/E128_ssl_binary_gate_20260612T102809Z`
 - Synthetic H5 path:
   `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/datasets/e130_bm_mn_conservative.h5`
+- E124 leaderboard output:
+  `/scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/pipeline_runs/e130_shared_pretrain_synthetic_multiclass_20260612T105405Z/e124_candidate_leaderboard`
 
 Interpretation: this is the first low-resource synthetic augmentation test. It
 will not answer all augmentation questions, but it should tell us whether a
 conservative `Bm`+`Mn` synthetic boost is directionally useful under the same
-production-style common-row ONC scoring used for the other candidates.
+production-style common-row ONC scoring used for the other candidates. E124 now
+recognizes E129 SSAMBA summaries and prefers validation-calibrated E129 metrics
+over raw argmax rows when both are present.
 
 <!-- BEGIN experiment-ledger-entry:e128-ssl-binary-gate-setup -->
 ### E128 SSL Binary Gate Setup (2026-06-12)
