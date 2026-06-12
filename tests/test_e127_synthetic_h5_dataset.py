@@ -37,6 +37,16 @@ class TestE127SyntheticH5Dataset(unittest.TestCase):
         self.assertTrue(np.isfinite(stretched).all())
         self.assertTrue(np.isfinite(compressed).all())
 
+    def test_reverb_smear_preserves_shape_and_finiteness(self):
+        spec = np.zeros((4, 8), dtype=np.float32)
+        spec[:, 2] = 1.0
+        smeared = e127.apply_reverb_smear(spec, strength=0.4, decay_bins=2)
+        disabled = e127.apply_reverb_smear(spec, strength=0.0, decay_bins=2)
+        self.assertEqual(smeared.shape, spec.shape)
+        self.assertTrue(np.isfinite(smeared).all())
+        self.assertTrue(np.allclose(disabled, spec))
+        self.assertGreater(float(smeared[:, 3].mean()), 0.0)
+
     def test_synthesize_spectrogram_returns_params(self):
         rng = np.random.default_rng(7)
         signal = np.ones((8, 10), dtype=np.float32)
@@ -48,6 +58,7 @@ class TestE127SyntheticH5Dataset(unittest.TestCase):
         self.assertTrue(np.isfinite(synthetic).all())
         self.assertIn("snr_db", params)
         self.assertIn("freq_shift_bins", params)
+        self.assertIn("reverb_smear_strength", params)
 
     @unittest.skipIf(h5py is None, "h5py is required for H5 round-trip test")
     def test_build_synthetic_h5_appends_training_rows_only(self):

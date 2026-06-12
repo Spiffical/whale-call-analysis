@@ -21,6 +21,17 @@ spectrogram-space approximation so it can run directly on the E123/E126 H5
 datasets. It should be treated as a hypothesis test, not a claim that we have
 fully ported GAVDNet.
 
+Implementation notes from the public code inspection:
+
+| GAVDNet/customAudioAugmenter idea | E127 approximation |
+| --- | --- |
+| Mix exemplar target calls with target-absent background at `snrRange = [-10, 10]`. | Mix target and normal/background spectrograms with default `--snr-db-min -10 --snr-db-max 10`. |
+| Mild speed perturbation with `speedup_factor_range = [0.97, 1.03]`. | Time-axis stretch/compression with default `--time-stretch-min 0.97 --time-stretch-max 1.03`. |
+| Transmission-loss simulation with strength range `[0.1, 0.75]`. | Smooth time-axis envelope with default `--transmission-loss-min 0.10 --transmission-loss-max 0.75`. |
+| Reverberation via `simpleVerb` and `decayTimeRange`. | Optional causal spectrogram reverb smear using `--reverb-smear-strength-*` and `--reverb-smear-decay-*`; default is off for the first controlled suite. |
+| Doppler/source-velocity simulation. | Coarse frequency-bin translation; this is not a physical Doppler port. |
+| Audio-domain high/low-pass filtering, nonlinear distortion, compression, chorus, and long synthetic sequences. | Not yet ported. These should be follow-up variants only if the first synthetic suite helps. |
+
 ## What E127 Varies
 
 The synthetic H5 builder appends synthetic rows only to the training split. It
@@ -42,6 +53,7 @@ Synthetic perturbations:
 - frequency translation without circular wrapping
 - time-axis stretch/compression
 - smooth transmission-loss-like envelope
+- optional causal reverb-like time smear
 - controlled signal-to-noise mixing
 - small Gaussian noise
 

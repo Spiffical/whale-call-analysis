@@ -26,6 +26,12 @@ Every completed experiment should update this file before we treat the result as
 reviewed. For E126-style binary gate reports, pass the ledger arguments directly
 to the report command:
 
+Completion rule: every experiment gets a ledger entry before we act on its
+result. The entry must state the training set, validation set, test set,
+evaluation style, headline metrics, artifact paths, and caveats. If a run fails
+or is abandoned after producing useful diagnostics, add a short status entry
+with the failure reason and any metrics/artifacts that still matter.
+
 ```bash
 python scripts/analysis/e126_binary_gate_report.py \
   --name EXPERIMENT_NAME \

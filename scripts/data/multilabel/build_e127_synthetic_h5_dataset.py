@@ -29,14 +29,18 @@ except Exception:
 
 @dataclass(frozen=True)
 class AugmentConfig:
-    snr_db_min: float = -6.0
-    snr_db_max: float = 12.0
+    snr_db_min: float = -10.0
+    snr_db_max: float = 10.0
     freq_shift_min_bins: int = -12
     freq_shift_max_bins: int = 12
-    time_stretch_min: float = 0.90
-    time_stretch_max: float = 1.10
-    transmission_loss_strength_min: float = 0.05
-    transmission_loss_strength_max: float = 0.35
+    time_stretch_min: float = 0.97
+    time_stretch_max: float = 1.03
+    transmission_loss_strength_min: float = 0.10
+    transmission_loss_strength_max: float = 0.75
+    reverb_smear_strength_min: float = 0.0
+    reverb_smear_strength_max: float = 0.0
+    reverb_smear_decay_min_bins: int = 2
+    reverb_smear_decay_max_bins: int = 12
     gaussian_noise_std: float = 0.01
     seed: int = 1337
 
@@ -139,6 +143,28 @@ def apply_transmission_loss(spec: np.ndarray, rng: np.random.Generator, *, stren
     return (arr * envelope[np.newaxis, :]).astype(np.float32)
 
 
+def apply_reverb_smear(
+    spec: np.ndarray,
+    *,
+    strength: float,
+    decay_bins: int,
+) -> np.ndarray:
+    """Causal time-axis smear approximating simple audio reverberation."""
+    arr = squeeze_spec(spec)
+    strength = float(np.clip(strength, 0.0, 0.95))
+    if strength <= 0.0:
+        return arr.copy()
+    decay = max(1, int(decay_bins))
+    kernel_len = max(2, min(arr.shape[1], 4 * decay + 1))
+    kernel = np.exp(-np.arange(kernel_len, dtype=np.float32) / float(decay))
+    kernel /= float(kernel.sum()) or 1.0
+    smeared = np.empty_like(arr, dtype=np.float32)
+    for freq_idx in range(arr.shape[0]):
+        conv = np.convolve(arr[freq_idx], kernel, mode="full")[: arr.shape[1]]
+        smeared[freq_idx] = ((1.0 - strength) * arr[freq_idx] + strength * conv).astype(np.float32)
+    return smeared
+
+
 def rms(value: np.ndarray) -> float:
     arr = np.asarray(value, dtype=np.float32)
     return float(np.sqrt(np.mean(np.square(arr)))) if arr.size else 0.0
@@ -175,10 +201,21 @@ def synthesize_spectrogram(
     tl_strength = float(
         rng.uniform(config.transmission_loss_strength_min, config.transmission_loss_strength_max)
     )
+    reverb_smear_strength = float(
+        rng.uniform(config.reverb_smear_strength_min, config.reverb_smear_strength_max)
+    )
+    reverb_smear_decay_bins = int(
+        rng.integers(config.reverb_smear_decay_min_bins, config.reverb_smear_decay_max_bins + 1)
+    )
     snr_db = float(rng.uniform(config.snr_db_min, config.snr_db_max))
     spec = frequency_shift(signal, freq_shift_bins)
     spec = time_stretch_to_length(spec, time_stretch)
     spec = apply_transmission_loss(spec, rng, strength=tl_strength)
+    spec = apply_reverb_smear(
+        spec,
+        strength=reverb_smear_strength,
+        decay_bins=reverb_smear_decay_bins,
+    )
     mixed = mix_at_snr(spec, squeeze_spec(background), snr_db)
     if config.gaussian_noise_std > 0:
         mixed = mixed + rng.normal(0.0, config.gaussian_noise_std, size=mixed.shape).astype(np.float32)
@@ -187,6 +224,8 @@ def synthesize_spectrogram(
         "freq_shift_bins": freq_shift_bins,
         "time_stretch": time_stretch,
         "transmission_loss_strength": tl_strength,
+        "reverb_smear_strength": reverb_smear_strength,
+        "reverb_smear_decay_bins": reverb_smear_decay_bins,
         "snr_db": snr_db,
     }
     return mixed, params
@@ -367,14 +406,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--synthetic-per-target", type=int, default=1000)
     parser.add_argument("--split", default="train")
     parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--snr-db-min", type=float, default=-6.0)
-    parser.add_argument("--snr-db-max", type=float, default=12.0)
+    parser.add_argument("--snr-db-min", type=float, default=-10.0)
+    parser.add_argument("--snr-db-max", type=float, default=10.0)
     parser.add_argument("--freq-shift-min-bins", type=int, default=-12)
     parser.add_argument("--freq-shift-max-bins", type=int, default=12)
-    parser.add_argument("--time-stretch-min", type=float, default=0.90)
-    parser.add_argument("--time-stretch-max", type=float, default=1.10)
-    parser.add_argument("--transmission-loss-strength-min", type=float, default=0.05)
-    parser.add_argument("--transmission-loss-strength-max", type=float, default=0.35)
+    parser.add_argument("--time-stretch-min", type=float, default=0.97)
+    parser.add_argument("--time-stretch-max", type=float, default=1.03)
+    parser.add_argument("--transmission-loss-strength-min", type=float, default=0.10)
+    parser.add_argument("--transmission-loss-strength-max", type=float, default=0.75)
+    parser.add_argument("--reverb-smear-strength-min", type=float, default=0.0)
+    parser.add_argument("--reverb-smear-strength-max", type=float, default=0.0)
+    parser.add_argument("--reverb-smear-decay-min-bins", type=int, default=2)
+    parser.add_argument("--reverb-smear-decay-max-bins", type=int, default=12)
     parser.add_argument("--gaussian-noise-std", type=float, default=0.01)
     parser.add_argument("--compression", default="gzip")
     return parser
@@ -392,6 +435,10 @@ def main() -> int:
         time_stretch_max=args.time_stretch_max,
         transmission_loss_strength_min=args.transmission_loss_strength_min,
         transmission_loss_strength_max=args.transmission_loss_strength_max,
+        reverb_smear_strength_min=args.reverb_smear_strength_min,
+        reverb_smear_strength_max=args.reverb_smear_strength_max,
+        reverb_smear_decay_min_bins=args.reverb_smear_decay_min_bins,
+        reverb_smear_decay_max_bins=args.reverb_smear_decay_max_bins,
         gaussian_noise_std=args.gaussian_noise_std,
         seed=args.seed,
     )

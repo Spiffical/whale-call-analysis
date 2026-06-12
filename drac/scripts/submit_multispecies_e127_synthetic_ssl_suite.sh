@@ -19,14 +19,18 @@ AUGMENT_MEM="48G"
 SYNTHETIC_PER_TARGET="1000"
 SYNTHETIC_SPLIT="train"
 SEED="1337"
-SNR_DB_MIN="-6.0"
-SNR_DB_MAX="12.0"
+SNR_DB_MIN="-10.0"
+SNR_DB_MAX="10.0"
 FREQ_SHIFT_MIN_BINS="-12"
 FREQ_SHIFT_MAX_BINS="12"
-TIME_STRETCH_MIN="0.90"
-TIME_STRETCH_MAX="1.10"
-TRANSMISSION_LOSS_MIN="0.05"
-TRANSMISSION_LOSS_MAX="0.35"
+TIME_STRETCH_MIN="0.97"
+TIME_STRETCH_MAX="1.03"
+TRANSMISSION_LOSS_MIN="0.10"
+TRANSMISSION_LOSS_MAX="0.75"
+REVERB_SMEAR_STRENGTH_MIN="0.0"
+REVERB_SMEAR_STRENGTH_MAX="0.0"
+REVERB_SMEAR_DECAY_MIN_BINS="2"
+REVERB_SMEAR_DECAY_MAX_BINS="12"
 GAUSSIAN_NOISE_STD="0.01"
 
 NUM_PRETRAIN_JOBS="2"
@@ -75,14 +79,22 @@ Options:
   --augment-cpus-per-task N   Default: 4
   --augment-mem MEM           Default: 48G
   --seed N                    Base seed. Variant index is added. Default: 1337
-  --snr-db-min X              Default: -6.0
-  --snr-db-max X              Default: 12.0
+  --snr-db-min X              Default: -10.0
+  --snr-db-max X              Default: 10.0
   --freq-shift-min-bins N     Default: -12
   --freq-shift-max-bins N     Default: 12
-  --time-stretch-min X        Default: 0.90
-  --time-stretch-max X        Default: 1.10
-  --transmission-loss-min X   Default: 0.05
-  --transmission-loss-max X   Default: 0.35
+  --time-stretch-min X        Default: 0.97
+  --time-stretch-max X        Default: 1.03
+  --transmission-loss-min X   Default: 0.10
+  --transmission-loss-max X   Default: 0.75
+  --reverb-smear-strength-min X
+                              Default: 0.0
+  --reverb-smear-strength-max X
+                              Default: 0.0
+  --reverb-smear-decay-min-bins N
+                              Default: 2
+  --reverb-smear-decay-max-bins N
+                              Default: 12
   --gaussian-noise-std X      Default: 0.01
   --num-pretrain-jobs N       Default: 2
   --num-finetune-jobs N       Default: 1
@@ -130,6 +142,10 @@ while [[ $# -gt 0 ]]; do
     --time-stretch-max) TIME_STRETCH_MAX="$2"; shift 2 ;;
     --transmission-loss-min) TRANSMISSION_LOSS_MIN="$2"; shift 2 ;;
     --transmission-loss-max) TRANSMISSION_LOSS_MAX="$2"; shift 2 ;;
+    --reverb-smear-strength-min) REVERB_SMEAR_STRENGTH_MIN="$2"; shift 2 ;;
+    --reverb-smear-strength-max) REVERB_SMEAR_STRENGTH_MAX="$2"; shift 2 ;;
+    --reverb-smear-decay-min-bins) REVERB_SMEAR_DECAY_MIN_BINS="$2"; shift 2 ;;
+    --reverb-smear-decay-max-bins) REVERB_SMEAR_DECAY_MAX_BINS="$2"; shift 2 ;;
     --gaussian-noise-std) GAUSSIAN_NOISE_STD="$2"; shift 2 ;;
     --num-pretrain-jobs) NUM_PRETRAIN_JOBS="$2"; shift 2 ;;
     --num-finetune-jobs) NUM_FINETUNE_JOBS="$2"; shift 2 ;;
@@ -317,6 +333,10 @@ $PYTHON_BIN -u scripts/data/multilabel/build_e127_synthetic_h5_dataset.py \\
   --time-stretch-max "$TIME_STRETCH_MAX" \\
   --transmission-loss-strength-min "$TRANSMISSION_LOSS_MIN" \\
   --transmission-loss-strength-max "$TRANSMISSION_LOSS_MAX" \\
+  --reverb-smear-strength-min "$REVERB_SMEAR_STRENGTH_MIN" \\
+  --reverb-smear-strength-max "$REVERB_SMEAR_STRENGTH_MAX" \\
+  --reverb-smear-decay-min-bins "$REVERB_SMEAR_DECAY_MIN_BINS" \\
+  --reverb-smear-decay-max-bins "$REVERB_SMEAR_DECAY_MAX_BINS" \\
   --gaussian-noise-std "$GAUSSIAN_NOISE_STD"
 EOF
     if [[ "$DRY_RUN" == "true" ]]; then
