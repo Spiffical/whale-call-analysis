@@ -348,7 +348,7 @@ def candidate_from_ensemble_csv(path: Path, *, alias: str = "") -> Dict[str, Any
         "report": str(path.parent / report_name),
         "metrics_csv": str(path),
         "per_species_csv": str(path.parent / ("e27_individual_metrics.csv" if experiment == "E27" else "e28_individual_metrics.csv")),
-        "examples_csv": clean(selected.get("ensemble_dir")),
+        "examples_csv": clean(selected.get("examples_csv")) or clean(selected.get("ensemble_dir")),
         "threshold_sweep_csv": "",
         "confusion_csv": "",
         "comparability_note": "verify same common ONC test rows before comparing absolute ranks",

@@ -91,6 +91,7 @@ def markdown_report(
             "",
             f"Individual metrics CSV: `{output_dir / 'e27_individual_metrics.csv'}`",
             f"Ensemble rankings CSV: `{output_dir / 'e27_ensemble_rankings.csv'}`",
+            f"Selected example CSVs: `{output_dir / 'ensembles'}/<ensemble>/selected_examples.csv` for retained ensembles",
             f"Variant CSV: `{output_dir / 'e27_variant_summary.csv'}`",
         ]
     )

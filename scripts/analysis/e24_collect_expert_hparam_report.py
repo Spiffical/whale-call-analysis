@@ -15,9 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.analysis.summarize_multilabel_predictions import summarize  # noqa: E402
-
-
 THREE_SPECIES = ("species:Bp", "species:Bm", "species:Mn")
 LABEL_NAMES = {
     "species:Bp": "fin whale",
@@ -187,7 +184,116 @@ def hard_fp(summary: Mapping[str, Any]) -> tuple[int, int, float | str]:
     return fp, total, fp / total if total else ""
 
 
+def as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        text = clean(value)
+        return default if text == "" else float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def thresholds_from_summary(summary: Mapping[str, Any], label_ids: Sequence[str]) -> Dict[str, float]:
+    thresholds = summary.get("onc_validation_thresholds", {}) or {}
+    out: Dict[str, float] = {}
+    for label in label_ids:
+        value = thresholds.get(label, {}) if isinstance(thresholds, Mapping) else {}
+        if isinstance(value, Mapping):
+            out[label] = as_float(value.get("threshold"), 0.5)
+        else:
+            out[label] = as_float(value, 0.5)
+    return out
+
+
+def prediction_labels(row: Mapping[str, Any], thresholds: Mapping[str, float], label_ids: Sequence[str]) -> List[str]:
+    labels: List[str] = []
+    for label in label_ids:
+        score = as_float(row.get(f"score__{label}"), 0.0)
+        if score >= float(thresholds.get(label, 0.5)):
+            labels.append(label)
+    return labels
+
+
+def example_base_row(
+    row: Mapping[str, Any],
+    *,
+    thresholds: Mapping[str, float],
+    label_ids: Sequence[str],
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "item_id": clean(row.get("item_id")),
+        "source_dataset": clean(row.get("source_dataset")),
+        "source_kind": clean(row.get("source_kind")),
+        "source_audio": clean(row.get("source_audio")),
+        "mat_path": clean(row.get("mat_path")),
+        "low_mat_path": clean(row.get("low_mat_path")),
+        "mid_mat_path": clean(row.get("mid_mat_path")),
+        "high_mat_path": clean(row.get("high_mat_path")),
+        "negative_bucket": clean(row.get("negative_bucket")),
+        "begin_s": clean(row.get("begin_s")),
+        "end_s": clean(row.get("end_s")),
+        "event_group": clean(row.get("event_group")),
+        "target_label_ids": clean(row.get("target_label_ids")),
+        "pred_label_ids": "|".join(prediction_labels(row, thresholds, label_ids)),
+    }
+    for label in label_ids:
+        out[f"score__{label}"] = clean(row.get(f"score__{label}"))
+        out[f"threshold__{label}"] = thresholds.get(label, 0.5)
+    return out
+
+
+def selected_ensemble_examples(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    summary: Mapping[str, Any],
+    label_ids: Sequence[str] = THREE_SPECIES,
+    max_per_group: int = 20,
+) -> List[Dict[str, Any]]:
+    thresholds = thresholds_from_summary(summary, label_ids)
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        true_labels = set(split_labels(row.get("target_label_ids"))).intersection(label_ids)
+        pred_labels = set(prediction_labels(row, thresholds, label_ids))
+        for label in label_ids:
+            score = as_float(row.get(f"score__{label}"), 0.0)
+            threshold = float(thresholds.get(label, 0.5))
+            margin = score - threshold
+            label_true = label in true_labels
+            label_pred = label in pred_labels
+            if label_true and label_pred:
+                case_type = "true_positive"
+            elif label_true and not label_pred:
+                case_type = "false_negative"
+            elif label_pred and true_labels:
+                case_type = "cross_species_false_positive"
+            elif label_pred:
+                case_type = "background_false_positive"
+            else:
+                continue
+            group = f"{label}:{case_type}"
+            item = example_base_row(row, thresholds=thresholds, label_ids=label_ids)
+            item.update(
+                {
+                    "example_group": group,
+                    "label_id": label,
+                    "label_name": LABEL_NAMES.get(label, label),
+                    "case_type": case_type,
+                    "score": score,
+                    "threshold": threshold,
+                    "margin": margin,
+                }
+            )
+            grouped.setdefault(group, []).append(item)
+    examples: List[Dict[str, Any]] = []
+    for group, items in sorted(grouped.items()):
+        reverse = not group.endswith(":false_negative")
+        ordered = sorted(items, key=lambda item: as_float(item.get("margin")), reverse=reverse)
+        examples.extend(ordered[: max(0, int(max_per_group))])
+    return examples
+
+
 def evaluate_ensembles(run_infos: Sequence[Mapping[str, Any]], output_dir: Path, *, max_rank_outputs: int = 20) -> List[Dict[str, Any]]:
+    from scripts.analysis.summarize_multilabel_predictions import summarize
+
     by_label: Dict[str, List[Mapping[str, Any]]] = {label: [] for label in THREE_SPECIES}
     for row in run_infos:
         if row.get("status") != "complete":
@@ -244,6 +350,8 @@ def evaluate_ensembles(run_infos: Sequence[Mapping[str, Any]], output_dir: Path,
             eval_source_kind="ONC",
             label_ids=THREE_SPECIES,
         )
+        examples_csv = combo_dir / "selected_examples.csv"
+        write_csv(examples_csv, selected_ensemble_examples(test_rows, summary=summary))
         test = summary.get("onc_test_metrics", {})
         hard_n, hard_total, hard_rate = hard_fp(summary)
         result = {
@@ -262,6 +370,7 @@ def evaluate_ensembles(run_infos: Sequence[Mapping[str, Any]], output_dir: Path,
             "blue_whale_experiment": clean(combo[1].get("experiment")),
             "humpback_whale_experiment": clean(combo[2].get("experiment")),
             "ensemble_dir": str(combo_dir),
+            "examples_csv": str(examples_csv),
         }
         results.append(result)
 
@@ -383,6 +492,7 @@ def markdown_report(
             "",
             f"Individual metrics CSV: `{output_dir / 'e24_individual_metrics.csv'}`",
             f"Ensemble rankings CSV: `{output_dir / 'e24_ensemble_rankings.csv'}`",
+            f"Selected example CSVs: `{output_dir / 'ensembles'}/<ensemble>/selected_examples.csv` for retained ensembles",
             f"Variant CSV: `{output_dir / 'e24_variant_summary.csv'}`",
         ]
     )
