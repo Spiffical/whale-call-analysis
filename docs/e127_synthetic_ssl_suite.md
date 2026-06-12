@@ -126,6 +126,21 @@ ONC test set used for E99/E115/E116, with:
 - species-as-background false negatives
 - false-positive and false-negative examples
 
+For SSAMBA multiclass checkpoints, use the E129 bridge to export predictions
+and produce an E124-compatible production report:
+
+```bash
+python scripts/analysis/e129_ssamba_multiclass_production_report.py \
+  --name E127_VARIANT_NAME \
+  --ssl-repo-root /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/selfsupervision_anomalies_onc \
+  --model-dir SSAMBA_FINETUNE_MODEL_DIR \
+  --dataset-h5 /scratch/merileo/whale-call-analysis/multispecies_weekend_20260502/datasets/e128_onc_eval_h5_20260612T095926Z/e128_onc_common_eval_low_20260612T095926Z.h5 \
+  --output-dir E127_VARIANT_REPORT_DIR \
+  --task ft_avgtok \
+  --base-decision-mode calibrated \
+  --ledger-path docs/multispecies_experiment_results.md
+```
+
 After scoring, build an E124 leaderboard with `--ledger-path
 docs/multispecies_experiment_results.md` so the living ledger receives the final
 metrics. Review both `e124_candidate_leaderboard.csv` and

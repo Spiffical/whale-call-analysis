@@ -469,3 +469,6 @@ Add rows here when the next jobs complete:
   common validation/test rows rather than the broad SSL pretraining H5 split.
 - E127 synthetic augmentation variants: record full common-row per-species
   metrics and cross-species false positives for each synthetic-data variant.
+  Use `scripts/analysis/e129_ssamba_multiclass_production_report.py` to score
+  SSAMBA multiclass checkpoints on the E128 ONC eval H5 before adding the E124
+  leaderboard entry.
