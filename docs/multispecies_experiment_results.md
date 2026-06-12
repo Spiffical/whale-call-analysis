@@ -91,6 +91,25 @@ bash drac/scripts/submit_multispecies_e126_ssl_h5_audit.sh \
   --allow-missing-h5
 ```
 
+Before treating a result bundle as reviewed, run the readiness audit over the
+available outputs:
+
+```bash
+python scripts/analysis/multispecies_readiness_audit.py \
+  --leaderboard-json OUTPUT_DIR/e124_candidate_leaderboard.json \
+  --binary-gate-summary-json OUTPUT_DIR/e126_binary_gate_summary.json \
+  --h5-audit-json OUTPUT_DIR/e126_ssl_h5_audit_summary.json \
+  --ledger-path docs/multispecies_experiment_results.md \
+  --require-ledger \
+  --output-dir OUTPUT_DIR/readiness_audit
+```
+
+The audit writes `multispecies_readiness_audit.md`,
+`multispecies_readiness_audit_checks.csv`, and
+`multispecies_readiness_audit_summary.json`. Any failed checks must be resolved
+or explicitly explained in the ledger entry before the result is considered
+reviewed.
+
 ## Dataset And Evaluation References
 
 | Reference | Description | Notes |
