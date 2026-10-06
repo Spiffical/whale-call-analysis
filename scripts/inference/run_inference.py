@@ -56,6 +56,18 @@ def _parse_crop_size(crop_size: Optional[Any]) -> Tuple[Optional[int], Optional[
     raise ValueError(f"crop_size must be int or [freq,time], got {crop_size}")
 
 
+def _find_key(data: dict, keys: tuple) -> Optional[str]:
+    """Return the first of ``keys`` present in ``data`` (case-insensitive fallback)."""
+    for k in keys:
+        if k in data:
+            return k
+    lowered = {k.lower(): k for k in data.keys()}
+    for k in keys:
+        if k.lower() in lowered:
+            return lowered[k.lower()]
+    return None
+
+
 def _infer_time_bin_seconds(times: Optional[np.ndarray]) -> Optional[float]:
     if times is None:
         return None
@@ -69,8 +81,12 @@ def _infer_time_bin_seconds(times: Optional[np.ndarray]) -> Optional[float]:
     return float(np.median(diffs))
 
 
-def _infer_time_bin_seconds_from_mat(mat_path: Optional[Path]) -> Optional[float]:
-    """Best-effort time-bin inference directly from a MAT file."""
+def _load_mat_time_axis(mat_path: Optional[Path]) -> Optional[np.ndarray]:
+    """Load a MAT file's saved time axis (seconds), or None if unavailable.
+
+    Train-style MATs store frame-centre times, which start below zero when
+    the spectrogram includes edge context.
+    """
     if mat_path is None or not mat_path.exists():
         return None
     try:
@@ -80,7 +96,12 @@ def _infer_time_bin_seconds_from_mat(mat_path: Optional[Path]) -> Optional[float
     tk = _find_key(data, InferenceDataset.TIME_KEYS)
     if tk not in data:
         return None
-    return _infer_time_bin_seconds(np.asarray(data[tk]).squeeze())
+    return np.asarray(data[tk], dtype=np.float64).ravel()
+
+
+def _infer_time_bin_seconds_from_mat(mat_path: Optional[Path]) -> Optional[float]:
+    """Best-effort time-bin inference directly from a MAT file."""
+    return _infer_time_bin_seconds(_load_mat_time_axis(mat_path))
 
 
 def _coerce_optional_float(value: Optional[Any]) -> Optional[float]:
@@ -365,15 +386,7 @@ class InferenceDataset(torch.utils.data.Dataset):
     
     def _find_key(self, data: dict, keys: tuple) -> Optional[str]:
         """Find matching key in data dict (same as training)."""
-        for k in keys:
-            if k in data:
-                return k
-        # Case-insensitive fallback
-        lowered = {k.lower(): k for k in data.keys()}
-        for k in keys:
-            if k.lower() in lowered:
-                return lowered[k.lower()]
-        return None
+        return _find_key(data, keys)
     
     def _load_spectrogram_raw(
         self, mat_path: Path
@@ -674,17 +687,6 @@ def _load_mat_with_axes(mat_path: Path) -> Tuple[np.ndarray, str, Optional[np.nd
     Returns (spec, spec_kind, freqs, times)
     """
     data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
-    # Use same key logic as InferenceDataset
-    def _find_key(d: dict, keys: tuple) -> Optional[str]:
-        for k in keys:
-            if k in d:
-                return k
-        lowered = {k.lower(): k for k in d.keys()}
-        for k in keys:
-            if k.lower() in lowered:
-                return lowered[k.lower()]
-        return None
-
     k = _find_key(data, InferenceDataset.POWER_KEYS)
     spec_kind = 'power'
     if k is None:
@@ -1509,12 +1511,16 @@ def main():
                             end_frame = max(start_frame, min(end_frame, len(f)))
                             f.seek(start_frame)
                             audio_data = f.read(end_frame - start_frame)
-                        # Pad/trim to exact expected length
+                        # Pad/trim to exact expected length. Edge-context windows can
+                        # start before the file; pad that part at the front so the
+                        # audio stays aligned with window_time_start.
                         expected_samples = int(max(0.0, float(window_time_end) - float(window_time_start)) * fs)
-                        if len(audio_data) < expected_samples:
-                            audio_data = np.pad(audio_data, (0, expected_samples - len(audio_data)))
-                        elif len(audio_data) > expected_samples:
-                            audio_data = audio_data[:expected_samples]
+                        lead_samples = min(int(max(0.0, -float(window_time_start)) * fs), expected_samples)
+                        tail_samples = max(0, expected_samples - lead_samples - len(audio_data))
+                        if lead_samples or tail_samples:
+                            pad_width = [(lead_samples, tail_samples)] + [(0, 0)] * (audio_data.ndim - 1)
+                            audio_data = np.pad(audio_data, pad_width)
+                        audio_data = audio_data[:expected_samples]
                         out_audio = audio_out_dir / f"{item_id}.wav"
                         sf.write(str(out_audio), audio_data, fs)
                     except Exception as e:
@@ -1608,6 +1614,7 @@ def main():
     progress_every = 2000 if total_tracker_items >= 10000 else 500
     time_bin_cache: Dict[str, Optional[float]] = {}
     time_axis_cache: Dict[str, Optional[np.ndarray]] = {}
+    bin_time_fallback_files: set = set()
     tracker_win_dur = (
         spec_config.get("window_duration")
         or spec_config.get("window_duration_sec")
@@ -1705,6 +1712,7 @@ def main():
         # Prefer reconstructing physical times from the saved MAT time axis when
         # window_time_* is missing or clearly stored as bin indices. This keeps
         # boundary-context clips aligned with annotations even when T starts < 0.
+        times_from_axis = False
         if (
             window_start is not None
             and meta.get('crop_time_bins') is not None
@@ -1720,18 +1728,9 @@ def main():
             )
         ):
             if base_id not in time_axis_cache:
-                times_from_mat = None
-                if mat_for_times is not None and mat_for_times.exists():
-                    try:
-                        mat_data = scipy.io.loadmat(str(mat_for_times), simplify_cells=True)
-                        tk = _find_key(mat_data, InferenceDataset.TIME_KEYS)
-                        if tk in mat_data:
-                            times_from_mat = np.asarray(mat_data[tk]).squeeze()
-                    except Exception:
-                        times_from_mat = None
-                time_axis_cache[base_id] = times_from_mat
+                time_axis_cache[base_id] = _load_mat_time_axis(mat_for_times)
             axis_window_start, axis_window_end = _resolve_window_times_from_time_axis(
-                time_axis_cache.get(base_id),
+                time_axis_cache[base_id],
                 window_start_bin=window_start,
                 crop_time_bins=meta.get('crop_time_bins'),
                 win_dur=tracker_win_dur,
@@ -1740,16 +1739,22 @@ def main():
             if axis_window_start is not None and axis_window_end is not None:
                 window_time_start = axis_window_start
                 window_time_end = axis_window_end
+                times_from_axis = True
+            else:
+                bin_time_fallback_files.add(base_id)
 
         # Backward-compatibility: older inference exports can store window_time_*
-        # in bin units. Convert here so downstream JSON stays in seconds.
-        window_time_start, window_time_end = _maybe_convert_window_times_from_bins(
-            window_time_start=window_time_start,
-            window_time_end=window_time_end,
-            window_start_bin=window_start,
-            crop_time_bins=meta.get('crop_time_bins'),
-            time_bin_seconds=time_bin_seconds,
-        )
+        # in bin units. Convert here so downstream JSON stays in seconds. Times
+        # from the time axis are already seconds (window 0 can start at 0.0 s,
+        # which the bin check would mistake for bin 0).
+        if not times_from_axis:
+            window_time_start, window_time_end = _maybe_convert_window_times_from_bins(
+                window_time_start=window_time_start,
+                window_time_end=window_time_end,
+                window_start_bin=window_start,
+                crop_time_bins=meta.get('crop_time_bins'),
+                time_bin_seconds=time_bin_seconds,
+            )
 
         duration_sec = spec_config.get('context_duration') if spec_config else None
         if duration_sec is None and window_time_start is not None and window_time_end is not None:
@@ -1869,7 +1874,14 @@ def main():
             print(f"  Added {idx}/{total_tracker_items} items", end='\r')
     if total_tracker_items:
         print()
-    
+    if bin_time_fallback_files:
+        print_status(
+            f"No readable MAT time axis for {len(bin_time_fallback_files)} source spectrograms "
+            f"(e.g. {sorted(bin_time_fallback_files)[0]}); their window times assume the "
+            "spectrogram starts at 0 s and are wrong if it includes edge context.",
+            "WARNING",
+        )
+
     # Save predictions
     print_status("Saving predictions JSON...", "PROGRESS")
     tracker.save()

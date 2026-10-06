@@ -130,6 +130,21 @@ def power_to_db_norm(power: np.ndarray) -> np.ndarray:
     return np.full_like(power, -100.0, dtype=np.float32)
 
 
+def frame_centre_times(times: np.ndarray, analysis_window_s: float) -> np.ndarray:
+    """Return STFT frame-centre times (float32) for a spectrogram time axis.
+
+    onc-hydrophone-data's torch backend reported frame starts until 2026-07-14
+    (its commit 00dd5df, without a version bump) and frame centres since, as
+    SciPy always has. Starts begin at 0 and centres at half a window, so the
+    first time tells them apart; the backend name does not, and shifting an
+    axis that is already centred would put every frame half a window late.
+    """
+    times = np.asarray(times, dtype=np.float32)
+    if times.size and float(times[0]) <= 0.25 * float(analysis_window_s):
+        return times + (0.5 * float(analysis_window_s))
+    return times
+
+
 def normalize_db_to_unit(db: np.ndarray, min_db: float, max_db: float) -> np.ndarray:
     db = db.astype(np.float32)
     db = np.clip(db, min_db, max_db)
@@ -475,10 +490,8 @@ def main() -> None:
         backend_used = getattr(spec_gen, "_last_backend", None) or str(args.spec_backend)
         analysis_window_s = float(win_dur)
         time_axis_reference = "window_center"
-        if args.slide and str(backend_used).lower() == "torch":
-            # Torchaudio with center=False yields frame-start times. Shift to
-            # frame centers so downstream annotations and review plots align.
-            times = np.asarray(times, dtype=np.float32) + (0.5 * analysis_window_s)
+        if args.slide:
+            times = frame_centre_times(times, analysis_window_s)
         else:
             times = np.asarray(times, dtype=np.float32)
         freqs_c, pdb_c = crop_to_freq_lims(freqs, pdb, freq_min, freq_max)

@@ -2,6 +2,7 @@ import unittest
 import numpy as np
 import math
 import json
+import subprocess
 import tempfile
 import os
 from pathlib import Path
@@ -11,12 +12,21 @@ from datetime import datetime, timezone, timedelta
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import scipy.io
+import soundfile as sf
+import torch
+
 from src.data.sequential_prep import compute_window_positions, crop_to_freq_lims
+from src.models.fin_models import create_model
 from scripts.inference.run_inference import (
     _compute_window_time_range,
+    _infer_time_bin_seconds_from_mat,
+    _load_mat_time_axis,
     _resolve_window_times_from_time_axis,
     _window_times_look_like_bins,
 )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestWindowTiling(unittest.TestCase):
@@ -290,6 +300,145 @@ class TestInferenceWindowTiming(unittest.TestCase):
     def test_window_times_look_like_bins(self):
         self.assertTrue(_window_times_look_like_bins(120, 216, 120, 96))
         self.assertFalse(_window_times_look_like_bins(-0.5, 10.0, 100, 96))
+
+
+def _write_slide_mat(path: Path, *, first_centre_s: float = -10.0, n_frames: int = 3201) -> None:
+    """Write a MAT shaped like prepare_trainstyle_windows.py --slide output.
+
+    By default a 300 s clip with 10.5 s of edge context: 1 s frames every
+    0.1 s whose centres run from -10.0 to 310.0 s.
+    """
+    rng = np.random.default_rng(0)
+    power = rng.random((96, n_frames)).astype(np.float32)
+    scipy.io.savemat(
+        str(path),
+        {
+            "F": np.linspace(5.0, 100.0, 96).astype(np.float32),
+            "T": (first_centre_s + 0.1 * np.arange(n_frames)).astype(np.float32),
+            "P": power,
+            "PdB_norm": 10.0 * np.log10(np.maximum(power / power.max(), 1e-10)),
+            "window_s": 300.0,
+            "analysis_window_s": 1.0,
+            "edge_context_s": 0.5 - first_centre_s,
+            "backend": "torch",
+            "time_axis_reference": "window_center",
+        },
+    )
+
+
+class TestEdgeContextWindowTimes(unittest.TestCase):
+    """Sliding windows over MATs whose time axis starts before the clip."""
+
+    SOURCE = "ICLISTENHF6016_20250401T000000.000Z.flac"
+    CLIP_START = datetime(2025, 4, 1, tzinfo=timezone.utc)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.mat_dir = self.root / "mat_files"
+        self.mat_dir.mkdir()
+        self.stem = f"{self.SOURCE}_0.0s_300.0s_window"
+        self.mat_path = self.mat_dir / f"{self.stem}.mat"
+        _write_slide_mat(self.mat_path)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run_sliding_window_cli(self, *extra_args):
+        """Run run_inference.py with the April 2025 full-month layout and options."""
+        metadata = {
+            "data_source": {"device_code": "ICLISTENHF6016"},
+            "spectrogram_config": {"context_duration": 300.0, "window_duration": 1.0, "overlap": 0.9},
+            "files": [
+                {
+                    "file_id": self.stem,
+                    "mat_path": f"mat_files/{self.stem}.mat",
+                    "source_audio": self.SOURCE,
+                    "audio_timestamp": self.CLIP_START.isoformat(),
+                }
+            ],
+        }
+        (self.root / "metadata.json").write_text(json.dumps(metadata))
+        checkpoint = self.root / "best.pt"
+        torch.save(
+            {
+                "model_state": create_model("resnet18", num_classes=2, in_ch=1).state_dict(),
+                "architecture": "resnet18",
+                "model_id": "test",
+            },
+            checkpoint,
+        )
+        output_json = self.root / "predictions_window.json"
+        subprocess.run(
+            [
+                sys.executable, str(REPO_ROOT / "scripts" / "inference" / "run_inference.py"),
+                "--mat-dir", str(self.mat_dir),
+                "--checkpoint", str(checkpoint),
+                "--dataset-metadata", str(self.root / "metadata.json"),
+                "--output-json", str(output_json),
+                "--sliding-window", "--window-step", "48", "--crop-size", "96",
+                "--num-workers", "0", "--device", "cpu",
+                *extra_args,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return json.loads(output_json.read_text())["items"]
+
+    def _clip_spans(self, items):
+        def seconds(iso_value):
+            return (datetime.fromisoformat(iso_value) - self.CLIP_START).total_seconds()
+
+        return [(seconds(item["audio_start_time"]), seconds(item["audio_end_time"])) for item in items]
+
+    def test_mat_time_axis_helpers_read_edge_context(self):
+        times = _load_mat_time_axis(self.mat_path)
+        self.assertEqual(times.size, 3201)
+        self.assertAlmostEqual(float(times[0]), -10.0, places=4)
+        self.assertAlmostEqual(_infer_time_bin_seconds_from_mat(self.mat_path), 0.1, places=5)
+        self.assertIsNone(_load_mat_time_axis(self.root / "missing.mat"))
+
+    def test_window_times_follow_mat_time_axis(self):
+        spans = self._clip_spans(self._run_sliding_window_cli())
+        self.assertEqual(len(spans), 66)
+        # Window 0 holds frames centred on -10.0 .. -0.5 s, each 1 s long. Read as
+        # bin x 0.1 s it would be stored at 0.0 .. 9.6 s, 10.05 s late.
+        self.assertAlmostEqual(spans[0][0], -10.5, places=3)
+        self.assertAlmostEqual(spans[0][1], 0.0, places=3)
+        self.assertAlmostEqual(spans[1][0], -5.7, places=3)
+        # The last window (start bin 3105) ends with the frame centred on 310.0 s.
+        self.assertAlmostEqual(spans[-1][0], 300.0, places=3)
+        self.assertAlmostEqual(spans[-1][1], 310.5, places=3)
+
+    def test_window_starting_at_zero_seconds_is_not_read_as_bins(self):
+        # Without edge context window 0 spans 0.0 .. 10.5 s; its 0.0 s start
+        # equals its start bin, which must not trigger the bins-to-seconds fallback.
+        _write_slide_mat(self.mat_path, first_centre_s=0.5, n_frames=3001)
+        spans = self._clip_spans(self._run_sliding_window_cli())
+        self.assertAlmostEqual(spans[0][0], 0.0, places=3)
+        self.assertAlmostEqual(spans[0][1], 10.5, places=3)
+        self.assertAlmostEqual(spans[1][0], 4.8, places=3)
+
+    def test_exported_window_audio_lines_up_with_window_times(self):
+        # Raw audio with a single marker 1 s into the clip.
+        fs = 1000
+        audio = np.zeros(300 * fs, dtype=np.float32)
+        audio[1 * fs] = 1.0
+        raw_dir = self.root / "raw_audio"
+        raw_dir.mkdir()
+        sf.write(str(raw_dir / "ICLISTENHF6016_20250401T000000.000Z.wav"), audio, fs)
+
+        items = self._run_sliding_window_cli(
+            "--export-crops", "--export-threshold", "0.0", "--raw-audio-dir", str(raw_dir),
+        )
+        spans = self._clip_spans(items)
+        self.assertAlmostEqual(spans[1][0], -5.7, places=3)
+        self.assertAlmostEqual(spans[1][1], 4.8, places=3)
+        # Window 1 starts 5.7 s before the clip, so the marker sits 6.7 s into its audio.
+        clip_audio, clip_fs = sf.read(str(self.root / items[1]["paths"]["audio_path"]))
+        self.assertEqual(clip_fs, fs)
+        self.assertAlmostEqual(len(clip_audio) / fs, 10.5, places=2)
+        self.assertAlmostEqual(int(np.argmax(clip_audio)) / fs, 6.7, places=2)
 
 
 if __name__ == '__main__':
