@@ -1950,6 +1950,9 @@ def main():
             post_cmd.append("--replace-items-with-events")
         if args.postprocess_merge_across_source_audio:
             post_cmd.append("--merge-across-source-audio")
+        if args.postprocess_merge_event_media and args.raw_audio_dir:
+            # Without --export-crops there is no window audio; event audio is cut from the raw files.
+            post_cmd.extend(["--raw-audio-dir", str(args.raw_audio_dir)])
 
         print_status("Running postprocessing on predictions...", "PROGRESS")
         subprocess.run(post_cmd, check=True)
