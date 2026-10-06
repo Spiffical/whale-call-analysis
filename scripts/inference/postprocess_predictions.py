@@ -8,16 +8,25 @@ It reduces isolated false positives by keeping only event-like clusters:
 2) each kept cluster must contain at least one high-threshold window
 3) each kept cluster must contain at least N windows
 4) optional minimum cluster duration
+
+With --merge-event-media each kept event also gets one spectrogram MAT and one
+WAV covering exactly [audio_start_time, audio_end_time] of its members. The
+spectrogram is sliced by absolute time from the MATs the windows reference
+(full-clip parent MATs or exported crops), and the audio is cut from the raw
+source files (--raw-audio-dir) or placed from exported window clips.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import hashlib
 import json
 import math
+import re
 import shutil
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,6 +173,38 @@ def _source_audio_file_name(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+_FILE_TIMESTAMP_RE = re.compile(r"_(\d{8}T\d{6})")
+
+
+def _source_file_start_epoch(file_name: Optional[str]) -> Optional[float]:
+    """Start of a source audio file in epoch seconds, from the timestamp in its name.
+
+    Whole seconds, like run_inference.py when it dates windows (the metadata
+    ``audio_timestamp`` and ``extract_timestamp_from_filename`` both drop the
+    fraction). Window times, MAT time axes and raw audio then share one clock,
+    including off-grid files such as ``..._20250401T174227.500Z.flac``.
+    """
+    if not file_name:
+        return None
+    match = _FILE_TIMESTAMP_RE.search(Path(str(file_name)).name)
+    if match is None:
+        return None
+    try:
+        start = datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
+    except ValueError:
+        return None
+    return start.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _source_device_token(file_name: Optional[str]) -> Optional[str]:
+    if not file_name:
+        return None
+    name = Path(str(file_name)).name
+    if "_" not in name:
+        return None
+    return name.split("_", 1)[0] or None
+
+
 def _group_key(item: Dict[str, Any], merge_across_source_audio: bool = False) -> str:
     if merge_across_source_audio:
         ds = item.get("data_source_id")
@@ -234,6 +275,13 @@ def _load_mat_spectrogram(
     mat_path: Path,
 ) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
     data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
+    return _spectrogram_from_mat_data(data, mat_path)
+
+
+def _spectrogram_from_mat_data(
+    data: Dict[str, Any],
+    mat_path: Path,
+) -> Tuple[np.ndarray, str, Optional[np.ndarray], Optional[np.ndarray]]:
     # Prefer raw power when present so event-level merge can normalize once
     # globally instead of stitching pre-normalized window dB maps.
     key = _find_key(data, POWER_KEYS)
@@ -269,7 +317,9 @@ def _load_mat_spectrogram(
         f_len = int(np.asarray(freq).ravel().shape[0])
         t_len = int(np.asarray(time).ravel().shape[0])
         r, c = spec.shape[:2]
-        if (r, c) == (t_len, f_len):
+        # Square crops (e.g. 96 x 96) are already (freq, time); only a
+        # non-square (time, freq) array is known to need transposing.
+        if (r, c) == (t_len, f_len) and t_len != f_len:
             spec = spec.T
 
     return (
@@ -278,6 +328,62 @@ def _load_mat_spectrogram(
         (np.asarray(freq).ravel() if freq is not None else None),
         (np.asarray(time).ravel() if time is not None else None),
     )
+
+
+def _mat_positive_float(data: Dict[str, Any], key: str) -> Optional[float]:
+    value = data.get(key)
+    if value is None:
+        return None
+    try:
+        out = float(np.asarray(value, dtype=np.float64).ravel()[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return out if math.isfinite(out) and out > 0 else None
+
+
+def _analysis_window_seconds(
+    mat_window_s: Optional[float],
+    spectrogram_config: Optional[Dict[str, Any]],
+    hop_s: float,
+) -> float:
+    """Length of one spectrogram frame (the FFT window) in seconds.
+
+    Train-style MATs record it as ``analysis_window_s``. Otherwise use the
+    run's spectrogram_config: its window duration, or hop / (1 - overlap).
+    Failing both, fall back to the hop.
+    """
+    if mat_window_s is not None and mat_window_s > 0:
+        return float(mat_window_s)
+    config = spectrogram_config if isinstance(spectrogram_config, dict) else {}
+    for key in ("window_duration_sec", "window_duration", "win_dur", "win_dur_s"):
+        value = _safe_float(config.get(key))
+        if value is not None and value > 0:
+            return value
+    overlap = _safe_float(config.get("overlap"))
+    if overlap is not None and 0.0 < overlap < 1.0 and hop_s > 0:
+        return float(hop_s) / (1.0 - overlap)
+    return max(float(hop_s), 0.0)
+
+
+def _frame_timing_payload(window_s: float) -> Dict[str, Any]:
+    """MAT fields saying T holds frame centres of ``window_s``-long frames.
+
+    ``_spectrogram_duration_seconds`` reads ``window_duration_sec``; train-style
+    readers use ``analysis_window_s`` and ``time_axis_reference``.
+    """
+    return {
+        "window_duration_sec": float(window_s),
+        "analysis_window_s": float(window_s),
+        "time_axis_reference": "window_center",
+    }
+
+
+def _power_to_db_norm(power: np.ndarray) -> np.ndarray:
+    power = np.abs(np.asarray(power, dtype=np.float32))
+    max_power = float(np.max(power)) if power.size else 0.0
+    if max_power > 0:
+        return (10.0 * np.log10(np.maximum(power / max_power, 1e-10))).astype(np.float32)
+    return np.full_like(power, -100.0, dtype=np.float32)
 
 
 def _infer_window_times(item: Dict[str, Any], n_time_bins: int) -> Tuple[Optional[float], Optional[float]]:
@@ -587,7 +693,15 @@ def _event_time_bounds_seconds(member_items: Sequence[Dict[str, Any]]) -> Tuple[
 def _event_time_bounds_from_parent_mat(
     member_items: Sequence[Dict[str, Any]],
     input_json: Path,
+    spectrogram_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[float], Optional[float]]:
+    """Clip bounds, in seconds from the parent file start, of the members' parent bins.
+
+    Each frame is one analysis window long and centred on its T value, so the
+    clip runs half a window beyond the first and last frame centres. With edge
+    context the first frames sit before the file start and the start is
+    negative; the audio is then padded instead of starting late.
+    """
     parent_mat_rel = _common_parent_path(member_items, "parent_spectrogram_mat_path")
     if parent_mat_rel is None:
         return None, None
@@ -598,10 +712,10 @@ def _event_time_bounds_from_parent_mat(
         data = scipy.io.loadmat(str(parent_mat), simplify_cells=True)
     except Exception:
         return None, None
-    t = data.get("T")
-    if t is None:
+    tk = _find_key(data, TIME_KEYS)
+    if tk is None:
         return None, None
-    t_arr = np.asarray(t, dtype=np.float64).ravel()
+    t_arr = np.asarray(data[tk], dtype=np.float64).ravel()
     if t_arr.size == 0:
         return None, None
     bounds = _parent_time_bounds(member_items, int(t_arr.size))
@@ -612,16 +726,13 @@ def _event_time_bounds_from_parent_mat(
     t1 = max(t0 + 1, min(int(t1), int(t_arr.size)))
     diffs = np.diff(t_arr)
     diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
-    if diffs.size:
-        dt = float(np.median(diffs))
-        start = float(t_arr[t0]) - 0.5 * dt
-        end = float(t_arr[t1 - 1]) + 0.5 * dt
-    else:
-        start = float(t_arr[t0])
-        end = float(t_arr[t1 - 1])
+    hop_s = float(np.median(diffs)) if diffs.size else 0.0
+    window_s = _analysis_window_seconds(_mat_positive_float(data, "analysis_window_s"), spectrogram_config, hop_s)
+    start = float(t_arr[t0]) - 0.5 * window_s
+    end = float(t_arr[t1 - 1]) + 0.5 * window_s
     if end <= start:
         return None, None
-    return max(0.0, start), max(start, end)
+    return start, end
 
 
 def _extract_event_spectrogram_from_parent(
@@ -630,6 +741,7 @@ def _extract_event_spectrogram_from_parent(
     input_json: Path,
     output_dir: Path,
     output_json: Path,
+    spectrogram_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     parent_rel = _common_parent_path(member_items, "parent_spectrogram_mat_path")
     if parent_rel is None:
@@ -638,7 +750,8 @@ def _extract_event_spectrogram_from_parent(
     if parent_mat is None or not parent_mat.exists():
         return None
     try:
-        parent_spec, spec_kind, freq, times = _load_mat_spectrogram(parent_mat)
+        data = scipy.io.loadmat(str(parent_mat), simplify_cells=True)
+        parent_spec, spec_kind, freq, times = _spectrogram_from_mat_data(data, parent_mat)
     except Exception:
         return None
 
@@ -670,13 +783,18 @@ def _extract_event_spectrogram_from_parent(
         else:
             time_slice = np.arange(t1 - t0, dtype=np.float64)
 
+    # T as frame centres from the clip start, half a window before the first
+    # centre: the clip _extract_event_audio_from_parent cuts.
+    hop_axis = np.asarray(times, dtype=np.float64).ravel() if times is not None else time_slice
+    hop_diffs = np.diff(hop_axis)
+    hop_diffs = hop_diffs[np.isfinite(hop_diffs) & (hop_diffs > 0)]
+    hop_s = float(np.median(hop_diffs)) if hop_diffs.size else 0.0
+    window_s = _analysis_window_seconds(_mat_positive_float(data, "analysis_window_s"), spectrogram_config, hop_s)
+    time_slice = time_slice - float(time_slice[0]) + 0.5 * window_s
+
     if spec_kind == "power":
         power_slice = np.abs(spec_slice.astype(np.float32))
-        max_power = float(np.max(power_slice)) if power_slice.size else 0.0
-        if max_power > 0:
-            db_slice = 10.0 * np.log10(np.maximum(power_slice / max_power, 1e-10))
-        else:
-            db_slice = np.full_like(power_slice, -100.0, dtype=np.float32)
+        db_slice = _power_to_db_norm(power_slice)
     else:
         power_slice = None
         db_slice = np.minimum(spec_slice.astype(np.float32), 0.0)
@@ -693,6 +811,8 @@ def _extract_event_spectrogram_from_parent(
         "parent_time_bin_start": np.int32(t0),
         "parent_time_bin_end": np.int32(t1),
     }
+    if window_s > 0:
+        payload.update(_frame_timing_payload(window_s))
     if power_slice is not None:
         payload["P"] = power_slice.astype(np.float32)
     scipy.io.savemat(str(out_path), payload)
@@ -705,6 +825,7 @@ def _extract_event_audio_from_parent(
     input_json: Path,
     output_dir: Path,
     output_json: Path,
+    spectrogram_config: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     parent_rel = _common_parent_path(member_items, "parent_audio_path")
     if parent_rel is None:
@@ -714,36 +835,29 @@ def _extract_event_audio_from_parent(
         return None
     # Prefer deriving time bounds from parent spectrogram time bins to avoid
     # unit-mismatch issues when window_time_start/end are stored as bin indices.
-    start_sec, end_sec = _event_time_bounds_from_parent_mat(member_items, input_json)
+    start_sec, end_sec = _event_time_bounds_from_parent_mat(member_items, input_json, spectrogram_config)
     if start_sec is None or end_sec is None or end_sec <= start_sec:
         start_sec, end_sec = _event_time_bounds_seconds(member_items)
     if start_sec is None or end_sec is None or end_sec <= start_sec:
         return None
 
     try:
-        with sf.SoundFile(str(parent_audio)) as f:
-            sr = int(f.samplerate)
-            if sr <= 0:
-                return None
-            start_frame = int(max(0.0, start_sec) * sr)
-            end_frame = int(max(start_sec, end_sec) * sr)
-            start_frame = max(0, min(start_frame, len(f)))
-            end_frame = max(start_frame, min(end_frame, len(f)))
-            if end_frame <= start_frame:
-                return None
-            f.seek(start_frame)
-            wav = f.read(end_frame - start_frame)
+        info = sf.info(str(parent_audio))
     except Exception:
         return None
-
-    wav = np.asarray(wav)
-    if wav.ndim > 1:
-        wav = np.mean(wav, axis=1)
-
-    audio_dir = output_dir / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    out_path = audio_dir / f"{event_id}.wav"
-    sf.write(str(out_path), wav.astype(np.float32), sr, subtype="FLOAT")
+    sr = int(info.samplerate)
+    if sr <= 0:
+        return None
+    # Silence pads whatever part of the clip lies outside the file (edge context).
+    n_samples = int(round((end_sec - start_sec) * sr))
+    offset = int(round(start_sec * sr))
+    segment = _AudioSegment(parent_audio, offset, max(0, -offset), min(n_samples, int(info.frames) - offset))
+    if n_samples <= 0 or segment.stop <= segment.start:
+        return None
+    out_path = output_dir / "audio" / f"{event_id}.wav"
+    if _write_audio_segments(out_path, sr, n_samples, [segment]) == 0:
+        out_path.unlink(missing_ok=True)
+        return None
     return _to_output_rel(out_path, output_json)
 
 
@@ -799,6 +913,11 @@ def _merge_event_spectrogram(
                 diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
                 if diffs.size:
                     dt = float(np.median(diffs))
+            # A full-clip parent MAT is not a window crop: stitching it would put
+            # the whole clip at the window start. _slice_event_spectrogram_by_time
+            # handles those when the source file start is known.
+            if end is not None and end > start and float(t_raw[-1] - t_raw[0]) > 2.0 * float(end - start):
+                continue
             if dt is not None and dt > 0 and np.all(np.isfinite(t_raw)):
                 if uses_absolute_timeline:
                     t_vec = float(start) + (t_raw - float(t_raw[0]))
@@ -1022,6 +1141,472 @@ def _merge_event_audio(
     audio_dir.mkdir(parents=True, exist_ok=True)
     out_path = audio_dir / f"{event_id}.wav"
     sf.write(str(out_path), merged.astype(np.float32), sr, subtype="FLOAT")
+    return _to_output_rel(out_path, output_json)
+
+
+# Event media on the absolute timeline -------------------------------------
+#
+# Strict O3 window items only carry absolute times, the window's MAT path and
+# the source file name. Without --export-crops that MAT is the full-clip parent
+# (prepare_trainstyle_windows.py --slide: frame centres from -10.0 to 310.0 s
+# for a 300 s file), so event media are cut by time from the parents and the
+# raw audio rather than stitched from per-window crops.
+
+
+def _media_span_seconds(member_items: Sequence[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+    """Epoch-second span [earliest start, latest end] of the members' absolute times."""
+    starts: List[float] = []
+    ends: List[float] = []
+    for item in member_items:
+        start, end = _absolute_time_bounds_seconds(item)
+        if start is not None and end is not None and end > start:
+            starts.append(start)
+            ends.append(end)
+    if not starts:
+        return None
+    return min(starts), max(ends)
+
+
+@dataclass
+class _AudioSegment:
+    """Source samples for ``out[start:stop]``, read as ``source[n + source_offset]``."""
+
+    path: Path
+    source_offset: int
+    start: int
+    stop: int
+
+
+def _write_silence(out: Any, cursor: int, stop: int, block_frames: int) -> int:
+    while cursor < stop:
+        n = min(block_frames, stop - cursor)
+        out.write(np.zeros(n, dtype=np.float32))
+        cursor += n
+    return cursor
+
+
+def _write_audio_segments(
+    out_path: Path,
+    samplerate: int,
+    n_samples: int,
+    segments: Sequence[_AudioSegment],
+    *,
+    block_frames: int = 1 << 20,
+) -> int:
+    """Stream ``n_samples`` of mono float audio from ``segments`` into ``out_path``.
+
+    Where segments overlap the later-starting one wins; samples no segment
+    covers are silent. Returns how many samples came from source files.
+    """
+    ordered = sorted((s for s in segments if s.stop > s.start), key=lambda s: (s.start, s.stop))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    cursor = 0
+    with sf.SoundFile(str(out_path), "w", samplerate=int(samplerate), channels=1, subtype="FLOAT") as out:
+        for idx, segment in enumerate(ordered):
+            stop = min(segment.stop, n_samples)
+            if idx + 1 < len(ordered):
+                stop = min(stop, ordered[idx + 1].start)
+            start = max(segment.start, cursor)
+            if stop <= start:
+                continue
+            cursor = _write_silence(out, cursor, start, block_frames)
+            try:
+                with sf.SoundFile(str(segment.path)) as src:
+                    src.seek(start + segment.source_offset)
+                    while cursor < stop:
+                        block = src.read(min(block_frames, stop - cursor), dtype="float32", always_2d=True)
+                        if block.shape[0] == 0:
+                            break
+                        out.write(block.mean(axis=1) if block.shape[1] > 1 else block[:, 0])
+                        cursor += block.shape[0]
+                        written += block.shape[0]
+            except Exception:
+                continue
+        _write_silence(out, cursor, n_samples, block_frames)
+    return written
+
+
+AUDIO_SUFFIXES = (".wav", ".flac", ".mp3")
+
+
+class _RawAudioIndex:
+    """Raw source audio under one directory, found by file name or by time.
+
+    Files are dated with _source_file_start_epoch, so an event can be cut
+    across adjacent files of the same device.
+    """
+
+    def __init__(self, root: Path):
+        self._by_name: Dict[str, Path] = {}
+        self._by_stem: Dict[str, Path] = {}
+        by_device: Dict[str, List[Tuple[float, Path]]] = {}
+        for path in sorted(root.rglob("*")):
+            if path.suffix.lower() not in AUDIO_SUFFIXES or not path.is_file():
+                continue
+            self._by_name.setdefault(path.name, path)
+            self._by_stem.setdefault(path.stem, path)
+            start = _source_file_start_epoch(path.name)
+            device = _source_device_token(path.name)
+            if start is not None and device is not None:
+                by_device.setdefault(device, []).append((start, path))
+        self._by_device: Dict[str, List[Tuple[float, Path]]] = {}
+        for device, files in by_device.items():
+            files.sort(key=lambda f: (f[0], str(f[1])))
+            # One file per start time (e.g. a .flac and a .wav of the same recording).
+            self._by_device[device] = [f for i, f in enumerate(files) if i == 0 or f[0] != files[i - 1][0]]
+        self._starts = {device: [f[0] for f in files] for device, files in self._by_device.items()}
+        self._info: Dict[Path, Optional[Tuple[int, int]]] = {}
+
+    def __len__(self) -> int:
+        return len(self._by_name)
+
+    def find(self, file_name: Optional[str]) -> Optional[Path]:
+        """The raw file for a ``source_audio.file_name``, allowing another audio extension."""
+        if not file_name:
+            return None
+        name = Path(str(file_name)).name
+        return self._by_name.get(name) or self._by_stem.get(Path(name).stem)
+
+    def info(self, path: Path) -> Optional[Tuple[int, int]]:
+        """(sample rate, frames) of ``path``, or None when unreadable."""
+        if path not in self._info:
+            try:
+                info = sf.info(str(path))
+                self._info[path] = (int(info.samplerate), int(info.frames)) if info.samplerate > 0 else None
+            except Exception:
+                self._info[path] = None
+        return self._info[path]
+
+    def duration_seconds(self, file_name: Optional[str]) -> Optional[float]:
+        path = self.find(file_name)
+        info = self.info(path) if path is not None else None
+        return info[1] / info[0] if info is not None else None
+
+    def files_overlapping(self, device: str, start: float, end: float) -> List[Tuple[float, Path]]:
+        """(file start, path) for the ``device`` files with audio in [start, end) epoch seconds."""
+        files = self._by_device.get(device, [])
+        starts = self._starts.get(device, [])
+        lo = max(bisect.bisect_right(starts, start) - 1, 0)
+        hi = bisect.bisect_left(starts, end)
+        found: List[Tuple[float, Path]] = []
+        for file_start, path in files[lo:hi]:
+            info = self.info(path)
+            if info is not None and file_start + info[1] / info[0] > start:
+                found.append((file_start, path))
+        return found
+
+
+def _cut_event_audio_from_raw(
+    event_id: str,
+    member_items: Sequence[Dict[str, Any]],
+    span: Tuple[float, float],
+    raw_audio: _RawAudioIndex,
+    output_dir: Path,
+    output_json: Path,
+    stats: Optional[Dict[str, int]] = None,
+) -> Optional[str]:
+    """Write the event WAV for ``span`` (epoch seconds), cut from raw source audio.
+
+    Reads the members' own source files and any adjacent files of the same
+    device, so an event can cross file boundaries or reach into the previous
+    file through edge-context windows. Where files overlap the later one wins,
+    as when _slice_event_spectrogram_by_time picks frames; time that no file
+    covers is silent.
+    """
+    e0, e1 = span
+    devices = set()
+    own_files: Dict[Tuple[str, float], Path] = {}
+    for item in member_items:
+        file_name = _source_audio_file_name(item)
+        device = _source_device_token(file_name)
+        start = _source_file_start_epoch(file_name)
+        if device is None or start is None:
+            continue
+        devices.add(device)
+        path = raw_audio.find(file_name)
+        if path is not None:
+            own_files[(device, start)] = path
+    files: Dict[Tuple[str, float], Path] = {}
+    for device in sorted(devices):
+        for file_start, path in raw_audio.files_overlapping(device, e0, e1):
+            files[(device, file_start)] = own_files.get((device, file_start), path)
+    readable = []
+    for (_device, file_start), path in sorted(files.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        info = raw_audio.info(path)
+        if info is not None:
+            readable.append((file_start, path, info))
+    if not readable:
+        return None
+    own_paths = set(own_files.values())
+    samplerate = next((info[0] for _, path, info in readable if path in own_paths), readable[0][2][0])
+    n_samples = int(round((e1 - e0) * samplerate))
+    if n_samples <= 0:
+        return None
+    segments: List[_AudioSegment] = []
+    for file_start, path, (rate, frames) in readable:
+        if rate != samplerate:
+            continue
+        offset = int(round((e0 - file_start) * samplerate))
+        segments.append(_AudioSegment(path, offset, max(0, -offset), min(n_samples, frames - offset)))
+    out_path = output_dir / "audio" / f"{event_id}.wav"
+    written = _write_audio_segments(out_path, samplerate, n_samples, segments)
+    if written == 0:
+        out_path.unlink(missing_ok=True)
+        return None
+    if stats is not None and written < n_samples:
+        stats["audio_with_silence"] = stats.get("audio_with_silence", 0) + 1
+    return _to_output_rel(out_path, output_json)
+
+
+def _place_window_audio_by_time(
+    event_id: str,
+    member_items: Sequence[Dict[str, Any]],
+    span: Tuple[float, float],
+    input_json: Path,
+    output_dir: Path,
+    output_json: Path,
+) -> Optional[str]:
+    """Write the event WAV for ``span`` (epoch seconds) from exported window clips.
+
+    Each clip goes at its window's absolute start. Members can be up to
+    --max-gap-seconds apart; those gaps stay silent instead of being closed
+    up, so the audio keeps lining up with the event times and spectrogram.
+    """
+    e0, e1 = span
+    clips: List[Tuple[float, Path, int, int]] = []
+    for item in member_items:
+        audio_path = _resolve_media_path(input_json, _item_path(item, "audio_path"))
+        start, _ = _absolute_time_bounds_seconds(item)
+        if audio_path is None or start is None or not audio_path.exists():
+            continue
+        try:
+            info = sf.info(str(audio_path))
+        except Exception:
+            continue
+        if info.samplerate > 0:
+            clips.append((float(start), audio_path, int(info.samplerate), int(info.frames)))
+    if not clips:
+        return None
+    rates = [clip[2] for clip in clips]
+    samplerate = max(set(rates), key=rates.count)
+    n_samples = int(round((e1 - e0) * samplerate))
+    if n_samples <= 0:
+        return None
+    segments: List[_AudioSegment] = []
+    for start, path, rate, frames in clips:
+        if rate != samplerate:
+            continue
+        lead = int(round((start - e0) * samplerate))
+        segments.append(_AudioSegment(path, -lead, max(0, lead), min(n_samples, frames + lead)))
+    out_path = output_dir / "audio" / f"{event_id}.wav"
+    if _write_audio_segments(out_path, samplerate, n_samples, segments) == 0:
+        out_path.unlink(missing_ok=True)
+        return None
+    return _to_output_rel(out_path, output_json)
+
+
+@dataclass
+class _SourceSpectrogram:
+    """A MAT windows were scored on or cropped from; T in seconds from its source file start."""
+
+    spec: np.ndarray
+    kind: str
+    freq: Optional[np.ndarray]
+    times: np.ndarray
+    hop_s: float
+    analysis_window_s: Optional[float]
+    edge_context_s: float
+
+
+def _load_source_spectrogram(mat_path: Path) -> Optional[_SourceSpectrogram]:
+    try:
+        data = scipy.io.loadmat(str(mat_path), simplify_cells=True)
+        spec, kind, freq, times = _spectrogram_from_mat_data(data, mat_path)
+    except Exception:
+        return None
+    if times is None:
+        return None
+    times = np.asarray(times, dtype=np.float64).ravel()
+    if times.size < 2 or times.size != spec.shape[1] or not np.all(np.isfinite(times)):
+        return None
+    if not np.all(np.diff(times) > 0):
+        return None
+    return _SourceSpectrogram(
+        spec=spec,
+        kind=kind,
+        freq=freq,
+        times=times,
+        hop_s=float(times[-1] - times[0]) / float(times.size - 1),
+        analysis_window_s=_mat_positive_float(data, "analysis_window_s"),
+        edge_context_s=_mat_positive_float(data, "edge_context_s") or 0.0,
+    )
+
+
+class _SourceSpectrogramCache:
+    """Recently loaded source MATs; consecutive events often share a file."""
+
+    def __init__(self, max_items: int = 8):
+        self._items: "OrderedDict[Path, Optional[_SourceSpectrogram]]" = OrderedDict()
+        self._max_items = max(1, int(max_items))
+
+    def get(self, mat_path: Path) -> Optional[_SourceSpectrogram]:
+        key = mat_path.resolve()
+        if key in self._items:
+            self._items.move_to_end(key)
+            return self._items[key]
+        value = _load_source_spectrogram(key)
+        self._items[key] = value
+        if len(self._items) > self._max_items:
+            self._items.popitem(last=False)
+        return value
+
+
+def _mat_time_origin(item: Dict[str, Any], source: _SourceSpectrogram, window_s: float) -> Optional[float]:
+    """Epoch seconds of T = 0 in a window's MAT, i.e. its source file start.
+
+    Without a dated source file name, an exported crop (which spans exactly
+    its window) is placed by the window's own start instead.
+    """
+    origin = _source_file_start_epoch(_source_audio_file_name(item))
+    if origin is not None:
+        return origin
+    start, end = _absolute_time_bounds_seconds(item)
+    if start is None or end is None:
+        return None
+    extent = float(source.times[-1] - source.times[0]) + float(window_s)
+    if abs(extent - (end - start)) > source.hop_s:
+        return None
+    return float(start) + 0.5 * float(window_s) - float(source.times[0])
+
+
+def _nearest_indices(times: np.ndarray, targets: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Index of the nearest value in ascending ``times`` for each target, and its distance."""
+    pos = np.clip(np.searchsorted(times, targets), 1, times.size - 1)
+    left = pos - 1
+    use_left = (targets - times[left]) <= (times[pos] - targets)
+    idx = np.where(use_left, left, pos)
+    return idx, np.abs(times[idx] - targets)
+
+
+def _slice_event_spectrogram_by_time(
+    event_id: str,
+    member_items: Sequence[Dict[str, Any]],
+    span: Tuple[float, float],
+    input_json: Path,
+    output_dir: Path,
+    output_json: Path,
+    *,
+    mat_cache: _SourceSpectrogramCache,
+    spectrogram_config: Optional[Dict[str, Any]] = None,
+    raw_audio: Optional[_RawAudioIndex] = None,
+    stats: Optional[Dict[str, int]] = None,
+) -> Optional[str]:
+    """Write the event spectrogram for ``span`` (epoch seconds), sliced by time from the windows' MATs.
+
+    A window's MAT is its full-clip parent (no --export-crops) or its exported
+    crop; either way T holds frame centres in seconds from the source file
+    start, running below 0 and past the file end where the MAT has edge
+    context. Each output frame comes from the MAT whose own file covers it, so
+    an event crossing a file boundary does not repeat the frames both MATs hold;
+    frames no MAT covers stay silent. The output T axis is frame centres from
+    the event start: T[0] - W/2 = 0 and T[-1] + W/2 = the event duration.
+    """
+    e0, e1 = span
+    sources: Dict[Path, Tuple[float, Optional[str], _SourceSpectrogram]] = {}
+    for item in member_items:
+        mat_path = _resolve_media_path(input_json, _item_path(item, "spectrogram_mat_path"))
+        if mat_path is None or not mat_path.exists():
+            continue
+        key = mat_path.resolve()
+        if key in sources:
+            continue
+        source = mat_cache.get(key)
+        if source is None:
+            continue
+        window_s = _analysis_window_seconds(source.analysis_window_s, spectrogram_config, source.hop_s)
+        origin = _mat_time_origin(item, source, window_s)
+        if origin is not None:
+            sources[key] = (origin, _source_audio_file_name(item), source)
+    if not sources:
+        return None
+
+    ordered = [sources[key] for key in sorted(sources, key=lambda k: (sources[k][0], str(k)))]
+    freq_bins = int(ordered[0][2].spec.shape[0])
+    ordered = [entry for entry in ordered if int(entry[2].spec.shape[0]) == freq_bins]
+    reference = ordered[0][2]
+    hop_s = float(median(entry[2].hop_s for entry in ordered))
+    window_s = _analysis_window_seconds(reference.analysis_window_s, spectrogram_config, reference.hop_s)
+    n_frames = max(1, int(round((e1 - e0 - window_s) / hop_s)) + 1)
+    centres = 0.5 * window_s + hop_s * np.arange(n_frames, dtype=np.float64)
+
+    file_starts = sorted({entry[0] for entry in ordered})
+    best_cost = np.full(n_frames, np.inf)
+    best_source = np.full(n_frames, -1, dtype=np.int64)
+    best_col = np.zeros(n_frames, dtype=np.int64)
+    for idx, (origin, file_name, source) in enumerate(ordered):
+        # The part of the MAT inside its own file, not edge context: from the
+        # file start (or the MAT's first own frame) to the next file's start,
+        # the file's real length when known, or the MAT's last own frame.
+        src_window_s = _analysis_window_seconds(source.analysis_window_s, spectrogram_config, source.hop_s)
+        own_start = max(float(source.times[0]) - 0.5 * src_window_s + source.edge_context_s, 0.0)
+        own_end = float(source.times[-1]) + 0.5 * src_window_s - source.edge_context_s
+        # Crops of one file placed by their window starts differ by float noise.
+        later_starts = [start for start in file_starts if start > origin + 0.5 * source.hop_s]
+        if later_starts:
+            own_end = min(own_end, later_starts[0] - origin)
+        duration = raw_audio.duration_seconds(file_name) if raw_audio is not None else None
+        if duration is not None:
+            own_end = min(own_end, duration)
+
+        rel = centres + (e0 - origin)
+        cols, dist = _nearest_indices(source.times, rel)
+        cost = np.maximum(np.maximum(own_start - rel, rel - own_end), 0.0)
+        cost[dist > 0.5 * source.hop_s + 1e-6] = np.inf
+        better = cost < best_cost
+        best_cost[better] = cost[better]
+        best_source[better] = idx
+        best_col[better] = cols[better]
+
+    n_missing = int(np.sum(best_source < 0))
+    if n_missing == n_frames:
+        return None
+    chosen = sorted({int(i) for i in best_source if i >= 0})
+    merge_power = all(ordered[i][2].kind == "power" for i in chosen)
+    merged = np.zeros((freq_bins, n_frames), dtype=np.float32)
+    if not merge_power:
+        merged.fill(-100.0)
+    for idx in chosen:
+        source = ordered[idx][2]
+        values = source.spec
+        if not merge_power and source.kind == "power":
+            values = _power_to_db_norm(values)
+        mask = best_source == idx
+        merged[:, mask] = values[:, best_col[mask]]
+
+    if merge_power:
+        power: Optional[np.ndarray] = merged
+        db = _power_to_db_norm(merged)
+    else:
+        power = None
+        db = np.minimum(merged, 0.0)
+    freq = reference.freq
+    if freq is None or np.asarray(freq).size != freq_bins:
+        freq = np.arange(freq_bins, dtype=np.float32)
+    payload: Dict[str, Any] = {
+        "PdB_norm": db.astype(np.float32),
+        "F": np.asarray(freq, dtype=np.float32),
+        "T": centres,
+    }
+    payload.update(_frame_timing_payload(window_s))
+    if power is not None:
+        payload["P"] = power.astype(np.float32)
+    spec_dir = output_dir / "spectrograms"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    out_path = spec_dir / f"{event_id}.mat"
+    scipy.io.savemat(str(out_path), payload)
+    if stats is not None and n_missing:
+        stats["spectrogram_with_silence"] = stats.get("spectrogram_with_silence", 0) + 1
     return _to_output_rel(out_path, output_json)
 
 
@@ -1396,7 +1981,21 @@ def main() -> int:
     ap.add_argument(
         "--merge-event-media",
         action="store_true",
-        help="Create one merged spectrogram/audio clip per kept event by trimming overlaps and concatenating in time order.",
+        help=(
+            "Create one spectrogram MAT and audio clip per kept event covering its absolute time span, "
+            "sliced from the windows' MATs (full-clip parents or exported crops) and cut from --raw-audio-dir "
+            "or the exported window audio. Windows without absolute times are stitched in time order instead."
+        ),
+    )
+    ap.add_argument(
+        "--raw-audio-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory of raw source audio, searched recursively. With --merge-event-media, event audio is cut "
+            "from these files by absolute time, across adjacent files of the same device; files are matched "
+            "by source_audio.file_name (any audio extension) and the timestamps in their names."
+        ),
     )
     ap.add_argument(
         "--merge-min-score",
@@ -1441,6 +2040,8 @@ def main() -> int:
         raise SystemExit("--max-gap-seconds must be >= 0 when provided")
     if args.merge_min_score is not None and not (0.0 <= args.merge_min_score <= 1.0):
         raise SystemExit("--merge-min-score must be in [0,1]")
+    if args.raw_audio_dir is not None and not Path(args.raw_audio_dir).is_dir():
+        raise SystemExit(f"--raw-audio-dir not found: {args.raw_audio_dir}")
 
     input_json = Path(args.input_json)
     output_json = Path(args.output_json)
@@ -1526,6 +2127,13 @@ def main() -> int:
     merged_media_count = 0
     merged_without_audio = 0
     merged_without_spectrogram = 0
+    media_stats: Dict[str, int] = {}
+    spectrogram_config = data.get("spectrogram_config") if isinstance(data.get("spectrogram_config"), dict) else {}
+    mat_cache = _SourceSpectrogramCache()
+    raw_audio: Optional[_RawAudioIndex] = None
+    if args.merge_event_media and args.raw_audio_dir:
+        raw_audio = _RawAudioIndex(Path(args.raw_audio_dir))
+        print(f"Indexed {len(raw_audio)} raw audio files under {args.raw_audio_dir}", flush=True)
 
     total_events = len(events)
     if args.merge_event_media and total_events > 0:
@@ -1550,22 +2158,65 @@ def main() -> int:
 
         merged_mat_rel = None
         merged_audio_rel = None
+        media_by_time = False
         if args.merge_event_media and media_members:
-            # Prefer direct extraction from parent 5-minute media when available.
-            merged_mat_rel = _extract_event_spectrogram_from_parent(
-                event_id=event.event_id,
-                member_items=media_members,
-                input_json=input_json,
-                output_dir=event_media_root,
-                output_json=output_json,
-            )
-            merged_audio_rel = _extract_event_audio_from_parent(
-                event_id=event.event_id,
-                member_items=media_members,
-                input_json=input_json,
-                output_dir=event_media_root,
-                output_json=output_json,
-            )
+            # Members with absolute times: cut both media to exactly their span.
+            media_span = _media_span_seconds(media_members)
+            audio_by_time = False
+            spectrogram_stitched = False
+            if media_span is not None:
+                merged_mat_rel = _slice_event_spectrogram_by_time(
+                    event_id=event.event_id,
+                    member_items=media_members,
+                    span=media_span,
+                    input_json=input_json,
+                    output_dir=event_media_root,
+                    output_json=output_json,
+                    mat_cache=mat_cache,
+                    spectrogram_config=spectrogram_config,
+                    raw_audio=raw_audio,
+                    stats=media_stats,
+                )
+                if raw_audio is not None:
+                    merged_audio_rel = _cut_event_audio_from_raw(
+                        event_id=event.event_id,
+                        member_items=media_members,
+                        span=media_span,
+                        raw_audio=raw_audio,
+                        output_dir=event_media_root,
+                        output_json=output_json,
+                        stats=media_stats,
+                    )
+                if merged_audio_rel is None:
+                    merged_audio_rel = _place_window_audio_by_time(
+                        event_id=event.event_id,
+                        member_items=media_members,
+                        span=media_span,
+                        input_json=input_json,
+                        output_dir=event_media_root,
+                        output_json=output_json,
+                    )
+                audio_by_time = merged_audio_rel is not None
+                media_by_time = audio_by_time or merged_mat_rel is not None
+            # Otherwise extract from the parent 5-minute media referenced by bins.
+            if merged_mat_rel is None:
+                merged_mat_rel = _extract_event_spectrogram_from_parent(
+                    event_id=event.event_id,
+                    member_items=media_members,
+                    input_json=input_json,
+                    output_dir=event_media_root,
+                    output_json=output_json,
+                    spectrogram_config=spectrogram_config,
+                )
+            if merged_audio_rel is None:
+                merged_audio_rel = _extract_event_audio_from_parent(
+                    event_id=event.event_id,
+                    member_items=media_members,
+                    input_json=input_json,
+                    output_dir=event_media_root,
+                    output_json=output_json,
+                    spectrogram_config=spectrogram_config,
+                )
             # Fallback to window stitching when parent references are unavailable.
             if merged_mat_rel is None:
                 merged_mat_rel = _merge_event_spectrogram(
@@ -1575,6 +2226,7 @@ def main() -> int:
                     output_dir=event_media_root,
                     output_json=output_json,
                 )
+                spectrogram_stitched = merged_mat_rel is not None
             if merged_audio_rel is None:
                 merged_audio_rel = _merge_event_audio(
                     event_id=event.event_id,
@@ -1583,7 +2235,9 @@ def main() -> int:
                     output_dir=event_media_root,
                     output_json=output_json,
                 )
-            if merged_mat_rel and merged_audio_rel:
+            # Stitched spectrograms close gaps between windows, so their length
+            # need not match the audio; never stretch audio cut by time.
+            if spectrogram_stitched and not audio_by_time and merged_audio_rel:
                 merged_mat_abs = _resolve_media_path(output_json, merged_mat_rel)
                 merged_audio_abs = _resolve_media_path(output_json, merged_audio_rel)
                 if (
@@ -1658,7 +2312,9 @@ def main() -> int:
 
             first_member = member_items[0]
             data_source_id = first_member.get("data_source_id")
-            abs_start, abs_end = _event_absolute_times(member_items)
+            # Media cut by time span the media members (--merge-min-score can drop
+            # low-score edge windows); the item's times must describe that clip.
+            abs_start, abs_end = _event_absolute_times(media_members if media_by_time else member_items)
             event_item: Dict[str, Any] = {
                 "item_id": event.event_id,
                 "model_outputs": [
@@ -1734,6 +2390,7 @@ def main() -> int:
         "merged_event_media_count": int(merged_media_count),
         "output_item_count": len(output_data["items"]),
         "merge_across_source_audio": bool(args.merge_across_source_audio),
+        "raw_audio_dir": str(args.raw_audio_dir) if args.raw_audio_dir else None,
     }
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1777,13 +2434,25 @@ def main() -> int:
     if args.merge_event_media:
         print(f"  Merged event media: {merged_media_count}")
         if merged_without_audio > 0:
-            print(
-                f"  Warning: {merged_without_audio} events have no merged audio path "
-                "(check parent/window audio availability)."
+            hint = (
+                "check that --raw-audio-dir holds their source files"
+                if raw_audio is not None
+                else "pass --raw-audio-dir to cut it from the raw source files"
             )
+            print(f"  Warning: {merged_without_audio} events have no merged audio path ({hint}).")
         if merged_without_spectrogram > 0:
             print(
                 f"  Warning: {merged_without_spectrogram} events have no merged spectrogram path."
+            )
+        if media_stats.get("audio_with_silence"):
+            print(
+                f"  Note: {media_stats['audio_with_silence']} event clips include time no raw audio file covers "
+                "(left silent)."
+            )
+        if media_stats.get("spectrogram_with_silence"):
+            print(
+                f"  Note: {media_stats['spectrogram_with_silence']} event spectrograms include frames no source MAT "
+                "covers (left silent)."
             )
     print(f"  Output JSON: {output_json}")
     print(f"  Events CSV: {events_csv}")
